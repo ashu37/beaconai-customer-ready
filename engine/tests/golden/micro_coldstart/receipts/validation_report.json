@@ -1,0 +1,55 @@
+{
+  "checks": {
+    "AOV Consistency": {
+      "details": {
+        "aligned_net_sales": 3150.27,
+        "aligned_orders": 41,
+        "alt_delta_pct": 0.09030971948436164,
+        "aov_aligned": 76.83585365853658,
+        "aov_calc": 76.83585365853658,
+        "aov_line_items_per_order": 0.0,
+        "aov_subtotal_minus_discount": 76.83585365853658,
+        "aov_total_minus_shipping_taxes": 69.89682926829268,
+        "delta_pct": 0.0,
+        "method_used": "subtotal_minus_discount",
+        "net_sales_line_items_per_order": 0.0,
+        "net_sales_subtotal_minus_discount": 3150.27,
+        "net_sales_total_minus_shipping_taxes": 2865.77,
+        "orders_in_window": 41
+      },
+      "message": "\u2713 AOV consistent (\u0394 0.0%)",
+      "severity": "info",
+      "status": "green"
+    },
+    "Data Anomalies": {
+      "details": {
+        "checks_passed": "All patterns within normal ranges"
+      },
+      "message": "\u2713 No data anomalies detected",
+      "severity": "info",
+      "status": "green"
+    },
+    "Metric Consistency": {
+      "details": {},
+      "message": "\u2713 All metrics internally consistent",
+      "severity": "info",
+      "status": "green"
+    },
+    "Transaction Volume": {
+      "details": {
+        "financial_completeness": "100%",
+        "issues": [],
+        "total_orders": 600
+      },
+      "message": "\u2713 Transaction volume verified: 600 clean orders",
+      "severity": "info",
+      "status": "green"
+    }
+  },
+  "critical_issues": [],
+  "data_quality_grade": "A",
+  "overall_status": "green",
+  "summary": "All checks passed",
+  "validation_score": 100,
+  "warnings": []
+}

@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Beacon Growth Briefing — Story Demo</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@700&display=swap');
+
+    :root {
+      --beacon-navy: #0F172A;
+      --beacon-blue: #3B82F6;
+      --beacon-amber: #F59E0B;
+      --beacon-success: #10B981;
+      --beacon-warning: #F59E0B;
+      --beacon-error: #EF4444;
+      --beacon-gray-900: #111827;
+      --beacon-gray-700: #374151;
+      --beacon-gray-500: #6B7280;
+      --beacon-gray-300: #D1D5DB;
+      --beacon-gray-200: #E5E7EB;
+      --beacon-gray-100: #F3F4F6;
+      --beacon-gray-50: #F9FAFB;
+      --beacon-white: #FFFFFF;
+      --font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--beacon-gray-50);
+      font-family: var(--font-primary);
+      color: var(--beacon-gray-900);
+    }
+
+    .demo-container {
+      max-width: 1180px;
+      margin: 0 auto;
+      background: var(--beacon-white);
+      min-height: 100vh;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+    }
+
+    section {
+      padding: 56px 72px;
+      border-bottom: 1px solid var(--beacon-gray-100);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      color: var(--beacon-gray-900);
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: -40% -20% -20% -40%;
+      background: radial-gradient(circle at 20% 30%, rgba(245, 158, 11, 0.18) 0%, transparent 55%),
+                  radial-gradient(circle at 80% 25%, rgba(59, 130, 246, 0.20) 0%, transparent 52%),
+                  radial-gradient(circle at 45% 80%, rgba(16, 185, 129, 0.16) 0%, transparent 60%);
+      filter: blur(28px);
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .hero::after {
+      content: '';
+      position: absolute;
+      inset: -60% -40% -40% -60%;
+      background: linear-gradient(135deg, transparent 45%, rgba(245, 158, 11, 0.25) 50%, transparent 55%);
+      opacity: 0.7;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+    }
+
+    .brand-lockup {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-family: 'Inter', sans-serif;
+      font-weight: 700;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+      color: var(--beacon-navy);
+    }
+
+    .brand-lockup .brand-dot {
+      color: var(--beacon-amber);
+    }
+
+    .brand-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 16px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      background: rgba(59, 130, 246, 0.12);
+      color: var(--beacon-blue);
+    }
+
+    .hero h1 {
+      margin: 24px 0 12px;
+      font-size: 40px;
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--beacon-navy);
+    }
+
+    .hero-subheadline {
+      margin: 0 0 32px;
+      font-size: 18px;
+      color: var(--beacon-gray-600);
+      max-width: 640px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 20px;
+    }
+
+    .hero-card {
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
+      backdrop-filter: blur(6px);
+    }
+
+    .hero-card h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--beacon-blue);
+    }
+
+    .hero-value {
+      font-size: 34px;
+      font-weight: 800;
+      margin-bottom: 8px;
+      color: var(--beacon-navy);
+    }
+
+    .hero-note {
+      margin: 0;
+      font-size: 15px;
+      color: var(--beacon-gray-600);
+      line-height: 1.6;
+    }
+
+    .section-kicker {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--beacon-blue);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      margin: 0;
+      font-size: 32px;
+      font-weight: 700;
+    }
+
+    .section-summary {
+      margin: 10px 0 36px;
+      font-size: 17px;
+      color: var(--beacon-gray-600);
+      line-height: 1.6;
+      max-width: 720px;
+    }
+
+    .score-section {
+      background: linear-gradient(135deg, #F9FAFB 0%, #F3F4F6 100%);
+    }
+
+    .score-layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 32px;
+      align-items: start;
+    }
+
+    .score-card {
+      background: var(--beacon-white);
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      border: 1px solid var(--beacon-gray-100);
+    }
+
+    .score-value {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+    }
+
+    .score-number {
+      font-size: 64px;
+      font-weight: 800;
+      color: var(--beacon-navy);
+    }
+
+    .score-tier {
+      font-size: 16px;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--beacon-success);
+      padding: 6px 14px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .score-trend {
+      margin-top: 8px;
+      font-size: 14px;
+      color: var(--beacon-blue);
+      font-weight: 600;
+    }
+
+    .score-summary-card {
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 12px;
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.15);
+      font-size: 15px;
+      color: var(--beacon-gray-700);
+      line-height: 1.6;
+    }
+
+    .score-factors {
+      display: grid;
+      gap: 18px;
+    }
+
+    .factor-card {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 20px;
+      background: var(--beacon-white);
+      border-radius: 16px;
+      padding: 24px;
+      border: 1px solid var(--beacon-gray-100);
+      box-shadow: 0 8px 22px rgba(15,23,42,0.06);
+    }
+
+    .factor-metric {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .factor-name {
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--beacon-gray-500);
+      font-weight: 600;
+    }
+
+    .factor-score {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--beacon-navy);
+    }
+
+    .factor-delta {
+      font-size: 14px;
+      color: var(--beacon-success);
+      font-weight: 600;
+    }
+
+    .factor-story {
+      font-size: 15px;
+      color: var(--beacon-gray-600);
+      line-height: 1.6;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+    }
+
+    .chart-card {
+      background: var(--beacon-white);
+      border-radius: 18px;
+      padding: 24px;
+      border: 1px solid var(--beacon-gray-100);
+      box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .chart-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      background: rgba(59,130,246,0.12);
+      color: var(--beacon-blue);
+      text-transform: uppercase;
+    }
+
+    .chart-figure {
+      background: linear-gradient(135deg, rgba(59,130,246,0.06), rgba(59,130,246,0.12));
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .chart-figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .chart-caption {
+      font-size: 15px;
+      color: var(--beacon-gray-600);
+      line-height: 1.6;
+    }
+
+    .actions-section {
+      background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+    }
+
+    .tier-section {
+      margin-bottom: 48px;
+      display: grid;
+      gap: 24px;
+    }
+
+    .tier-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .tier-title {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--beacon-navy);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .tier-pill {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .tier-pill.primary {
+      background: rgba(16, 185, 129, 0.14);
+      color: var(--beacon-success);
+    }
+
+    .tier-pill.quickwin {
+      background: rgba(245, 158, 11, 0.14);
+      color: var(--beacon-amber);
+    }
+
+    .tier-description {
+      margin: 0;
+      font-size: 15px;
+      color: var(--beacon-gray-600);
+    }
+
+    .actions-grid {
+      display: grid;
+      gap: 28px;
+    }
+
+    .action-card {
+      background: var(--beacon-white);
+      border-radius: 20px;
+      border: 1px solid var(--beacon-gray-100);
+      padding: 32px;
+      box-shadow: 0 16px 40px rgba(15,23,42,0.08);
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 32px;
+      align-items: start;
+    }
+
+    .action-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 18px;
+      gap: 24px;
+    }
+
+    .action-title {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--beacon-navy);
+    }
+
+    .confidence-badge {
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.16);
+      color: var(--beacon-success);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+    }
+
+    .action-metrics {
+      display: flex;
+      gap: 18px;
+      font-size: 14px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--beacon-gray-500);
+    }
+
+    .action-metrics span strong {
+      display: block;
+      font-size: 20px;
+      margin-top: 4px;
+      color: var(--beacon-navy);
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    .action-narrative {
+      font-size: 16px;
+      color: var(--beacon-gray-700);
+      line-height: 1.7;
+      margin: 16px 0 22px;
+    }
+
+    .evidence-list {
+      margin: 0;
+      padding-left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: var(--beacon-gray-600);
+    }
+
+    .action-chart {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .action-chart .chart-tag {
+      align-self: flex-start;
+    }
+
+    .action-chart figcaption {
+      font-size: 14px;
+      color: var(--beacon-gray-500);
+      line-height: 1.5;
+    }
+
+    .next-steps {
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      color: var(--beacon-gray-900);
+    }
+
+    .next-steps::before {
+      content: '';
+      position: absolute;
+      inset: -40% -20% -20% -40%;
+      background: radial-gradient(circle at 20% 30%, rgba(245, 158, 11, 0.18) 0%, transparent 55%),
+                  radial-gradient(circle at 80% 25%, rgba(59, 130, 246, 0.20) 0%, transparent 52%),
+                  radial-gradient(circle at 45% 80%, rgba(16, 185, 129, 0.16) 0%, transparent 60%);
+      filter: blur(28px);
+      pointer-events: none;
+    }
+
+    .next-steps::after {
+      content: '';
+      position: absolute;
+      inset: -60% -40% -40% -60%;
+      background: linear-gradient(135deg, transparent 45%, rgba(245, 158, 11, 0.25) 50%, transparent 55%);
+      opacity: 0.7;
+      pointer-events: none;
+    }
+
+    .next-steps > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .next-steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 24px;
+    }
+
+    .next-card {
+      background: rgba(255,255,255,0.92);
+      border-radius: 16px;
+      padding: 22px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+    }
+
+    .next-card h4 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--beacon-blue);
+    }
+
+    .next-card p {
+      margin: 0;
+      font-size: 15px;
+      color: var(--beacon-gray-600);
+      line-height: 1.6;
+    }
+
+    @media (max-width: 980px) {
+      section { padding: 48px 28px; }
+      .score-layout { grid-template-columns: 1fr; }
+      .action-card { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="demo-container">
+    <section class="hero">
+      <div class="hero-content">
+        <div class="brand-lockup">
+          beac<span class="brand-dot">•</span>n
+          <span class="brand-pill">Growth Intelligence Demo</span>
+        </div>
+        <h1>July Growth Briefing for Aurora Beauty</h1>
+        <p class="hero-subheadline">We analysed 90 days of order, product, and customer data. Here is the story the numbers told us and the actions we can take with confidence this month.</p>
+        <div class="hero-grid">
+          <div class="hero-card">
+            <h3>Monthly Growth Opportunity</h3>
+            <div class="hero-value">$135K</div>
+            <p class="hero-note">Combined incremental revenue if we execute the recommended plays within 28 days.</p>
+          </div>
+          <div class="hero-card">
+            <h3>Growth Stage</h3>
+            <div class="hero-value">Scaling Retailer</div>
+            <p class="hero-note">Repeat revenue now outpaces new by 1.6×. Focus shifts to retention and attach rate.</p>
+          </div>
+          <div class="hero-card">
+            <h3>Plays Recommended</h3>
+            <div class="hero-value">3 Primary • 1 Quick Win</div>
+            <p class="hero-note">Every play is backed by the chart on the right side of each recommendation.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="score-section">
+      <div class="section-kicker">Beacon Health</div>
+      <h2 class="section-title">Business Score with Narrative Context</h2>
+      <p class="section-summary">The beacon score blends five health pillars. We now anchor the number with a quick story so stakeholders know what 72/100 actually means and where to focus their attention.</p>
+
+      <div class="score-layout">
+        <div class="score-card">
+          <div class="score-value">
+            <div class="score-number">72</div>
+            <div class="score-tier">Healthy</div>
+          </div>
+          <div class="score-trend">↗︎ +4 pts vs. last month</div>
+          <div class="score-summary-card">
+            Revenue momentum stayed strong while margin pressure from evergreen promotions kept the score out of the 80s. Lifting bundle AOV and rehabbing dormant VIPs are the fastest levers to move this score next month.
+          </div>
+        </div>
+
+        <div class="score-factors">
+          <div class="factor-card">
+            <div class="factor-metric">
+              <span class="factor-name">Revenue Health</span>
+              <span class="factor-score">74</span>
+              <span class="factor-delta">+3.2 pts</span>
+            </div>
+            <div class="factor-story">Orders grew 12% and winback revenue is trending upward. The forecast chart shows this momentum sustaining if we re-engage the 45-day dormant cohort.</div>
+          </div>
+          <div class="factor-card">
+            <div class="factor-metric">
+              <span class="factor-name">Customer Health</span>
+              <span class="factor-score">68</span>
+              <span class="factor-delta">+5.9 pts</span>
+            </div>
+            <div class="factor-story">Repeat rate improvement is concentrated in skincare loyalists. The repurchase timeline chart highlights where the curve flattens after week eight.</div>
+          </div>
+          <div class="factor-card">
+            <div class="factor-metric">
+              <span class="factor-name">Margin Health</span>
+              <span class="factor-score">61</span>
+              <span class="factor-delta" style="color: var(--beacon-warning);">-2.1 pts</span>
+            </div>
+            <div class="factor-story">Discount dependency is creeping back. Bestseller amplification with targeted bundles replaces blanket promos in the playbook below.</div>
+          </div>
+          <div class="factor-card">
+            <div class="factor-metric">
+              <span class="factor-name">Growth Health</span>
+              <span class="factor-score">78</span>
+              <span class="factor-delta">+6.4 pts</span>
+            </div>
+            <div class="factor-story">Top-of-funnel spend is paying off: the customer segments chart shows new-to-brand buyers grading into high-LTV tiers faster than last quarter.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-kicker">Data Highlights</div>
+      <h2 class="section-title">Charts That Set Up The Story</h2>
+      <p class="section-summary">Instead of scattered visualisations, we lead with three charts that directly power the recommendations. Each action card references its supporting chart so the evidence is always one glance away.</p>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <span class="chart-tag">Repurchase Timeline</span>
+          <div class="chart-figure">
+            <svg viewBox="0 0 320 170" role="img" aria-label="Repurchase curve showing drop after day 60">
+              <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+              <path d="M20 130 L300 130" stroke="#E5E7EB" stroke-width="1"/>
+              <path d="M20 100 L300 100" stroke="#E5E7EB" stroke-width="1"/>
+              <path d="M20 70 L300 70" stroke="#E5E7EB" stroke-width="1"/>
+              <path d="M20 40 L300 40" stroke="#E5E7EB" stroke-width="1"/>
+              <polyline fill="none" stroke="#3B82F6" stroke-width="4" stroke-linecap="round" points="20,118 90,95 150,80 210,76 260,84 300,110"/>
+              <circle cx="210" cy="76" r="6" fill="#3B82F6"/>
+              <circle cx="260" cy="84" r="6" fill="#EF4444"/>
+              <text x="214" y="65" font-size="12" fill="#3B82F6" font-weight="600">Week 8 plateau</text>
+              <text x="264" y="94" font-size="12" fill="#EF4444" font-weight="600">Dormant</text>
+            </svg>
+          </div>
+          <p class="chart-caption">Returning customers flatten after day 56, signalling a prime winback window. This feeds the "Lapsed Loyalists" recommendation.</p>
+        </div>
+
+        <div class="chart-card">
+          <span class="chart-tag">Product Velocity</span>
+          <div class="chart-figure">
+            <svg viewBox="0 0 320 170" role="img" aria-label="Bar chart highlighting hero SKUs">
+              <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+              <g fill="#E5E7EB">
+                <rect x="40" y="60" width="32" height="70" rx="6"/>
+                <rect x="110" y="40" width="32" height="90" rx="6"/>
+                <rect x="180" y="95" width="32" height="35" rx="6"/>
+                <rect x="250" y="110" width="32" height="20" rx="6"/>
+              </g>
+              <rect x="110" y="20" width="32" height="110" rx="6" fill="#F59E0B"/>
+              <rect x="180" y="65" width="32" height="65" rx="6" fill="#3B82F6"/>
+              <text x="94" y="22" font-size="12" fill="#F59E0B" font-weight="600">Hero serum</text>
+              <text x="182" y="60" font-size="12" fill="#3B82F6" font-weight="600">Starter duo</text>
+            </svg>
+          </div>
+          <p class="chart-caption">Two hero SKUs account for 46% of velocity growth. Bundling them sustains margin while lifting AOV.</p>
+        </div>
+
+        <div class="chart-card">
+          <span class="chart-tag">Customer Segments</span>
+          <div class="chart-figure">
+            <svg viewBox="0 0 320 170" role="img" aria-label="Stacked bars for customer value tiers">
+              <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+              <g font-size="13" font-weight="600">
+                <text x="20" y="48" fill="#0F172A">High LTV</text>
+                <text x="20" y="98" fill="#0F172A">Mid LTV</text>
+                <text x="20" y="148" fill="#0F172A">New-to-brand</text>
+              </g>
+              <g>
+                <rect x="130" y="32" width="140" height="26" rx="8" fill="#10B981"/>
+                <rect x="130" y="82" width="110" height="26" rx="8" fill="#3B82F6"/>
+                <rect x="130" y="132" width="180" height="26" rx="8" fill="#F59E0B"/>
+                <rect x="130" y="132" width="90" height="26" rx="8" fill="#3B82F6" opacity="0.45"/>
+              </g>
+              <text x="276" y="50" font-size="12" fill="#0F172A" font-weight="600">+18% QoQ</text>
+              <text x="246" y="150" font-size="12" fill="#0F172A" font-weight="600">42% ready for follow-up</text>
+            </svg>
+          </div>
+          <p class="chart-caption">42% of first-time buyers upgrade to mid-tier within 45 days. We can accelerate that second purchase with automated journeys.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="actions-section">
+      <div class="section-kicker">Action Engine</div>
+      <h2 class="section-title">Recommendations With Embedded Evidence</h2>
+      <p class="section-summary">Each card pairs the play with the chart that triggered it and the numeric proof points. This is the storytelling bridge between insight and execution.</p>
+
+      <div class="tier-section">
+        <div class="tier-header">
+          <h3 class="tier-title">Primary Plays <span class="tier-pill primary">High Confidence</span></h3>
+          <p class="tier-description">Foundational moves to pursue immediately for the biggest impact this month.</p>
+        </div>
+        <div class="actions-grid">
+          <article class="action-card">
+            <div>
+              <div class="action-header">
+                <h3 class="action-title">Win Back Lapsed Loyalists</h3>
+              <span class="confidence-badge">78% Confidence</span>
+            </div>
+            <div class="action-metrics">
+              <span>28-Day Impact<strong>$58K incremental</strong></span>
+              <span>Audience<strong>4.2K dormant VIPs</strong></span>
+            </div>
+            <p class="action-narrative">Repurchase momentum fades sharply after week eight. We target the 4.2K best customers who slipped past that window with a replenishment offer that restores frequency without discounting.</p>
+            <ul class="evidence-list">
+              <li>Repurchase timeline shows a 38% drop after day 56 — the chart at right marks this plateau.</li>
+              <li>These customers represent $126K trailing-90 revenue and respond 1.9× better to direct winbacks.</li>
+              <li>Inventory coverage for the hero SKUs is 28 days, so the lift is fully fulfilment-safe.</li>
+            </ul>
+          </div>
+          <figure class="action-chart">
+            <span class="chart-tag">Repurchase Timeline</span>
+            <div class="chart-figure">
+              <svg viewBox="0 0 320 170" role="img" aria-label="Repurchase curve focusing on dormant segment">
+                <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+                <path d="M20 130 L300 130" stroke="#E5E7EB" stroke-width="1"/>
+                <path d="M20 110 L300 110" stroke="#E5E7EB" stroke-width="1"/>
+                <path d="M20 90 L300 90" stroke="#E5E7EB" stroke-width="1"/>
+                <path d="M20 70 L300 70" stroke="#E5E7EB" stroke-width="1"/>
+                <polyline fill="none" stroke="#3B82F6" stroke-width="5" stroke-linecap="round" points="30,122 90,98 150,82 210,78 260,102"/>
+                <circle cx="210" cy="78" r="8" fill="#F59E0B" stroke="#ffffff" stroke-width="3"/>
+                <text x="226" y="68" font-size="12" fill="#F59E0B" font-weight="600">Dormant cliff</text>
+              </svg>
+            </div>
+            <figcaption>Why this chart: it surfaces exactly when loyalists lapse so lifecycle messaging can reactivate them before churn locks in.</figcaption>
+          </figure>
+        </article>
+
+          <article class="action-card">
+            <div>
+              <div class="action-header">
+                <h3 class="action-title">Amplify Rising Hero Bundles</h3>
+              <span class="confidence-badge">72% Confidence</span>
+            </div>
+            <div class="action-metrics">
+              <span>28-Day Impact<strong>$45K incremental</strong></span>
+              <span>Audience<strong>Top 3 SKUs • 2.8K buyers</strong></span>
+            </div>
+            <p class="action-narrative">Two hero serums are compounding velocity. We package them with the starter duo and deliver creator-led merchandising that sustains AOV while easing discount dependency.</p>
+            <ul class="evidence-list">
+              <li>Product velocity chart flags a 54% WoW spike on the hero serum and 31% on the starter duo.</li>
+              <li>Bundle buyers spend $42 more per order; impact forecast lifts margin pillar by 6 pts.</li>
+              <li>Inventory confidence is 0.92 across the SKUs, clearing the saturation gate.</li>
+            </ul>
+          </div>
+          <figure class="action-chart">
+            <span class="chart-tag">Product Velocity</span>
+            <div class="chart-figure">
+              <svg viewBox="0 0 320 170" role="img" aria-label="Velocity bars highlighting hero SKUs">
+                <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+                <g fill="#E5E7EB">
+                  <rect x="40" y="70" width="32" height="60" rx="6"/>
+                  <rect x="250" y="110" width="32" height="20" rx="6"/>
+                </g>
+                <rect x="110" y="30" width="40" height="100" rx="6" fill="#F59E0B"/>
+                <rect x="190" y="55" width="40" height="75" rx="6" fill="#3B82F6"/>
+                <text x="106" y="26" font-size="12" fill="#F59E0B" font-weight="600">Hero serum +54%</text>
+                <text x="186" y="50" font-size="12" fill="#3B82F6" font-weight="600">Starter duo +31%</text>
+              </svg>
+            </div>
+            <figcaption>Why this chart: it proves where momentum outpaces the catalogue so merchandising & paid can double down without guesswork.</figcaption>
+          </figure>
+        </article>
+
+          <article class="action-card">
+            <div>
+              <div class="action-header">
+                <h3 class="action-title">Guide First-Time Buyers to Ritual</h3>
+              <span class="confidence-badge">69% Confidence</span>
+            </div>
+            <div class="action-metrics">
+              <span>28-Day Impact<strong>$32K incremental</strong></span>
+              <span>Audience<strong>3.1K onboarding shoppers</strong></span>
+            </div>
+            <p class="action-narrative">Forty-two percent of new customers signal readiness for a second purchase within 21 days. We’ll automate a ritual-builder journey that converts them before they default to competitors.</p>
+            <ul class="evidence-list">
+              <li>Customer segments chart shows 1.3K buyers moving into the mid-tier within 45 days.</li>
+              <li>A/B from last quarter proves ritual messaging adds +9.8pp lift in repeat rate.</li>
+              <li>Audience LTV90 contribution is $18.6K with subscription potential on two SKUs.</li>
+            </ul>
+          </div>
+          <figure class="action-chart">
+            <span class="chart-tag">Customer Segments</span>
+            <div class="chart-figure">
+              <svg viewBox="0 0 320 170" role="img" aria-label="Segment ladder emphasising upgrade path">
+                <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+                <g font-size="13" font-weight="600">
+                  <text x="24" y="54" fill="#0F172A">Ritual Ready</text>
+                  <text x="24" y="104" fill="#0F172A">Growing Fans</text>
+                  <text x="24" y="154" fill="#0F172A">New Explorers</text>
+                </g>
+                <rect x="150" y="36" width="140" height="26" rx="8" fill="#10B981"/>
+                <rect x="150" y="86" width="115" height="26" rx="8" fill="#3B82F6"/>
+                <rect x="150" y="136" width="190" height="26" rx="8" fill="#F59E0B"/>
+                <rect x="150" y="136" width="96" height="26" rx="8" fill="#3B82F6" opacity="0.45"/>
+                <text x="296" y="52" font-size="12" fill="#0F172A" font-weight="600">+18%</text>
+                <text x="262" y="150" font-size="12" fill="#0F172A" font-weight="600">42% laddering up</text>
+              </svg>
+            </div>
+            <figcaption>Why this chart: it quantifies how many first-time buyers are within striking distance of repeat purchases, making the onboarding journey a clear priority.</figcaption>
+          </figure>
+        </article>
+        </div>
+      </div>
+
+      <div class="tier-section">
+        <div class="tier-header">
+          <h3 class="tier-title">Quick Wins <span class="tier-pill quickwin">Fast Lift</span></h3>
+          <p class="tier-description">Lower effort moves that stabilise supporting metrics while the primary plays ramp.</p>
+        </div>
+        <div class="actions-grid">
+          <article class="action-card" style="border-top: 6px solid rgba(245, 158, 11, 0.45);">
+            <div>
+              <div class="action-header">
+                <h3 class="action-title">Tighten Evergreen Promotions</h3>
+                <span class="confidence-badge" style="background: rgba(245, 158, 11, 0.18); color: var(--beacon-amber);">64% Confidence</span>
+              </div>
+              <div class="action-metrics">
+                <span>28-Day Impact<strong>$18K margin recovery</strong></span>
+                <span>Audience<strong>Sitewide discount traffic</strong></span>
+              </div>
+              <p class="action-narrative">Margin health slipped 2 pts as blanket promos ran beyond their lift window. We’ll replace them with targeted creators’ bundles and limited replenishment incentives.</p>
+              <ul class="evidence-list">
+                <li>Discount hygiene chart shows promo rate rising to 32% of orders vs. 18% seasonal baseline.</li>
+                <li>Orders stay flat when discounts turn off for hero SKUs, validating a switch to bundled value.</li>
+                <li>Margin pillar models add +6 pts once promo share returns under 20%.</li>
+              </ul>
+            </div>
+            <figure class="action-chart">
+              <span class="chart-tag">Discount Hygiene</span>
+              <div class="chart-figure">
+                <svg viewBox="0 0 320 170" role="img" aria-label="Line chart showing spike in discount rate">
+                  <rect x="0" y="0" width="320" height="170" rx="14" fill="#ffffff" />
+                  <path d="M30 130 L290 130" stroke="#E5E7EB" stroke-width="1"/>
+                  <path d="M30 100 L290 100" stroke="#E5E7EB" stroke-width="1"/>
+                  <path d="M30 70 L290 70" stroke="#E5E7EB" stroke-width="1"/>
+                  <polyline fill="none" stroke="#3B82F6" stroke-width="4" stroke-linecap="round" points="40,105 100,90 160,82 220,76 280,88"/>
+                  <polyline fill="none" stroke="#EF4444" stroke-width="4" stroke-linecap="round" points="40,110 100,108 160,96 220,66 280,52"/>
+                  <text x="200" y="58" font-size="12" fill="#EF4444" font-weight="600">Promo spike 32%</text>
+                  <text x="44" y="118" font-size="12" fill="#3B82F6" font-weight="600">Baseline 18%</text>
+                </svg>
+              </div>
+              <figcaption>Why this chart: it visualises the margin drag from evergreen promos so the quick win feels urgent yet actionable.</figcaption>
+            </figure>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="next-steps">
+      <div class="section-kicker" style="color: var(--beacon-blue);">Next Steps</div>
+      <h2 class="section-title">Operational Wrap-Up</h2>
+      <p class="section-summary">Close the loop by aligning owners, assets, and measurement. This mini runbook calls out who should act on each recommendation and what to prepare.</p>
+
+      <div class="next-steps-grid">
+        <div class="next-card">
+          <h4>01 • Creative</h4>
+          <p>Brief creator partners on the hero bundle narrative so the Primary play stays premium while replacing evergreen discounts.</p>
+        </div>
+        <div class="next-card">
+          <h4>02 • Lifecycle</h4>
+          <p>Activate Klaviyo journeys keyed to day-45 dormancy and day-14 ritual builders; sync engine segments for the Primary winback + onboarding plays.</p>
+        </div>
+        <div class="next-card">
+          <h4>03 • Measurement</h4>
+          <p>Track repeat rate, hero SKU attach, and discount share weekly so we verify the Primary and Quick Win plays are landing.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Build/output for this project
+analysis/
+*.zip
+coverage.xml
+htmlcov/
+/out/
+
+# M9 — runtime outcome log. Local, gitignored, and may be safely deleted.
+# Created on first run by src/outcome_log.write_recommended_history.
+/data/recommended_history.json
+/data/recommended_history.json.corrupt-*.bak
+
+# B-4/S-1 — per-merchant data dirs. Local, gitignored.
+# Created by src/store_id.ensure_store_dir on engine run.
+/data/*/
+
+# Claude Code harness state
+.claude/*.lock
+
+# VS Code
+.vscode/

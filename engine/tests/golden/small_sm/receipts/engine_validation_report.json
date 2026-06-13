@@ -1,0 +1,281 @@
+{
+  "dataset_info": {
+    "analysis_method": "multi_window",
+    "analysis_windows": [
+      "L7",
+      "L28",
+      "L56",
+      "L90"
+    ],
+    "anchor_date": "<TIMESTAMP>",
+    "beacon_score": 83,
+    "pilot_actions": 0,
+    "total_actions_generated": 0,
+    "watchlist_actions": 0
+  },
+  "logic_soundness": {
+    "areas_for_improvement": [
+      "Scoring logic may benefit from additional documentation"
+    ],
+    "confidence_level": "Medium",
+    "kpi_calculation": "Sound",
+    "multi_window_integration": "Excellent",
+    "overall_assessment": "Needs Review",
+    "scoring_logic": "Complex",
+    "statistical_rigor": "Adequate",
+    "strengths": [
+      "KPI calculations are mathematically sound across all windows",
+      "Multi-window aggregation methodology is well-implemented"
+    ]
+  },
+  "multi_window_aggregation": {
+    "component_scores": {
+      "customer_health": 100,
+      "growth_health": 65,
+      "ltv_health": 69.73970175410655,
+      "margin_health": 78.71838313579313,
+      "revenue_health": 85.0
+    },
+    "methodology": "multi_window",
+    "overall_score": 83,
+    "validation_results": [
+      "\u2705 revenue_health: 85.0/100 (valid range)",
+      "\u2705 customer_health: 100.0/100 (valid range)",
+      "\u2705 margin_health: 78.7/100 (valid range)",
+      "\u2705 growth_health: 65.0/100 (valid range)",
+      "\u2705 ltv_health: 69.7/100 (valid range)",
+      "\u2705 Using multi-window analysis methodology",
+      "\u2705 All expected windows included in analysis"
+    ],
+    "windows_used": [
+      "L7",
+      "L28",
+      "L56",
+      "L90"
+    ]
+  },
+  "recommendations": [
+    {
+      "category": "Overall System",
+      "priority": "High",
+      "rationale": "Multiple areas identified for improvement",
+      "recommendation": "Conduct comprehensive system review"
+    }
+  ],
+  "scoring_validation": {
+    "action_scoring_analysis": [],
+    "consistency_checks": [],
+    "scoring_components": {
+      "confidence_patterns": {},
+      "score_distribution": {},
+      "seasonal_adjustments": {}
+    },
+    "window_weight_validation": {
+      "consistency_check": "Consistent",
+      "expected_weights": {
+        "L28": 0.4,
+        "L56": 0.2,
+        "L7": 0.3,
+        "L90": 0.1
+      },
+      "observed_patterns": {}
+    }
+  },
+  "statistical_assessment": {
+    "confidence_patterns": [
+      "\ud83d\udcca 1/16 tests significant (6.2%)",
+      "\ud83d\udcc8 Low significance rate - results may need more data"
+    ],
+    "significance_by_window": {
+      "L28": {
+        "aov": {
+          "p_value": 0.7132006989673547,
+          "signal_strength": 0.14678823986920622,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "discount_rate": {
+          "p_value": 0.5199051775926058,
+          "signal_strength": 0.2840758575256404,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "repeat_rate_within_window": {
+          "p_value": 0.08112104531092158,
+          "signal_strength": 1.0908664617355888,
+          "significance_level": "Learning Mode Threshold",
+          "significant": false
+        },
+        "returning_customer_share": {
+          "p_value": 1.0,
+          "signal_strength": -0.0,
+          "significance_level": "Not Significant",
+          "significant": false
+        }
+      },
+      "L56": {
+        "aov": {
+          "p_value": 0.014534057483560998,
+          "signal_strength": 1.8376131264639386,
+          "significance_level": "Significant",
+          "significant": false
+        },
+        "discount_rate": {
+          "p_value": 0.03823209233053316,
+          "signal_strength": 1.4175719336644794,
+          "significance_level": "Significant",
+          "significant": false
+        },
+        "repeat_rate_within_window": {
+          "p_value": 0.755911852708764,
+          "signal_strength": 0.12152884486139567,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "returning_customer_share": {
+          "p_value": 1.0,
+          "signal_strength": -0.0,
+          "significance_level": "Not Significant",
+          "significant": false
+        }
+      },
+      "L7": {
+        "aov": {
+          "p_value": 0.9907689201747869,
+          "signal_strength": 0.004027625429251929,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "discount_rate": {
+          "p_value": 0.7607536013282857,
+          "signal_strength": 0.11875598306010089,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "repeat_rate_within_window": {
+          "p_value": 0.6877151331151827,
+          "signal_strength": 0.1625914189383226,
+          "significance_level": "Not Significant",
+          "significant": false
+        },
+        "returning_customer_share": {
+          "p_value": 1.0,
+          "signal_strength": -0.0,
+          "significance_level": "Not Significant",
+          "significant": false
+        }
+      },
+      "L90": {
+        "aov": {
+          "p_value": 0.000755789572844322,
+          "signal_strength": 3.121599104066809,
+          "significance_level": "Highly Significant",
+          "significant": true
+        },
+        "discount_rate": {
+          "p_value": 0.044134080221568235,
+          "signal_strength": 1.3552259199174694,
+          "significance_level": "Significant",
+          "significant": false
+        },
+        "repeat_rate_within_window": {
+          "p_value": 0.03253948091670756,
+          "signal_strength": 1.4875893793895614,
+          "significance_level": "Significant",
+          "significant": false
+        },
+        "returning_customer_share": {
+          "p_value": 1.0,
+          "signal_strength": -0.0,
+          "significance_level": "Not Significant",
+          "significant": false
+        }
+      }
+    },
+    "statistical_power_analysis": {
+      "best_performing_window": "L90",
+      "insights": [
+        "\u2705 Statistical power improves with longer windows (expected)",
+        "\ud83c\udfaf Best statistical signals in L90 window"
+      ],
+      "power_trend": "Improving with longer windows"
+    }
+  },
+  "validation_timestamp": "<TIMESTAMP>",
+  "window_analysis": {
+    "L28": {
+      "aov": 110.23643881763182,
+      "delta_analysis": {
+        "aov_change": 1.1823131381971346,
+        "orders_change": 13.76597836774828,
+        "repeat_rate_change": 19.7015570934256
+      },
+      "discount_rate": 2.642769918325696,
+      "orders": 1157,
+      "repeat_rate": 18.907563025210084,
+      "returning_share": 100.0,
+      "revenue": 127543.55971200002,
+      "validation_flags": [
+        "\ud83d\udcca L28: High returning customer share (100.0%)"
+      ]
+    },
+    "L56": {
+      "aov": 109.63385911315547,
+      "delta_analysis": {
+        "aov_change": 5.661669558749352,
+        "orders_change": 0.5550416281221091,
+        "repeat_rate_change": -1.5798698930676331
+      },
+      "discount_rate": 2.5194380299654533,
+      "orders": 2174,
+      "repeat_rate": 33.39960238568588,
+      "returning_share": 100.0,
+      "revenue": 238344.009712,
+      "validation_flags": [
+        "\ud83d\udcca L56: High returning customer share (100.0%)"
+      ]
+    },
+    "L7": {
+      "aov": 113.49099986153846,
+      "delta_analysis": {
+        "aov_change": 0.07177768884934485,
+        "orders_change": -12.751677852348994,
+        "repeat_rate_change": 15.91836734693878
+      },
+      "discount_rate": 2.5886214619137,
+      "orders": 260,
+      "repeat_rate": 5.714285714285714,
+      "returning_share": 100.0,
+      "revenue": 29507.659964,
+      "validation_flags": [
+        "\ud83d\udcca L7: High returning customer share (100.0%)"
+      ]
+    },
+    "L90": {
+      "aov": 107.7461859112242,
+      "delta_analysis": {
+        "aov_change": 6.362873664133859,
+        "orders_change": 13.07544757033248,
+        "repeat_rate_change": 7.44965520586595
+      },
+      "discount_rate": 2.4917527454863144,
+      "orders": 3537,
+      "repeat_rate": 49.47735191637631,
+      "returning_share": 100.0,
+      "revenue": 381098.259568,
+      "validation_flags": [
+        "\ud83d\udcca L90: High returning customer share (100.0%)"
+      ]
+    },
+    "pattern_validation": {
+      "aov_trend": "Stable",
+      "insights": [
+        "\u2705 Repeat rates increase with longer windows (more opportunity)",
+        "\u2705 AOV stable across windows (CV: 1.9%)",
+        "\u2705 Order volume increases with longer windows"
+      ],
+      "order_volume_trend": "Increasing (Expected)",
+      "repeat_rate_trend": "Increasing (Expected)"
+    }
+  }
+}

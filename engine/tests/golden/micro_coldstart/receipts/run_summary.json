@@ -1,0 +1,658 @@
+{
+  "actions": [],
+  "aligned": {
+    "L28": {
+      "aov": 76.83585365853658,
+      "delta": {
+        "aov": 0.2661598218953858,
+        "discount_rate": -0.22376579131132412,
+        "net_sales": 0.08151151453564214,
+        "new_customer_rate": 0.0,
+        "orders": -0.14583333333333334,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.044504094631469676,
+      "meta": {
+        "identified_prior": 48,
+        "identified_recent": 41,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09310501709671676
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09030971948436166
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 3150.27,
+      "new_customer_rate": 1.0,
+      "orders": 41,
+      "p": {
+        "aov": 0.18794009063228329,
+        "discount_rate": 0.12677927719228277,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 60.68416666666667,
+        "discount_rate": 0.05733333333331477,
+        "net_sales": 2912.84,
+        "new_customer_rate": 1.0,
+        "orders": 48,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.4698502265807082,
+        "discount_rate": 0.4698502265807082,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate": null,
+      "repeat_rate_within_window": 0.0,
+      "repeat_share": null,
+      "returning_customer_share": 0.0,
+      "returning_rate": null,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L56": {
+      "aov": 68.12483146067416,
+      "delta": {
+        "aov": -0.22715415674091097,
+        "discount_rate": 0.015299836602537423,
+        "net_sales": -0.3189774252469413,
+        "new_customer_rate": 0.0,
+        "orders": -0.1188118811881188,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.050710818850782734,
+      "meta": {
+        "identified_prior": 101,
+        "identified_recent": 89,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": -4.0862621560596117e-16,
+          "total_minus_shipping_taxes": 0.08835049159716138
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 1.500046513708193e-16,
+          "total_minus_shipping_taxes": 0.09165263668315442
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 6063.110000000001,
+      "new_customer_rate": 1.0,
+      "orders": 89,
+      "p": {
+        "aov": 0.02567309537233469,
+        "discount_rate": 0.3703136277281104,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 88.1480207920792,
+        "discount_rate": 0.04994664336840099,
+        "net_sales": 8902.950099999998,
+        "new_customer_rate": 1.0,
+        "orders": 101,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.12836547686167346,
+        "discount_rate": 0.9257840693202759,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate_within_window": 0.0,
+      "returning_customer_share": 0.0,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L7": {
+      "aov": 66.306,
+      "delta": {
+        "aov": -0.27370381188841836,
+        "discount_rate": 1.235009662216871,
+        "net_sales": 0.2104936468526361,
+        "new_customer_rate": null,
+        "orders": 0.6666666666666666,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.06435559736588489,
+      "meta": {
+        "identified_prior": 9,
+        "identified_recent": 15,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.10455917433425828
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": -1.143052290105632e-16,
+          "total_minus_shipping_taxes": 0.09130395439326741
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 994.5899999999999,
+      "new_customer_rate": 1.0,
+      "orders": 15,
+      "p": {
+        "aov": 0.42970572807469376,
+        "discount_rate": 0.9354944544200394,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "prior": {
+        "aov": 91.29333333333334,
+        "discount_rate": 0.028794326241100714,
+        "net_sales": 821.64,
+        "new_customer_rate": null,
+        "orders": 9,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "q": {
+        "aov": 1.0,
+        "discount_rate": 1.0,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate": null,
+      "repeat_rate_within_window": 0.0,
+      "repeat_share": null,
+      "returning_customer_share": 0.0,
+      "returning_rate": null,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L90": {
+      "aov": 73.3375,
+      "delta": {
+        "aov": -0.2454458635568686,
+        "discount_rate": -0.3281597472157201,
+        "net_sales": -0.13144847603668336,
+        "new_customer_rate": 0.0,
+        "orders": 0.1510791366906475,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.04802855752068408,
+      "meta": {
+        "identified_prior": 139,
+        "identified_recent": 160,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.06513386524974205
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09052071058462594
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 11734.0,
+      "new_customer_rate": 1.0,
+      "orders": 160,
+      "p": {
+        "aov": 0.002978857012467098,
+        "discount_rate": 0.16134924699270545,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 97.19315879136691,
+        "discount_rate": 0.07148806181475627,
+        "net_sales": 13509.849072,
+        "new_customer_rate": 1.0,
+        "orders": 139,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.01489428506233549,
+        "discount_rate": 0.40337311748176363,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate_within_window": 0.0,
+      "returning_customer_share": 0.0,
+      "sig": {
+        "aov": true,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "anchor": "<TIMESTAMP>",
+    "aura_score": {
+      "analysis_method": "multi_window",
+      "components": {
+        "customer_health": 0,
+        "growth_health": 65,
+        "ltv_health": 35.754793371471635,
+        "margin_health": 57.61541615514811,
+        "revenue_health": 50.0
+      },
+      "overall": 40,
+      "tier": "concerning",
+      "trend": "0",
+      "windows_analyzed": [
+        "L7",
+        "L28",
+        "L56",
+        "L90"
+      ]
+    },
+    "direction": {
+      "discount_rate": "down"
+    },
+    "meta": {
+      "metric_version": "v2_repeat_metrics",
+      "seasonal_adjusted": true,
+      "seasonal_method": null,
+      "seasonal_period": 7
+    }
+  },
+  "aligned_order": {
+    "L28": {
+      "aov": 76.83585365853658,
+      "delta": {
+        "aov": 0.2661598218953858,
+        "discount_rate": -0.22376579131132412,
+        "net_sales": 0.08151151453564214,
+        "new_customer_rate": 0.0,
+        "orders": -0.14583333333333334,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.044504094631469676,
+      "meta": {
+        "identified_prior": 48,
+        "identified_recent": 41,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09310501709671676
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09030971948436166
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 3150.27,
+      "new_customer_rate": 1.0,
+      "orders": 41,
+      "p": {
+        "aov": 0.18794009063228329,
+        "discount_rate": 0.12677927719228277,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 60.68416666666667,
+        "discount_rate": 0.05733333333331477,
+        "net_sales": 2912.84,
+        "new_customer_rate": 1.0,
+        "orders": 48,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.4698502265807082,
+        "discount_rate": 0.4698502265807082,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate": null,
+      "repeat_rate_within_window": 0.0,
+      "repeat_share": null,
+      "returning_customer_share": 0.0,
+      "returning_rate": null,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L56": {
+      "aov": 68.12483146067416,
+      "delta": {
+        "aov": -0.22715415674091097,
+        "discount_rate": 0.015299836602537423,
+        "net_sales": -0.3189774252469413,
+        "new_customer_rate": 0.0,
+        "orders": -0.1188118811881188,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.050710818850782734,
+      "meta": {
+        "identified_prior": 101,
+        "identified_recent": 89,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": -4.0862621560596117e-16,
+          "total_minus_shipping_taxes": 0.08835049159716138
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 1.500046513708193e-16,
+          "total_minus_shipping_taxes": 0.09165263668315442
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 6063.110000000001,
+      "new_customer_rate": 1.0,
+      "orders": 89,
+      "p": {
+        "aov": 0.02567309537233469,
+        "discount_rate": 0.3703136277281104,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 88.1480207920792,
+        "discount_rate": 0.04994664336840099,
+        "net_sales": 8902.950099999998,
+        "new_customer_rate": 1.0,
+        "orders": 101,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.12836547686167346,
+        "discount_rate": 0.9257840693202759,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate_within_window": 0.0,
+      "returning_customer_share": 0.0,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L7": {
+      "aov": 66.306,
+      "delta": {
+        "aov": -0.27370381188841836,
+        "discount_rate": 1.235009662216871,
+        "net_sales": 0.2104936468526361,
+        "new_customer_rate": null,
+        "orders": 0.6666666666666666,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.06435559736588489,
+      "meta": {
+        "identified_prior": 9,
+        "identified_recent": 15,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.10455917433425828
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": -1.143052290105632e-16,
+          "total_minus_shipping_taxes": 0.09130395439326741
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 994.5899999999999,
+      "new_customer_rate": 1.0,
+      "orders": 15,
+      "p": {
+        "aov": 0.42970572807469376,
+        "discount_rate": 0.9354944544200394,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "prior": {
+        "aov": 91.29333333333334,
+        "discount_rate": 0.028794326241100714,
+        "net_sales": 821.64,
+        "new_customer_rate": null,
+        "orders": 9,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "q": {
+        "aov": 1.0,
+        "discount_rate": 1.0,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate": null,
+      "repeat_rate_within_window": 0.0,
+      "repeat_share": null,
+      "returning_customer_share": 0.0,
+      "returning_rate": null,
+      "sig": {
+        "aov": false,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "L90": {
+      "aov": 73.3375,
+      "delta": {
+        "aov": -0.2454458635568686,
+        "discount_rate": -0.3281597472157201,
+        "net_sales": -0.13144847603668336,
+        "new_customer_rate": 0.0,
+        "orders": 0.1510791366906475,
+        "repeat_rate_within_window": null,
+        "returning_customer_share": null
+      },
+      "discount_rate": 0.04802855752068408,
+      "meta": {
+        "identified_prior": 139,
+        "identified_recent": 160,
+        "prior_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.06513386524974205
+        },
+        "prior_netsales_consistency_flag": true,
+        "prior_netsales_method": "order_net",
+        "recent_netsales_alt_diffs": {
+          "line_items_aggregate": 1.0,
+          "subtotal_minus_discount": 0.0,
+          "total_minus_shipping_taxes": 0.09052071058462594
+        },
+        "recent_netsales_consistency_flag": true,
+        "recent_netsales_method": "order_net"
+      },
+      "net_sales": 11734.0,
+      "new_customer_rate": 1.0,
+      "orders": 160,
+      "p": {
+        "aov": 0.002978857012467098,
+        "discount_rate": 0.16134924699270545,
+        "new_customer_rate": null,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "prior": {
+        "aov": 97.19315879136691,
+        "discount_rate": 0.07148806181475627,
+        "net_sales": 13509.849072,
+        "new_customer_rate": 1.0,
+        "orders": 139,
+        "repeat_rate_within_window": 0.0,
+        "returning_customer_share": 0.0
+      },
+      "q": {
+        "aov": 0.01489428506233549,
+        "discount_rate": 0.40337311748176363,
+        "new_customer_rate": 1.0,
+        "repeat_rate_within_window": 1.0,
+        "returning_customer_share": 1.0
+      },
+      "repeat_rate_within_window": 0.0,
+      "returning_customer_share": 0.0,
+      "sig": {
+        "aov": true,
+        "discount_rate": false,
+        "new_customer_rate": false,
+        "repeat_rate_within_window": false,
+        "returning_customer_share": false
+      }
+    },
+    "anchor": "<TIMESTAMP>",
+    "aura_score": {
+      "analysis_method": "multi_window",
+      "components": {
+        "customer_health": 0,
+        "growth_health": 65,
+        "ltv_health": 35.754793371471635,
+        "margin_health": 57.61541615514811,
+        "revenue_health": 50.0
+      },
+      "overall": 40,
+      "tier": "concerning",
+      "trend": "0",
+      "windows_analyzed": [
+        "L7",
+        "L28",
+        "L56",
+        "L90"
+      ]
+    },
+    "direction": {
+      "discount_rate": "down"
+    },
+    "meta": {
+      "metric_version": "v2_repeat_metrics",
+      "seasonal_adjusted": true,
+      "seasonal_method": null,
+      "seasonal_period": 7
+    }
+  },
+  "aura_score": {
+    "analysis_method": "multi_window",
+    "components": {
+      "customer_health": 0,
+      "growth_health": 65,
+      "ltv_health": 35.754793371471635,
+      "margin_health": 57.61541615514811,
+      "revenue_health": 50.0
+    },
+    "overall": 40,
+    "tier": "concerning",
+    "trend": "0",
+    "windows_analyzed": [
+      "L7",
+      "L28",
+      "L56",
+      "L90"
+    ]
+  },
+  "backlog": [],
+  "charts_abs": [
+    "<RUN_ROOT>/charts/repurchase_timeline.png",
+    "<RUN_ROOT>/charts/product_velocity.png",
+    "<RUN_ROOT>/charts/customer_segments.png",
+    "<RUN_ROOT>/charts/cohort_retention.png",
+    "<RUN_ROOT>/charts/first_to_second.png"
+  ],
+  "charts_map": {
+    "cohort_retention": "charts/cohort_retention.png",
+    "customer_segments": "charts/customer_segments.png",
+    "first_to_second": "charts/first_to_second.png",
+    "product_velocity": "charts/product_velocity.png",
+    "repurchase_timeline": "charts/repurchase_timeline.png"
+  },
+  "charts_rel": [
+    "charts/repurchase_timeline.png",
+    "charts/product_velocity.png",
+    "charts/customer_segments.png",
+    "charts/cohort_retention.png",
+    "charts/first_to_second.png"
+  ],
+  "data_quality": {
+    "customer_key_coverage": 1.0,
+    "has_line_items": true,
+    "has_sku": true,
+    "order_key_coverage": 1.0,
+    "product_coverage": 1.0
+  },
+  "pending_actions": [],
+  "performance_summary": {},
+  "pilot_actions": [],
+  "segments": [],
+  "watchlist": []
+}

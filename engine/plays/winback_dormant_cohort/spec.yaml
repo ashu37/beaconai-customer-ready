@@ -1,0 +1,19 @@
+# Play Library spec — winback_dormant_cohort (S6-T2 Tier-B builder).
+#
+# Wave 1 of S8-T4 Play Library refactor. Thin metadata pointing to the
+# existing audience + measurement modules; no behavior moves in wave 1.
+# Identity-verified at engine startup when ENGINE_V2_PLAY_LIBRARY_WAVE1 is
+# ON (see plays/_registry.py::assert_identity_with_legacy).
+play_id: winback_dormant_cohort
+display_name: "Dormant repeat-buyer winback"
+audience_builder_ref: src.audience_builders.winback_dormant_cohort_candidates
+measurement_builder_ref: src.measurement_builder.build_prior_anchored_play_card
+prior_play_id: winback_21_45
+prior_keys:
+  - base_rate
+would_be_measured_by: LAPSED_REACTIVATION_IN_30D
+evidence_class_default: directional
+vertical_applicable:
+  - beauty
+  - supplements
+  - mixed

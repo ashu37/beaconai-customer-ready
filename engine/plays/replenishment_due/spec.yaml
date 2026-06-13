@@ -1,0 +1,25 @@
+# Play Library spec — replenishment_due (S6-T3 Tier-B builder).
+#
+# Wave 1 of S8-T4 Play Library refactor. Thin metadata pointing to the
+# existing audience + measurement modules; no behavior moves in wave 1.
+# Identity-verified at engine startup when ENGINE_V2_PLAY_LIBRARY_WAVE1 is
+# ON (see plays/_registry.py::assert_identity_with_legacy).
+#
+# Honest-dormancy: this play is dormant on the Beauty pinned fixture by
+# design (KI-NEW-G RESOLVED-AS-DOCUMENTED 2026-05-23). Migration preserves
+# the dormancy at both flag states; the wave-1 acceptance pin asserts
+# zero audience on Beauty post-migration.
+play_id: replenishment_due
+display_name: "Replenishment-due cadence nudge"
+audience_builder_ref: src.audience_builders.replenishment_due_candidates
+measurement_builder_ref: src.measurement_builder.build_prior_anchored_play_card
+prior_play_id: replenishment_due
+prior_keys:
+  - bundle_value
+would_be_measured_by: REPLENISHMENT_DUE_IN_NEXT_CADENCE_WINDOW
+evidence_class_default: directional
+vertical_applicable:
+  - beauty
+  - supplements
+  - mixed
+honest_dormancy_on_beauty: true

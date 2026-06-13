@@ -1,0 +1,22 @@
+# Play Library spec — discount_dependency_hygiene (S7-T1 Tier-B builder).
+#
+# Wave 1 of S8-T4 Play Library refactor. Thin metadata pointing to the
+# existing audience + measurement modules; no behavior moves in wave 1.
+# Identity-verified at engine startup when ENGINE_V2_PLAY_LIBRARY_WAVE1 is
+# ON (see plays/_registry.py::assert_identity_with_legacy).
+#
+# Beauty-only activation by design (Memo-4 DS REJECT for supplements);
+# supplements routes to PRIOR_UNVALIDATED Considered via the S7.5-T3
+# refusal path (no supplements prior block authored).
+play_id: discount_dependency_hygiene
+display_name: "Discount-dependency full-price re-engagement"
+audience_builder_ref: src.audience_builders.discount_dependency_hygiene_candidates
+measurement_builder_ref: src.measurement_builder.build_prior_anchored_play_card
+prior_play_id: discount_dependency_hygiene
+prior_keys:
+  - base_rate
+would_be_measured_by: DISCOUNT_DEPENDENCY_HYGIENE_FULL_PRICE_CONVERSION_IN_14D
+evidence_class_default: directional
+vertical_applicable:
+  - beauty
+  - mixed

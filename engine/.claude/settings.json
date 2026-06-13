@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m src.main --orders data/shopify_orders_small.csv --brand test_small --out /tmp/beaconai_smoke_small)",
+      "Bash(python -m src.main --orders data/shopify_orders_mid.csv --brand test_mid --out /tmp/beaconai_smoke_mid)",
+      "Bash(ENABLE_COHORT_POOLING=false ENABLE_REPEAT_RATE_BIAS_CORRECTION=false python -m pytest tests/test_golden_diff.py -v)"
+    ]
+  }
+}

@@ -1,0 +1,253 @@
+{
+  "run_id": "eba12c2e-994c-467a-a37f-58282abe8870",
+  "store_id": "m6_smoke",
+  "anchor_date": "2024-12-31T06:26:36",
+  "schema_version": "1.0.0",
+  "data_window": {
+    "primary_window": "L28",
+    "available_windows": [
+      "L7",
+      "L28",
+      "L56",
+      "L90"
+    ],
+    "anchor_quality": null
+  },
+  "cold_start": false,
+  "data_quality_flags": [],
+  "abstain": {
+    "state": "publish",
+    "reason": null
+  },
+  "state_of_store": [
+    {
+      "text": "AOV (L28): $110 (1.2% vs prior)",
+      "supporting_metric": "aov",
+      "change_magnitude": 0.011823131381971346,
+      "classification": "moved"
+    },
+    {
+      "text": "Repeat rate (L28): 18.9% (19.7% vs prior)",
+      "supporting_metric": "repeat_rate_within_window",
+      "change_magnitude": 0.19701557093425598,
+      "classification": "moved"
+    },
+    {
+      "text": "Orders (L28): 1157 (13.8% vs prior)",
+      "supporting_metric": "orders",
+      "change_magnitude": 0.1376597836774828,
+      "classification": "moved"
+    }
+  ],
+  "recommendations": [
+    {
+      "play_id": "journey_optimization",
+      "evidence_class": "targeting",
+      "confidence_label": "High",
+      "recommendation_text": "Fix conversion gaps in customer journey",
+      "why_now": null,
+      "audience": {
+        "id": null,
+        "definition": null,
+        "size": 234,
+        "fraction_of_base": null,
+        "overlap_with": []
+      },
+      "measurement": {
+        "metric": "conversion",
+        "observed_effect": 0.7623822762958994,
+        "n": 2660,
+        "primary_window": "L28",
+        "consistency_across_windows": null,
+        "p_internal": 1e-10,
+        "ci_internal": [
+          0.7181338533090675,
+          0.8066306992827312
+        ]
+      },
+      "revenue_range": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "source": null,
+        "drivers": [
+          {
+            "name": "audience_size",
+            "source": "store_observed",
+            "value": 234
+          },
+          {
+            "name": "aov",
+            "source": "store_observed",
+            "value": 110.24,
+            "window": "L28"
+          },
+          {
+            "name": "base_rate",
+            "source": "vertical_prior",
+            "value": 0.35,
+            "source_class": "expert",
+            "applies_to": {
+              "vertical": "beauty"
+            }
+          },
+          {
+            "name": "suppression_reason",
+            "source": "sizing_v2",
+            "value": "targeting_non_causal_prior",
+            "reason": "targeting_non_causal_prior"
+          }
+        ],
+        "suppressed": true
+      },
+      "inventory": null,
+      "conflicts": null,
+      "launch_window": null,
+      "klaviyo_brief_inputs": {},
+      "receipts_ref": null
+    },
+    {
+      "play_id": "bestseller_amplify",
+      "evidence_class": "targeting",
+      "confidence_label": "High",
+      "recommendation_text": "Promote the current top seller with a simple bundle and hero placement.",
+      "why_now": null,
+      "audience": {
+        "id": null,
+        "definition": null,
+        "size": 2163,
+        "fraction_of_base": null,
+        "overlap_with": []
+      },
+      "measurement": {
+        "metric": "aov",
+        "observed_effect": 0.06493731539224341,
+        "n": 6661,
+        "primary_window": "L90",
+        "consistency_across_windows": null,
+        "p_internal": 0.0005929694181255115,
+        "ci_internal": null
+      },
+      "revenue_range": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "source": null,
+        "drivers": [
+          {
+            "name": "audience_size",
+            "source": "store_observed",
+            "value": 2163
+          },
+          {
+            "name": "aov",
+            "source": "store_observed",
+            "value": 110.24,
+            "window": "L28"
+          },
+          {
+            "name": "base_rate",
+            "source": "vertical_prior",
+            "value": 0.18,
+            "source_class": "expert",
+            "applies_to": {
+              "vertical": "beauty"
+            }
+          },
+          {
+            "name": "suppression_reason",
+            "source": "sizing_v2",
+            "value": "targeting_non_causal_prior",
+            "reason": "targeting_non_causal_prior"
+          }
+        ],
+        "suppressed": true
+      },
+      "inventory": null,
+      "conflicts": null,
+      "launch_window": null,
+      "klaviyo_brief_inputs": {},
+      "receipts_ref": null
+    },
+    {
+      "play_id": "category_expansion",
+      "evidence_class": "targeting",
+      "confidence_label": "High",
+      "recommendation_text": "Cross-sell based on purchase patterns",
+      "why_now": null,
+      "audience": {
+        "id": null,
+        "definition": null,
+        "size": 2750,
+        "fraction_of_base": null,
+        "overlap_with": []
+      },
+      "measurement": {
+        "metric": "conversion",
+        "observed_effect": 0.4,
+        "n": 2750,
+        "primary_window": "L28",
+        "consistency_across_windows": null,
+        "p_internal": 0.04,
+        "ci_internal": [
+          0.3,
+          0.5
+        ]
+      },
+      "revenue_range": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "source": null,
+        "drivers": [
+          {
+            "name": "audience_size",
+            "source": "store_observed",
+            "value": 2750
+          },
+          {
+            "name": "aov",
+            "source": "store_observed",
+            "value": 110.24,
+            "window": "L28"
+          },
+          {
+            "name": "base_rate",
+            "source": "vertical_prior",
+            "value": 0.45,
+            "source_class": "expert",
+            "applies_to": {
+              "vertical": "beauty"
+            }
+          },
+          {
+            "name": "suppression_reason",
+            "source": "sizing_v2",
+            "value": "targeting_non_causal_prior",
+            "reason": "targeting_non_causal_prior"
+          }
+        ],
+        "suppressed": true
+      },
+      "inventory": null,
+      "conflicts": null,
+      "launch_window": null,
+      "klaviyo_brief_inputs": {},
+      "receipts_ref": null
+    }
+  ],
+  "considered": [],
+  "watching": [],
+  "scale": {
+    "monthly_revenue": 127543.55971200002,
+    "customer_base_est": 952,
+    "materiality_floor": null
+  },
+  "briefing_meta": {
+    "confidence_mode": "learning",
+    "vertical": "beauty",
+    "subvertical": "general",
+    "stage": null,
+    "seasonality_tag": null
+  }
+}

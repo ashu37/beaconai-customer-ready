@@ -1,0 +1,84 @@
+# BeaconAI seasonality calendar (Sprint 6.5 Ticket T3).
+#
+# Named calendar windows consumed by
+# ``src/profile/seasonality.py::lookup_active_seasonality``. A window
+# matches when the run_date falls inside [start_md, end_md] (MM-DD
+# inclusive) and the (vertical, subvertical) is listed under ``applies_to``.
+#
+# Founder Q3 (2026-05-17): accept exactly these 5 windows verbatim;
+# cell-by-cell validation lands post-beta. Every window is tagged
+# ``validation_status: heuristic_unvalidated`` per Sprint 7.5 discipline.
+#
+# CRITICAL — Part III §8 discipline: ``expected_lift_range`` is an
+# OBSERVATIONAL ANNOTATION ONLY. It is NEVER multiplied into a revenue
+# estimate, never used to adjust a p-value, never used as a slate-ordering
+# multiplier. The seasonality lookup is descriptive (which window are we
+# in?) — consumers do not scale revenue or significance by the range.
+
+schema_version: "1.0.0"
+last_reviewed: "2026-05-17"
+validation_status: heuristic_unvalidated
+
+windows:
+  - name: BFCM_tail
+    start_md: "11-20"
+    end_md: "12-05"
+    valid_for_year: 2026
+    applies_to:
+      - {vertical: beauty, subvertical: null}
+      - {vertical: supplements, subvertical: null}
+    expected_lift_direction: "+"
+    expected_lift_range: [0.20, 0.60]
+    source_artifact: "config/priors_sources/seasonality/BFCM_tail.md"
+    validation_status: heuristic_unvalidated
+    notes: "BFCM tail-week + cyber-week residual demand; both verticals."
+
+  - name: January_resolution
+    start_md: "01-01"
+    end_md: "01-21"
+    applies_to:
+      - {vertical: supplements, subvertical: null}
+      - {vertical: supplements, subvertical: multivitamin}
+      - {vertical: supplements, subvertical: functional}
+      - {vertical: beauty, subvertical: skincare}
+    expected_lift_direction: "+"
+    expected_lift_range: [0.10, 0.30]
+    source_artifact: "config/priors_sources/seasonality/January_resolution.md"
+    validation_status: heuristic_unvalidated
+    notes: "New-year resolution window; supplements primary, beauty/skincare minor."
+
+  - name: Mothers_Day
+    start_md: "05-01"
+    end_md: "05-12"
+    applies_to:
+      - {vertical: beauty, subvertical: null}
+      - {vertical: beauty, subvertical: skincare}
+      - {vertical: beauty, subvertical: cosmetics}
+    expected_lift_direction: "+"
+    expected_lift_range: [0.05, 0.20]
+    source_artifact: "config/priors_sources/seasonality/Mothers_Day.md"
+    validation_status: heuristic_unvalidated
+    notes: "Mother's Day gifting; beauty leading."
+
+  - name: Back_to_school
+    start_md: "08-15"
+    end_md: "09-05"
+    applies_to:
+      - {vertical: beauty, subvertical: personal_care}
+      - {vertical: supplements, subvertical: multivitamin}
+    expected_lift_direction: "+"
+    expected_lift_range: [0.05, 0.15]
+    source_artifact: "config/priors_sources/seasonality/Back_to_school.md"
+    validation_status: heuristic_unvalidated
+    notes: "Back-to-school personal-care + family-multivitamin demand."
+
+  - name: Summer_skin
+    start_md: "06-01"
+    end_md: "08-01"
+    applies_to:
+      - {vertical: beauty, subvertical: skincare}
+    expected_lift_direction: "+"
+    expected_lift_range: [0.05, 0.15]
+    source_artifact: "config/priors_sources/seasonality/Summer_skin.md"
+    validation_status: heuristic_unvalidated
+    notes: "Summer SPF / sun-care demand on skincare."

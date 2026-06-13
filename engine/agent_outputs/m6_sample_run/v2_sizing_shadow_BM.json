@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0.0",
+  "store_id": "m6_bm",
+  "vertical": "beauty",
+  "subvertical": null,
+  "aov": 132.59252370675108,
+  "cold_start": false,
+  "records": [
+    {
+      "play_id": "journey_optimization",
+      "evidence_class": "targeting",
+      "audience_size": 188,
+      "aov": 132.59252370675108,
+      "cold_start": false,
+      "legacy_expected_dollars": 4336.6577701073165,
+      "v2_p10": null,
+      "v2_p50": null,
+      "v2_p90": null,
+      "v2_source": null,
+      "v2_suppressed": true,
+      "ratio_v2_over_legacy": null
+    },
+    {
+      "play_id": "category_expansion",
+      "evidence_class": "targeting",
+      "audience_size": 2440,
+      "aov": 132.59252370675108,
+      "cold_start": false,
+      "legacy_expected_dollars": 58150.85226362423,
+      "v2_p10": null,
+      "v2_p50": null,
+      "v2_p90": null,
+      "v2_source": null,
+      "v2_suppressed": true,
+      "ratio_v2_over_legacy": null
+    },
+    {
+      "play_id": "bestseller_amplify",
+      "evidence_class": "targeting",
+      "audience_size": 2002,
+      "aov": 132.59252370675108,
+      "cold_start": false,
+      "legacy_expected_dollars": 20091.625762499996,
+      "v2_p10": null,
+      "v2_p50": null,
+      "v2_p90": null,
+      "v2_source": null,
+      "v2_suppressed": true,
+      "ratio_v2_over_legacy": null
+    }
+  ]
+}

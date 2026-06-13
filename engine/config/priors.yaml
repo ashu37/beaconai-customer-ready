@@ -1,0 +1,1122 @@
+# BeaconAI per-vertical / per-stage priors registry — Milestone 2 (T2.4).
+#
+# This file extracts the per-vertical constants currently inlined in
+# `src/action_engine.py` (e.g., `bestseller_amplify` base rate of 0.18 for
+# beauty, `retention_mastery` churn_reduction of 0.075 for mixed) into a
+# single, dated, source-classed config artifact.
+#
+# *** CRITICAL: M2 IS CONFIG-ONLY. ***
+# This YAML is NOT loaded at runtime in M2. The M0 golden tests and the
+# legacy CSV -> HTML workflow continue to read inline constants from
+# `action_engine.py`. M6 will introduce `src/priors_loader.py` and switch
+# the engine to read from this file. M10 will delete the inline constants.
+# Until then, this file is for schema validation, traceability, and review.
+#
+# Schema per prior entry:
+#   name:           short prior identifier; matches keys in
+#                   `PlayDef.prior_keys` in `src/play_registry.py`.
+#   value:          point estimate (the legacy inline constant).
+#   range_p10:      conservative low bound (subjective P10 estimate).
+#   range_p90:      conservative high bound (subjective P90 estimate).
+#   source_class:   one of {observational, causal, expert}.
+#                     - observational: derived from this engine's CSV-only
+#                       observational analyses (no randomized counterfactual).
+#                     - causal: derived from a randomized or quasi-experimental
+#                       study (none today; reserved for the future).
+#                     - expert: SME judgement / industry benchmark / heuristic.
+#                       This is the conservative fallback when uncertain.
+#   last_updated:   ISO date the value was set or last reviewed.
+#   applies_to:     scope object: { vertical, subvertical?, business_stage? }.
+#                   Empty / "*" means "all".
+#
+# Source-class assignment rule (from M2 instructions):
+# When in doubt about source_class for a vertical, prefer the more
+# conservative class. Today, every value here is a hand-picked constant
+# that was tuned by the engine maintainers from internal experience and
+# small CSV experiments without a randomized control. We therefore label
+# every entry "expert" by default, and explicitly note where a value has
+# at least some observational support.
+#
+# Conservative ordering: expert > observational > causal (more conservative
+# = less specific / less rigorous evidence). When uncertain, use expert.
+
+schema_version: "1.0.0"
+last_reviewed: "2026-05-17"
+
+# ---------------------------------------------------------------------------
+# Sprint 7.5 Ticket T1.5 — Priors YAML audit pass (2026-05-17).
+#
+# Every PriorEntry below now carries an authored ``validation_status`` field
+# (closed-enum strict per S7.5-T1; unknown values raise at load time). The
+# audit walked all 84 entries:
+#
+#   - 79 entries set to ``heuristic_unvalidated`` (post-T2). This is the
+#     honest baseline: today's values are engineer-typed constants
+#     without a reproducible source artifact in the repo.
+#   - 2 entries set to ``placeholder`` (intentionally absent in production
+#     consumption posture): first_to_second_purchase.second_purchase_lift,
+#     at_risk_repeat_buyer_rescue.base_rate. Both have ``Placeholder`` notes
+#     marking the intent.
+#   - 0 entries promoted to ``validated_internal``: the 8 entries previously
+#     tagged ``source: internal_csv_observation_v1`` were audited; no
+#     reproducible analysis script / notebook / memo was found in
+#     scripts/, tools/, analysis/, docs/, or agent_outputs/ that produced
+#     those exact values. They stay ``heuristic_unvalidated``. (Founder Q3
+#     pre-answered: no internal CSV scripts known.) ``source: internal_*``
+#     YAML tags are descriptive labels, not validation provenance — the
+#     load-bearing field is ``validation_status``.
+#
+# Sprint 7.5 Ticket T2 — External benchmark memos (2026-05-17):
+#
+#   - 3 entries promoted to ``validated_external`` with source_artifact
+#     pointers under config/priors_sources/:
+#       - winback_21_45.base_rate (vertical: beauty) → Klaviyo Health &
+#         Beauty 2026 benchmarks; effective_n=30 (Part III-1 default).
+#       - bestseller_amplify.bundle_value (vertical: beauty) → Shopify
+#         blog Beauty AOV range ($15-$90).
+#       - first_to_second_purchase.base_rate (vertical: "*") → bsandco
+#         2026 DTC RPR benchmarks; effective_n=156110.
+#     Per Part III-1 Step 4, ONLY base_rate / bundle_value priors were
+#     promoted — incrementality / *_lift / churn_reduction priors stay
+#     heuristic_unvalidated because external observational benchmarks
+#     cannot validate causal lift claims.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Sprint 4 Ticket G-3 — Supplements priors expansion + ``mixed`` semantics
+# (2026-05-10).
+#
+# This file's vertical scope is hard-locked at {beauty, supplements, mixed}
+# per founder decision D-8. Apparel, food/bev, home, wellness are refused
+# at the priors loader (``ConfigError``); they NEVER appear here. Top-level
+# vertical_mode-position keys outside the supported set raise at load time.
+#
+# ``mixed`` semantics, formalised by G-3:
+#
+#   - When an explicit ``applies_to.vertical: mixed`` entry is authored,
+#     it is the value used for ``vertical_mode=mixed`` lookups.
+#   - When NO explicit mixed entry exists for a (play, prior) pair, the
+#     priors loader (``src/priors_loader.py::resolve_mixed_prior``) blends
+#     the beauty + supplements entries 50/50 deterministically. It will
+#     NEVER silently default to beauty alone — if either side is missing,
+#     the resolver returns None and the caller suppresses the revenue
+#     range. Tests in ``tests/test_g3_supplements_priors.py`` pin this.
+#   - A wildcard ``vertical: "*"`` entry is the author's explicit
+#     "applies to every vertical" statement; it short-circuits the blend.
+#
+# Every supplements entry MUST carry a ``source`` field naming the basis
+# (industry report, internal observational analysis on this engine's
+# CSVs, or ``internal_heuristic_unvalidated`` for engineering-intuition
+# values that have no external citation). Source classes are the M2 set
+# {observational, causal, expert}; no entry may be ``causal`` without an
+# explicit external citation. G-3 introduces no causal priors.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Per-play priors. Keyed by play_id so `priors_loader.get_prior(play_id, ...)`
+# can look up by id directly. Each play lists its priors as an array.
+# ---------------------------------------------------------------------------
+
+plays:
+
+  # =========================================================================
+  # winback_21_45 — measured-eligible.
+  # =========================================================================
+  winback_21_45:
+    - name: base_rate
+      value: 0.08
+      range_p10: 0.04
+      range_p90: 0.14
+      source_class: observational
+      last_updated: "2026-05-17"
+      validation_status: validated_external
+      source_artifact: config/priors_sources/winback_21_45__base_rate__beauty.md
+      effective_n: 30
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.12
+      range_p10: 0.06
+      range_p90: 0.20
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_csv_observation_v1
+    - name: base_rate
+      value: 0.06
+      range_p10: 0.03
+      range_p90: 0.12
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_csv_observation_v1
+    - name: incrementality
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.90
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.85
+      range_p10: 0.65
+      range_p90: 0.95
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.65
+      range_p10: 0.50
+      range_p90: 0.85
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: orders_per_customer
+      value: 1.30
+      range_p10: 1.05
+      range_p90: 1.65
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_csv_observation_v1
+
+  # =========================================================================
+  # bestseller_amplify — targeting; requires inventory gate.
+  #
+  # Phase 6A Ticket A3: opted into the dict form (``metadata`` + ``priors``)
+  # so the Recommended Experiment slate (Ticket A4+) can read per-play
+  # eligibility metadata. The legacy list form is still supported by the
+  # loader for plays that have not opted in.
+  # =========================================================================
+  bestseller_amplify:
+    metadata:
+      audience_floor: 500
+      mechanism: "Email a curated bundle of the hero SKU plus complementary products to recent buyers."
+      vertical_applicability: [beauty, mixed]
+      would_be_measured_by: REPEAT_PURCHASE_IN_30D
+      audience_archetype: hero_sku_buyer
+    priors:
+      - name: base_rate
+        value: 0.18
+        range_p10: 0.10
+        range_p90: 0.28
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: beauty }
+      - name: base_rate
+        value: 0.14
+        range_p10: 0.08
+        range_p90: 0.22
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: supplements }
+        source: internal_heuristic_unvalidated
+      - name: base_rate
+        value: 0.15
+        range_p10: 0.08
+        range_p90: 0.24
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: mixed }
+        source: internal_heuristic_unvalidated
+      - name: incrementality
+        value: 0.85
+        range_p10: 0.65
+        range_p90: 0.95
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: beauty }
+      - name: incrementality
+        value: 0.70
+        range_p10: 0.55
+        range_p90: 0.85
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: supplements }
+        source: internal_heuristic_unvalidated
+      - name: incrementality
+        value: 0.75
+        range_p10: 0.55
+        range_p90: 0.90
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: mixed }
+        source: internal_heuristic_unvalidated
+      - name: bundle_value
+        value: 45.0
+        range_p10: 25.0
+        range_p90: 75.0
+        source_class: expert
+        last_updated: "2026-05-17"
+        validation_status: validated_external
+        source_artifact: config/priors_sources/bestseller_amplify__bundle_value__beauty.md
+        applies_to: { vertical: beauty }
+      - name: bundle_value
+        value: 35.0
+        range_p10: 20.0
+        range_p90: 60.0
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: mixed }
+        source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # discount_hygiene — measured (margin recovery is observable).
+  #
+  # Phase 6A Ticket A3: opted into the dict form (``metadata`` + ``priors``).
+  # =========================================================================
+  discount_hygiene:
+    metadata:
+      audience_floor: 200
+      mechanism: "Suppress discount codes for 14 days; send a full-price, value-led reminder; no urgency framing."
+      vertical_applicability: [beauty, supplements, mixed]
+      would_be_measured_by: EMAIL_ATTRIBUTED_REVENUE_IN_7D
+      audience_archetype: discount_buyer
+    priors:
+      - name: base_rate
+        value: 1.00
+        range_p10: 0.90
+        range_p90: 1.00
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: "*" }
+        notes: "Conversion is neutral; margin actions rely on discount depth, not customer conversion."
+        source: internal_heuristic_unvalidated
+      - name: incrementality
+        value: 1.00
+        range_p10: 0.85
+        range_p90: 1.00
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: "*" }
+        source: internal_heuristic_unvalidated
+      - name: margin_recovery_rate
+        value: 0.0075
+        range_p10: 0.003
+        range_p90: 0.015
+        source_class: observational
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: beauty }
+      - name: margin_recovery_rate
+        value: 0.005
+        range_p10: 0.002
+        range_p90: 0.012
+        source_class: observational
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: supplements }
+        source: internal_csv_observation_v1
+      - name: margin_recovery_rate
+        value: 0.005
+        range_p10: 0.002
+        range_p90: 0.012
+        source_class: observational
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: mixed }
+        source: internal_csv_observation_v1
+
+  # =========================================================================
+  # discount_dependency_hygiene — S7 priors-wiring (2026-05-20).
+  #
+  # NEW play_id block authored in DICT FORM with metadata, parallel to
+  # the ``replenishment_due`` structural template. The S7-T1 builder
+  # itself (audience builder + measurement_builder dispatch + flag)
+  # remains out of scope for this priors-wiring ticket — only the
+  # priors + metadata land here.
+  #
+  # Beauty entry backed by Gemini Deep Research Memo 1 (DS-architect
+  # ACCEPT WITH MODIFICATION 2026-05-20). Supplements entry intentionally
+  # ABSENT — Memo 4 was REJECTED as a validated_external prior
+  # (operational playbook, no point estimate); supplements
+  # discount_dependency_hygiene play stays PRIOR_UNVALIDATED -> Path-D
+  # dormant per founder Q5 pre-approval. Asymmetric-no-cell pattern
+  # parallels ``replenishment_due`` supplements absence.
+  # =========================================================================
+  discount_dependency_hygiene:
+    metadata:
+      # audience_floor: TBD — separate founder-lock turn against the
+      # DS-recommended floor grid. Stays null in this ticket; lands in
+      # a dedicated commit before S7-T1 Commit A.
+      audience_floor: null
+      mechanism: "Suppress discount codes for 14 days for a discount-conditioned cohort; send a value-led, no-urgency, full-price reminder to recover full-price repeat purchases."
+      vertical_applicability: [beauty]
+      would_be_measured_by: DISCOUNT_DEPENDENCY_HYGIENE_FULL_PRICE_CONVERSION_IN_14D
+      audience_archetype: DISCOUNT_CONDITIONED_REPEAT_BUYER
+    priors:
+      - name: base_rate
+        value: 0.0220
+        range_p10: 0.0037
+        range_p90: 0.0471
+        source_class: observational
+        last_updated: "2026-05-24"
+        validation_status: validated_external
+        source_artifact: config/priors_sources/discount_dependency_hygiene__base_rate__beauty.md
+        effective_n: 60
+        applies_to: { vertical: beauty }
+        source: klaviyo_h_and_b_2026_omnichannel_benchmark
+        notes: "Re-fit 2026-05-24 (S8-T0) at effective_n=60 to Beta(1.32, 58.68); p10/p90 are analytic CDF percentiles from scipy.stats.beta(1.32, 58.68).ppf([0.10, 0.90]) (p10=0.0037, p90=0.0471). Prior J-shape defect (alpha<1) resolved; envelope is unimodal. Point estimate value=0.0220 (= alpha/(alpha+beta)) unchanged. DS verdict: agent_outputs/ecommerce-ds-architect-s8-pseudo_n-and-ki-new-k-verdict-2026-05-24.md. (Provenance note retained from prior entry: numerical values transcribed from base64-encoded images in the source Gemini Deep Research markdown — verify against original Klaviyo PDFs as a separate sweep.)"
+
+  # =========================================================================
+  # aov_lift_via_threshold_bundle — S7 priors-wiring (2026-05-20).
+  #
+  # NEW play_id block authored in DICT FORM with metadata. The S7-T3
+  # builder + measurement_builder dispatch remain out of scope for this
+  # priors-wiring ticket — only the priors + metadata land here.
+  #
+  # Asymmetric vertical posture per DS architect 2026-05-20:
+  #  - beauty: validated_external (Memo 2, ACCEPT as-is, strongest of 4)
+  #  - supplements: elicited_expert (Memo 3, DOWNGRADED from claimed
+  #    validated_external N=500 alpha=4.75 beta=495.25 to pseudo_n=10
+  #    alpha=0.095 beta=9.905, per beauty-evidence laundering — same
+  #    failure-mode pattern as superseded D-S6-2). Direction (supplements
+  #    < beauty) defensible per SKU step-size friction + subscription
+  #    cannibalization; magnitude not independently sourced. KI-NEW-J.
+  # =========================================================================
+  aov_lift_via_threshold_bundle:
+    metadata:
+      # audience_floor: TBD — separate founder-lock turn against the
+      # DS-recommended floor grid. Stays null in this ticket.
+      audience_floor: null
+      mechanism: "Send a curated cross-sell email to customers $5-$15 below a merchant AOV threshold (free shipping or spend-X-get-Y), suggesting a specific SKU that would complete the threshold; no discount code."
+      vertical_applicability: [beauty, supplements]
+      would_be_measured_by: AOV_THRESHOLD_CROSSING_CONVERSION_IN_14D
+      audience_archetype: THRESHOLD_NEAR_BUYER
+    priors:
+      - name: base_rate
+        value: 0.0120
+        range_p10: 0.0044
+        range_p90: 0.0215
+        source_class: observational
+        last_updated: "2026-05-20"
+        validation_status: validated_external
+        source_artifact: config/priors_sources/aov_lift_via_threshold_bundle__base_rate__beauty.md
+        effective_n: 250
+        applies_to: { vertical: beauty }
+        source: klaviyo_balance_me_perl_freshly_cross_sell_2026
+        notes: "DS architect 2026-05-20 verdict ACCEPT (strongest of the 4 S7 memos). Beta(3, 247) well-behaved (alpha>1, unimodal); envelope reasonably consistent with Beta CDF. Strict scope hygiene from memo: this is NOT bestseller_amplify (static pre-purchase bundle), NOT welcome-flow cross-sell (top-of-funnel discounted), NOT post-purchase replenishment (10-60d delayed). Match the engine's play taxonomy exactly."
+      - name: base_rate
+        value: 0.0095
+        range_p10: 0.0040
+        range_p90: 0.0175
+        source_class: observational
+        last_updated: "2026-05-20"
+        validation_status: elicited_expert
+        source_artifact: config/priors_sources/aov_lift_via_threshold_bundle__base_rate__supplements.md
+        effective_n: 10
+        applies_to: { vertical: supplements }
+        source: ds_elicited_2026_05_20_post_downgrade
+        notes: "DOWNGRADED from claimed validated_external (N=500, alpha=4.75, beta=495.25) to elicited_expert (pseudo_n=10, alpha=0.095, beta=9.905) per ecommerce-ds-architect 2026-05-20 verdict. Reason: primary anchor evidence is beauty-vertical case studies (Balance Me, Freshly Cosmetics, PERL Cosmetics) transferred to supplements — same category-error pattern as superseded D-S6-2. Magnitude (0.95%) not independently sourced; direction (supplements < beauty) defensible per SKU step-size friction (supplements ship in $25-$45 30-day-supply bottles vs $5-$15 filler items needed to clear a threshold) + subscription cannibalization (Ritual / Care/of recurring billing eats one-time threshold-completion uplift). Brand's own data dominates within ~20 observed conversions at pseudo_n=10 (vs ~500 at original parameterization). Re-research with supplements-specific threshold-bundle CVR (Ritual, Athletic Greens, Care/of, iHerb, Thorne) tracked in KI-NEW-J."
+
+  # =========================================================================
+  # subscription_nudge — targeting only.
+  # =========================================================================
+  subscription_nudge:
+    - name: base_rate
+      value: 0.12
+      range_p10: 0.06
+      range_p90: 0.20
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.18
+      range_p10: 0.10
+      range_p90: 0.30
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.10
+      range_p10: 0.05
+      range_p90: 0.18
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.90
+      range_p10: 0.70
+      range_p90: 0.98
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.95
+      range_p10: 0.75
+      range_p90: 0.99
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.80
+      range_p10: 0.60
+      range_p90: 0.95
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: subscription_multiplier
+      value: 1.18
+      range_p10: 1.05
+      range_p90: 1.35
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "Phase 4.2 deferred: multiplier-vs-baseline-rate conflation per memory.md."
+    - name: subscription_multiplier
+      value: 1.12
+      range_p10: 1.03
+      range_p90: 1.25
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # routine_builder — targeting only.
+  #
+  # Sprint 4 Ticket G-3: promoted to A3 dict form with metadata + per-vertical
+  # audience floor (``audience_floor_by_vertical``). Supplements floor is
+  # smaller than beauty because supplement merchants run with smaller
+  # customer bases by model (subscription-led, narrower SKU set). This
+  # surfaces the supplements-aware floor to the Recommended Experiment
+  # seam in ``src/decide.py``; the legacy ``routine_completion_candidates``
+  # audience builder still applies its own ``MIN_N_SKU`` config-driven
+  # floor (engine-side plumbing of the per-vertical floor into the
+  # legacy builder is Sprint 5+ scope; see KI-25 progress note).
+  # =========================================================================
+  routine_builder:
+    metadata:
+      audience_floor: 60
+      audience_floor_by_vertical:
+        beauty: 60
+        supplements: 30
+        mixed: 45
+      mechanism: "Email single-product buyers a routine-completion bundle aligned to their starter SKU; two sends one week apart, no blanket discount."
+      vertical_applicability: [beauty, mixed]
+      would_be_measured_by: REPEAT_PURCHASE_IN_30D
+      audience_archetype: no_archetype
+    priors:
+    - name: base_rate
+      value: 0.15
+      range_p10: 0.08
+      range_p90: 0.24
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.08
+      range_p10: 0.04
+      range_p90: 0.15
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.10
+      range_p10: 0.05
+      range_p90: 0.18
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.80
+      range_p10: 0.60
+      range_p90: 0.92
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.65
+      range_p10: 0.50
+      range_p90: 0.82
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.70
+      range_p10: 0.55
+      range_p90: 0.88
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: bundle_value
+      value: 85.0
+      range_p10: 50.0
+      range_p90: 130.0
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: bundle_value
+      value: 65.0
+      range_p10: 40.0
+      range_p90: 100.0
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # empty_bottle (Replenishment Reminder) — directional.
+  # =========================================================================
+  empty_bottle:
+    - name: base_rate
+      value: 0.12
+      range_p10: 0.06
+      range_p90: 0.20
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      notes: "Conversion approximated from depleted-cohort z-test in legacy emitter."
+      source: internal_csv_observation_v1
+    - name: incrementality
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.90
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # frequency_accelerator — measured-eligible.
+  # =========================================================================
+  frequency_accelerator:
+    - name: base_rate
+      value: 0.22
+      range_p10: 0.12
+      range_p90: 0.34
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.18
+      range_p10: 0.10
+      range_p90: 0.28
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_csv_observation_v1
+    - name: base_rate
+      value: 0.16
+      range_p10: 0.08
+      range_p90: 0.26
+      source_class: observational
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_csv_observation_v1
+    - name: incrementality
+      value: 0.88
+      range_p10: 0.70
+      range_p90: 0.97
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.92
+      range_p10: 0.75
+      range_p90: 0.98
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.92
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: frequency_lift
+      value: 0.25
+      range_p10: 0.12
+      range_p90: 0.45
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "M4a removes the assumed-lift exposure from merchant-facing output."
+    - name: frequency_lift
+      value: 0.18
+      range_p10: 0.08
+      range_p90: 0.35
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: frequency_lift
+      value: 0.21
+      range_p10: 0.10
+      range_p90: 0.40
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # aov_momentum — directional only.
+  # =========================================================================
+  aov_momentum:
+    - name: base_rate
+      value: 0.20
+      range_p10: 0.10
+      range_p90: 0.32
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.16
+      range_p10: 0.08
+      range_p90: 0.26
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.14
+      range_p10: 0.06
+      range_p90: 0.24
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.85
+      range_p10: 0.65
+      range_p90: 0.95
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.90
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.70
+      range_p10: 0.50
+      range_p90: 0.88
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: growth_acceleration
+      value: 1.50
+      range_p10: 1.10
+      range_p90: 2.00
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "Memory.md: do not forecast lift from observed AOV drift. Directional only."
+    - name: growth_acceleration
+      value: 1.40
+      range_p10: 1.05
+      range_p90: 1.85
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # retention_mastery — legacy emitter still produces; targeting per M2.
+  # =========================================================================
+  retention_mastery:
+    - name: base_rate
+      value: 0.85
+      range_p10: 0.65
+      range_p90: 0.95
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.90
+      range_p10: 0.70
+      range_p90: 0.97
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.92
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 1.00
+      range_p10: 0.85
+      range_p90: 1.00
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_heuristic_unvalidated
+    - name: churn_reduction
+      value: 0.09
+      range_p10: 0.04
+      range_p90: 0.18
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "Memory.md: 'remove assumed churn reduction'. Kept here for traceability of legacy value; M4a NaN's the merchant-facing exposure."
+    - name: churn_reduction
+      value: 0.08
+      range_p10: 0.04
+      range_p90: 0.16
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: churn_reduction
+      value: 0.075
+      range_p10: 0.04
+      range_p90: 0.15
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # journey_optimization — demoted; targeting per memory.md.
+  # =========================================================================
+  journey_optimization:
+    - name: base_rate
+      value: 0.35
+      range_p10: 0.20
+      range_p90: 0.50
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.25
+      range_p10: 0.12
+      range_p90: 0.40
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.25
+      range_p10: 0.12
+      range_p90: 0.40
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.80
+      range_p10: 0.60
+      range_p90: 0.92
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.70
+      range_p10: 0.50
+      range_p90: 0.88
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.65
+      range_p10: 0.45
+      range_p90: 0.85
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: conversion_improvement
+      value: 0.35
+      range_p10: 0.15
+      range_p90: 0.55
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "Memory.md: 'rename or demote until onsite funnel data exists'. Targeting only."
+    - name: conversion_improvement
+      value: 0.28
+      range_p10: 0.12
+      range_p90: 0.45
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: conversion_improvement
+      value: 0.30
+      range_p10: 0.12
+      range_p90: 0.50
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # category_expansion — targeting only.
+  # =========================================================================
+  category_expansion:
+    - name: base_rate
+      value: 0.45
+      range_p10: 0.25
+      range_p90: 0.65
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: base_rate
+      value: 0.25
+      range_p10: 0.12
+      range_p90: 0.42
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: base_rate
+      value: 0.30
+      range_p10: 0.15
+      range_p90: 0.48
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.75
+      range_p10: 0.55
+      range_p90: 0.90
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+    - name: incrementality
+      value: 0.60
+      range_p10: 0.45
+      range_p90: 0.80
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: supplements }
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.60
+      range_p10: 0.40
+      range_p90: 0.82
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: mixed }
+      source: internal_heuristic_unvalidated
+    - name: expansion_rate
+      value: 0.40
+      range_p10: 0.18
+      range_p90: 0.60
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: beauty }
+      notes: "Targeting; remove fabricated stats per memory.md."
+    - name: expansion_rate
+      value: 0.32
+      range_p10: 0.14
+      range_p90: 0.52
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_heuristic_unvalidated
+
+  # =========================================================================
+  # T2.3 new entries — placeholder priors (registry only; not loaded yet).
+  #
+  # Phase 6B Ticket C1.5: opted into the dict form (``metadata`` + ``priors``)
+  # so the Recommended Now card surfaces the merchant-readable ``mechanism``
+  # string via the C1 "What we'd send:" line. Mechanism content is
+  # audience + channel + posture + cadence; no offer specifics, no causal
+  # claims, no projected lift / forecast / confidence language.
+  # =========================================================================
+  first_to_second_purchase:
+    metadata:
+      audience_floor: 500
+      mechanism: "Email one-time buyers a value-led second-purchase nudge with best-next-product education, two sends one week apart, no blanket discount."
+      vertical_applicability: [beauty, supplements, mixed]
+      would_be_measured_by: REPEAT_PURCHASE_IN_30D
+      audience_archetype: first_time_buyer
+    priors:
+      - name: base_rate
+        value: 0.18
+        range_p10: 0.08
+        range_p90: 0.32
+        source_class: observational
+        last_updated: "2026-05-17"
+        validation_status: validated_external
+        source_artifact: config/priors_sources/first_to_second_purchase__base_rate.md
+        effective_n: 156110
+        applies_to: { vertical: "*" }
+        source: bsandco_dtc_rpr_benchmarks_2026
+        notes: "Backed by bsandco 2026 DTC RPR memo (156,110 customers). Source_class promoted observational; T3 will treat validated_external as blend-eligible."
+      - name: incrementality
+        value: 0.70
+        range_p10: 0.50
+        range_p90: 0.90
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: heuristic_unvalidated
+        applies_to: { vertical: "*" }
+        source: internal_heuristic_unvalidated
+      - name: second_purchase_lift
+        value: 0.20
+        range_p10: 0.08
+        range_p90: 0.40
+        source_class: expert
+        last_updated: "2026-05-01"
+        validation_status: placeholder
+        applies_to: { vertical: "*" }
+        notes: "Conservative expert prior; replace with observed first->second conversion lift in M4."
+        source: internal_heuristic_unvalidated
+
+  at_risk_repeat_buyer_rescue:
+    - name: base_rate
+      value: 0.15
+      range_p10: 0.06
+      range_p90: 0.28
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: placeholder
+      applies_to: { vertical: "*" }
+      notes: "Placeholder; intentionally LACKS a churn_reduction prior (memory.md: remove assumed churn reduction)."
+      source: internal_heuristic_unvalidated
+    - name: incrementality
+      value: 0.70
+      range_p10: 0.50
+      range_p90: 0.90
+      source_class: expert
+      last_updated: "2026-05-01"
+      validation_status: heuristic_unvalidated
+      applies_to: { vertical: "*" }
+      source: internal_heuristic_unvalidated
+
+  onsite_funnel_watch:
+    # Watching-only signal; no priors today. Reserved for future onsite
+    # funnel integration. The empty list is legal: schema validators must
+    # treat an empty list of priors as "no priors registered yet".
+    []
+
+  # =========================================================================
+  # S6-T3.x re-key (2026-05-19) — dedicated replenishment_due prior block.
+  #
+  # Supersedes D-S6-2 (which routed replenishment_due to
+  # bestseller_amplify.bundle_value.beauty). The bundle_value prior is
+  # anchored to bundle-promotion economics (per-customer DOLLARS), not
+  # replenishment-cadence conversion (a probability rate). Re-purposing
+  # the bundle_value prior across plays would invalidate the
+  # validated_external claim on the bsandco memo. This dedicated block
+  # is backed by the 2026-05-19 Gemini Deep Research memo at
+  # config/priors_sources/replenishment_due__base_rate__beauty.md.
+  #
+  # Supplements asymmetry is INTENTIONAL: no supplements
+  # replenishment_due.base_rate block is authored. Per DS architect
+  # verdict (memo 2026-05-19), supplements correctly routes to
+  # PRIOR_UNVALIDATED Considered via S7.5-T3 refusal logic when no
+  # matching block for the vertical exists. Authoring a supplements
+  # stub purely for code-symmetry would fabricate a prior to satisfy
+  # code shape.
+  # =========================================================================
+  replenishment_due:
+    metadata:
+      audience_floor: 500
+      mechanism: "Send a cadence-timed replenishment reminder to customers approaching their predicted depletion date, populated with their previously-purchased SKU."
+      vertical_applicability: [beauty, supplements, mixed]
+      would_be_measured_by: REPLENISHMENT_DUE_IN_NEXT_CADENCE_WINDOW
+      audience_archetype: cadence_due_repeat_buyer
+    priors:
+      - name: base_rate
+        value: 0.0220
+        range_p10: 0.0037
+        range_p90: 0.0471
+        source_class: observational
+        last_updated: "2026-05-24"
+        validation_status: validated_external
+        source_artifact: config/priors_sources/replenishment_due__base_rate__beauty.md
+        effective_n: 60
+        applies_to: { vertical: beauty }
+        source: klaviyo_h_and_b_2026_perl_cosmetics_case_study
+        notes: "Re-fit 2026-05-24 (S8-T0) at effective_n=60 to Beta(1.32, 58.68); p10/p90 are analytic CDF percentiles from scipy.stats.beta(1.32, 58.68).ppf([0.10, 0.90]) (p10=0.0037, p90=0.0471). Prior J-shape defect (alpha<1) resolved; envelope is unimodal. Point estimate value=0.0220 (= alpha/(alpha+beta)) unchanged. Scope expansion beyond KI-NEW-K text (founder-acked 2026-05-24); identical defect, identical source class, atomic fix alongside discount_dependency_hygiene.base_rate.beauty. DS verdict: agent_outputs/ecommerce-ds-architect-s8-pseudo_n-and-ki-new-k-verdict-2026-05-24.md. (Source provenance retained: Klaviyo PERL Cosmetics case study replenishment-isolated 2.20% + Klaviyo 2026 Omnichannel Benchmark Report H&B vertical cross-flow average 1.96%; see memo for 'what this does NOT measure' framing + 4 limitations + 3 rejected alternatives.)"

@@ -1,0 +1,648 @@
+# BeaconAI gate calibration (Sprint 6.5 Ticket T4).
+#
+# The load-bearing artifact for profile-driven gate cells. Consumed by
+# ``src/profile/builder.py::derive_gate_calibration`` and propagated to
+# the four consumers (audience_builders, measurement_builder, decide,
+# sizing) when ``ENGINE_V2_STORE_PROFILE`` is ON.
+#
+# Founder Q4 (2026-05-17): every cell is tagged
+# ``validation_status: heuristic_unvalidated``. Cell-by-cell validation
+# is deferred to outcome-driven recalibration (S10+, Phase 9 outcome
+# importer). Heuristic cells start CONSERVATIVE — error toward
+# blocking a play, not surfacing a noise card.
+#
+# CRITICAL — DS architect §2.3 stage-uncertainty rule:
+# when ``profile.business_stage.uncertainty == "HIGH"`` (store within
+# ±25% of a band boundary), ``derive_gate_calibration`` reads the
+# BROADER (next-smaller) stage's cell. e.g. a store detected as
+# MATURE near the GROWTH/MATURE boundary reads the GROWTH cell.
+#
+# L42 deferred (founder 2026-05-18): window set is exactly
+# ``{L28, L56, L90}``. A 4th window for the 35–48d cadence gap is
+# revisited after one real beta store.
+
+schema_version: "1.0.0"
+last_reviewed: "2026-05-17"
+validation_status: heuristic_unvalidated
+
+# ---------------------------------------------------------------------
+# audience_floors: per (play_id, vertical, subvertical, stage) cell.
+#
+# Cell-coverage strategy (founder-approved 2026-05-18):
+# - ``winback_dormant_cohort`` (the only Tier-B builder shipped through
+#   S6-T1.5) gets a full cell table.
+# - All other plays consume ``_default_by_stage`` until they ship
+#   profile-aware floors of their own. ``derive_gate_calibration``
+#   records ``rules_fired += ["gate_calibration_default_floor_used"]``
+#   so missing-cell consumption is auditable.
+#
+# Cell numbers reflect the architecture proposal sketch + DS architect
+# §2.8. Bigger stores see bigger floors (we need enough cohort to
+# materialize $-impact above the materiality floor); smaller stores
+# see smaller floors (the same percent-of-base is a smaller raw N).
+# ---------------------------------------------------------------------
+
+audience_floors:
+
+  _default_by_stage:
+    startup: 50
+    growth: 150
+    mature: 400
+    enterprise: 1200
+
+  winback_dormant_cohort:
+    beauty:
+      skincare:
+        startup: 80
+        growth: 200
+        mature: 500
+        enterprise: 1500
+      cosmetics:
+        startup: 80
+        growth: 200
+        mature: 500
+        enterprise: 1500
+      haircare:
+        startup: 80
+        growth: 200
+        mature: 500
+        enterprise: 1500
+      personal_care:
+        startup: 80
+        growth: 200
+        mature: 500
+        enterprise: 1500
+    mixed_beauty:
+      startup: 120
+      growth: 300
+      mature: 700
+      enterprise: 2000
+    supplements:
+      protein:
+        startup: 60
+        growth: 150
+        mature: 400
+        enterprise: 1200
+      multivitamin:
+        startup: 60
+        growth: 150
+        mature: 400
+        enterprise: 1200
+      probiotics:
+        startup: 60
+        growth: 150
+        mature: 400
+        enterprise: 1200
+      nootropics:
+        startup: 60
+        growth: 150
+        mature: 400
+        enterprise: 1200
+      functional:
+        startup: 60
+        growth: 150
+        mature: 400
+        enterprise: 1200
+    mixed_supplements:
+      startup: 100
+      growth: 250
+      mature: 600
+      enterprise: 1500
+
+  # ``replenishment_due`` (S6-T3.5 Commit B, 2026-05-19):
+  # Behavioral predicate (±½-cadence due window) → addressable universe is
+  # structurally smaller than the dormant winback pool. Per DS architect
+  # 2026-05-19 grid: one notch BELOW winback floors per stage. Materiality
+  # floor ($2000 at growth) remains the binding gate; the audience-floor
+  # governs posterior coherence (sample-size for the per-merchant rate
+  # estimate), not prior tightness.
+  #
+  # Asymmetric posture per D-S6-2.1 / D-PRIORS-replenishment_due_supplements_deferred:
+  # supplements has NO prior block (no validated external source) so we
+  # deliberately omit the supplements row — the strict resolver returns
+  # None (NOT zero, NOT the _default_by_stage row), which surfaces as
+  # "no cell" at the consumer rather than a silently-applied default.
+  #
+  # See: docs/DECISIONS.md::D-FLOOR-replenishment_due (LOCKED 2026-05-19)
+  replenishment_due:
+    beauty:
+      skincare:
+        startup: 60
+        growth: 150
+        mature: 350
+        enterprise: 1000
+      cosmetics:
+        startup: 60
+        growth: 150
+        mature: 350
+        enterprise: 1000
+      haircare:
+        startup: 60
+        growth: 150
+        mature: 350
+        enterprise: 1000
+      personal_care:
+        startup: 60
+        growth: 150
+        mature: 350
+        enterprise: 1000
+    mixed_beauty:
+      startup: 90
+      growth: 225
+      mature: 525
+      enterprise: 1500
+
+  # ``cohort_journey_first_to_second`` (S7-T2 Commit A, 2026-05-20):
+  # First-time buyers whose only order is 30-90 days before the anchor.
+  # Symmetric across verticals because S7.5-T2 prior is wildcard
+  # (``first_to_second_purchase.base_rate.*``, vertical: "*"); the prior
+  # itself does NOT argue per-vertical asymmetry, so the floor grid is
+  # symmetric too. Lower than winback / replenishment floors because the
+  # first-to-second cohort is a recurring stream (longer-window
+  # constraint) and structurally LARGER at any store size.
+  #
+  # See: docs/DECISIONS.md::D-FLOOR-cohort_journey_first_to_second
+  # (LOCKED 2026-05-20)
+  cohort_journey_first_to_second:
+    beauty:
+      skincare:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      cosmetics:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      haircare:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      personal_care:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+    mixed_beauty:
+      startup: 60
+      growth: 150
+      mature: 450
+      enterprise: 1500
+    supplements:
+      protein:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      multivitamin:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      probiotics:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      nootropics:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+      functional:
+        startup: 40
+        growth: 100
+        mature: 300
+        enterprise: 1000
+    mixed_supplements:
+      startup: 60
+      growth: 150
+      mature: 450
+      enterprise: 1500
+
+  # ``discount_dependency_hygiene`` (S7-T1 Commit A, 2026-05-20):
+  # Customers whose >=50% of historical orders carried a discount.
+  # BEAUTY-ONLY by design — supplements ROUTES to PRIOR_UNVALIDATED
+  # Considered per DS Memo-4 REJECT verdict (no priors block, no
+  # gate_calibration cell; the strict resolver returns None for
+  # supplements, surfacing as the auditable "no cell" signal —
+  # mirrors the D-FLOOR-replenishment_due asymmetric-no-cell pattern).
+  #
+  # Base grid (40/100/250/750) is ~50% tighter than D-S6.5-1 winback
+  # because the discount-dependency cohort is structurally thinner
+  # (5-15% of file in heavy-promo Beauty stores). When store posture
+  # exhibits >40% discount-fraction, the resolver bumps to the
+  # heavy-promo grid (80/200/500/1500) — see D-FLOOR-discount_dependency_hygiene
+  # for the conditional rule. The bump is CURRENTLY DORMANT because
+  # ``StoreProfile.commerce_posture.discount_fraction`` is not yet
+  # populated (founder Q surfaced at S7-T1; bump logic lands alongside
+  # the profile attribute, not invented here).
+  #
+  # See: docs/DECISIONS.md::D-FLOOR-discount_dependency_hygiene
+  # (LOCKED 2026-05-20)
+  discount_dependency_hygiene:
+    beauty:
+      skincare:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      cosmetics:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      haircare:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      personal_care:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+    mixed_beauty:
+      startup: 60
+      growth: 150
+      mature: 375
+      enterprise: 1125
+
+  # ``aov_lift_via_threshold_bundle`` (S7-T3 Commit A, 2026-05-20):
+  # Snapshot near-threshold cohort (customers within $5-$15 of merchant
+  # AOV threshold). Per D-FLOOR-aov_lift_via_threshold_bundle (LOCKED
+  # 2026-05-20): mirrors D-FLOOR-discount_dependency_hygiene values
+  # rather than D-S6.5-1 winback to reflect the snapshot-vs-window
+  # thinness (the near-threshold band is a narrower addressable universe
+  # than a dormant-pool window cohort). Materiality floor remains the
+  # binding $-impact gate.
+  #
+  # Asymmetric posture per D-FLOOR DS verdict + KI-NEW-J cross-link:
+  # supplements has NO per-play cell despite the supplements entry in
+  # priors.yaml (elicited_expert tier with DS-locked pseudo_n=10 per
+  # cross-vertical evidence laundering safeguard). The supplements
+  # activation path uses ``_default_by_stage`` fallback floor per
+  # D-S6.5-4 (the strict resolver returns None for the per-play
+  # supplements cell; consumer reads the catch-all default at
+  # gate_calibration.yaml::audience_floors._default_by_stage).
+  #
+  # See: docs/DECISIONS.md::D-FLOOR-aov_lift_via_threshold_bundle
+  # (LOCKED 2026-05-20)
+  aov_lift_via_threshold_bundle:
+    beauty:
+      skincare:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      cosmetics:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      haircare:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+      personal_care:
+        startup: 40
+        growth: 100
+        mature: 250
+        enterprise: 750
+    mixed_beauty:
+      startup: 60
+      growth: 150
+      mature: 375
+      enterprise: 1125
+
+# ---------------------------------------------------------------------
+# materiality_floors_usd: per stage. Per DS architect §2.8 sketch.
+# Read by decide.py + guardrails when flag is ON; falls back to
+# ``scale_aware_materiality_floor(monthly_revenue)`` when OFF or when
+# profile is None.
+# ---------------------------------------------------------------------
+
+materiality_floors_usd:
+  startup: 800
+  growth: 2000
+  mature: 4500
+  enterprise: 12000
+
+# ---------------------------------------------------------------------
+# primary_window: per (vertical, subvertical). FALLBACK ONLY — R2 makes
+# cadence-derived the primary path. Consulted when:
+#   - business_model == SUBSCRIPTION_LED (subscription cadence is
+#     contractual, not behavioral; DS architect risk #4)
+#   - cadence.detection_status == INSUFFICIENT_DATA
+#   - cadence has no entry for the relevant SKU class
+# Sketch numbers per architecture proposal — beauty/skincare→L28;
+# beauty/cosmetics→L28; beauty/haircare→L56; supplements/protein→L60;
+# supplements/multivitamin→L60; supplements/nootropics→L90. We pin
+# these to {L28, L56, L90} for L42 deferral (supplements/protein
+# rounds 60 → L56).
+# ---------------------------------------------------------------------
+
+primary_window:
+  beauty:
+    skincare: L28
+    cosmetics: L28
+    haircare: L56
+    personal_care: L28
+    mixed: L28
+  supplements:
+    protein: L56
+    multivitamin: L56
+    probiotics: L56
+    nootropics: L90
+    functional: L56
+    mixed: L56
+
+# ---------------------------------------------------------------------
+# agreement_windows: per (vertical, subvertical). The two non-primary
+# windows from ``{L28, L56, L90}``. R1 consumes this. R2 dynamically
+# recomputes when cadence-derived primary_window differs from the static
+# cell; the YAML rows are the FALLBACK only.
+# ---------------------------------------------------------------------
+
+agreement_windows:
+  beauty:
+    skincare: [L56, L90]
+    cosmetics: [L56, L90]
+    haircare: [L28, L90]
+    personal_care: [L56, L90]
+    mixed: [L56, L90]
+  supplements:
+    protein: [L28, L90]
+    multivitamin: [L28, L90]
+    probiotics: [L28, L90]
+    nootropics: [L28, L56]
+    functional: [L28, L90]
+    mixed: [L28, L90]
+
+# ---------------------------------------------------------------------
+# pseudo_n_default: per stage. Reuses S7.5 PSEUDO_N_BY_STATUS semantics
+# (the cold-start blend weight inside the validated path). Sizing.py
+# reads this when flag is ON; falls back to PSEUDO_N_BY_STATUS when
+# OFF. Validated-vs-heuristic refusal logic (S7.5-T3) is UNCHANGED:
+# profile only parameterizes the cold-start weight within the
+# validated path; heuristic_unvalidated priors still refuse.
+# ---------------------------------------------------------------------
+
+pseudo_n_default:
+  startup: 10
+  growth: 20
+  mature: 30
+  enterprise: 50
+
+# ---------------------------------------------------------------------
+# replenishment_due_per_sku_floor: per stage. The PER-SKU contributing-
+# customer floor used inside ``replenishment_due_candidates`` (the
+# "N customers-with->=2-repeat-purchases per SKU class" gate at
+# src/audience_builders.py:418-423). Distinct from the COHORT-level
+# audience_floor under ``audience_floors.replenishment_due`` (which
+# gates the final assembled cohort size).
+#
+# Per DS architect scope card 2026-05-22 (agent_outputs/
+# ecommerce-ds-architect-t2_5-floor-scope-card-2026-05-22.md): the
+# legacy default of N=30 was imported as a textbook median-stability
+# rule of thumb without ICP validation. <20% of representative
+# small-DTC merchants (~50 SKUs, ~1,200 customers) clear N=30 per SKU
+# class. ICP fit requires a smaller floor that still retains the
+# "small handful of repeat-buyers to estimate a non-coin-flip median"
+# spirit; the per-stage cell sizes up with the store. Audience-level
+# floor remains the binding sample-size gate downstream.
+# ---------------------------------------------------------------------
+
+replenishment_due_per_sku_floor:
+  startup: 8
+  growth: 12
+  mature: 20
+  enterprise: 30
+
+# ---------------------------------------------------------------------
+# L42 deferral pin (founder 2026-05-18): window set is exactly
+# {L28, L56, L90}. Tested at tests/test_s6_5_t4_gate_calibration.py.
+# A 4th 35–48d window is deferred to post-beta cadence calibration.
+# ---------------------------------------------------------------------
+
+windows_pinned: [L28, L56, L90]
+
+# ---------------------------------------------------------------------
+# model_fit_thresholds (S10-T1, 2026-05-26): business-stage-keyed
+# acceptance floors for the ML predictive layer (BG/NBD + Gamma-Gamma).
+# Consumed by ``src/predictive/model_card.py::_load_model_fit_thresholds``
+# when ``ENGINE_V2_ML_BGNBD`` is ON. Resolves to a dict keyed on the
+# detected ``profile.business_stage.stage`` cell with optional
+# vertical override for ``months_data_validated`` only.
+#
+# Lock posture (founder-accepted via DS verdict 2026-05-25):
+# - ``by_business_stage`` numbers are heuristic; calibration deferred
+#   to KI-NEW-P (filed at S10-T3 close).
+# - ``by_vertical_months_override`` is theory-driven (cadence math —
+#   supplements 45–90d replenishment ≈ 2 cycles in 4mo; beauty
+#   discretionary cadence needs a full 6mo loop) — LOCKED, do NOT
+#   defer to KI-NEW-P calibration.
+# - ``relaxation_factors`` (0.5 multiplier, 0.10 addend) pinned across
+#   all stages until KI-NEW-P calibration data lands.
+#
+# The four-state ``ModelFitStatus`` vocabulary (VALIDATED / PROVISIONAL
+# / INSUFFICIENT_DATA / REFUSED) is documented in
+# ``src/predictive/model_card.py``.
+# ---------------------------------------------------------------------
+
+# T1.4 (DS-locked 2026-05-26): PRIMARY GATE is
+# ``holdout_rank_spearman_validated`` (Spearman rank correlation between
+# predicted expected purchases and observed holdout-window counts).
+# The legacy ``holdout_mape_validated`` is retained for operator-diagnostic
+# continuity but no longer gates — see ``src/predictive/bgnbd.py``
+# module docstring for the deprecation rationale (per-customer MAPE
+# denominator clamps to 1.0 on single-purchase customers, so the mean
+# collapses to "mean predicted 30d repeat rate" and does not measure
+# error). Holdout split is TIME-BASED, not 20% customer-hash.
+#
+# Spearman thresholds (KI-NEW-P-v2 territory — speculative until S14
+# outcome-importer calibration): VALIDATED at ρ ≥ 0.20 (per stage);
+# PROVISIONAL at 0.10 ≤ ρ < 0.20; REFUSED below 0.10 or when ρ is
+# undefined (zero variance in observed counts).
+model_fit_thresholds:
+  bgnbd:
+    by_business_stage:
+      startup:    {months_data_validated: 4, repeat_customers_validated: 150,  orders_validated: 450,  holdout_mape_validated: 0.30, holdout_rank_spearman_validated: 0.20}
+      growth:     {months_data_validated: 6, repeat_customers_validated: 300,  orders_validated: 900,  holdout_mape_validated: 0.27, holdout_rank_spearman_validated: 0.20}
+      mature:     {months_data_validated: 6, repeat_customers_validated: 500,  orders_validated: 1500, holdout_mape_validated: 0.25, holdout_rank_spearman_validated: 0.20}
+      enterprise: {months_data_validated: 6, repeat_customers_validated: 1000, orders_validated: 3000, holdout_mape_validated: 0.22, holdout_rank_spearman_validated: 0.20}
+    by_vertical_months_override:
+      supplements: 4   # replenishment cadence ≈45–90d; 2 cycles ≈4mo
+      beauty: 6        # discretionary cadence; full loop
+    relaxation_factors:
+      provisional_n_multiplier: 0.5
+      provisional_mape_addend: 0.10                 # deprecated; not consumed by Spearman-gated classifier
+      provisional_rank_spearman_floor: 0.10         # PROVISIONAL band lower bound; below → REFUSED
+  # S10-T2 (DS-locked 2026-05-26): Gamma-Gamma classifier thresholds.
+  # Primary gate is ``holdout_rank_spearman_validated`` (Spearman rank
+  # correlation between predicted per-customer monetary value and
+  # observed holdout-window mean spend). Secondary band is
+  # ``agg_ratio`` (sum_predicted / sum_observed_holdout). The Pearson-r
+  # on (frequency, monetary) is the Gamma-Gamma INDEPENDENCE ASSUMPTION
+  # test — surfaced as ``fit_warnings=["gg_independence_violated"]`` if
+  # |r| > pearson_r_violation_threshold but does NOT gate.
+  #
+  # Lock posture: speculative-until-S14 (KI-NEW-Q-territory, parallel to
+  # KI-NEW-P-v2 for BG/NBD Spearman thresholds). The same value across
+  # stages is acceptable initially (G-G is more universal than BG/NBD
+  # heuristically); kept stage-keyed for forward-compat.
+  #
+  # Legacy keys ``independence_pearson_r_validated`` / ``_provisional``
+  # are RETAINED for back-compat read by ``_load_model_fit_thresholds``
+  # but are NOT consumed by the T2 classifier — they reflect the
+  # pre-chained-refusal-pivot independence-gating world that the
+  # advisory-warning model replaces.
+  gamma_gamma:
+    by_business_stage:
+      startup:    {repeat_customers_validated: 50, holdout_rank_spearman_validated: 0.20, agg_ratio_min: 0.5, agg_ratio_max: 1.5}
+      growth:     {repeat_customers_validated: 50, holdout_rank_spearman_validated: 0.20, agg_ratio_min: 0.5, agg_ratio_max: 1.5}
+      mature:     {repeat_customers_validated: 50, holdout_rank_spearman_validated: 0.20, agg_ratio_min: 0.5, agg_ratio_max: 1.5}
+      enterprise: {repeat_customers_validated: 50, holdout_rank_spearman_validated: 0.20, agg_ratio_min: 0.5, agg_ratio_max: 1.5}
+    relaxation_factors:
+      provisional_rank_spearman_floor: 0.10
+      provisional_agg_ratio_min: 0.4
+      provisional_agg_ratio_max: 1.6
+    independence_check:
+      pearson_r_violation_threshold: 0.10
+    # Legacy advisory cutoffs (back-compat read; not consumed by T2 classifier).
+    independence_pearson_r_validated: 0.3
+    independence_pearson_r_provisional: 0.5
+  # S11-T1 (DS-locked 2026-05-26): Cox PH survival classifier thresholds.
+  # PRIMARY gate: ``holdout_c_index_validated`` (Harrell's C-index between
+  # predicted risk and observed (time, event) tuples on a time-based
+  # holdout). SECONDARY gate: ``holdout_brier_score_90d_validated_max``
+  # (time-dependent integrated Brier score at 90d horizon — calibration
+  # check). VALIDATED requires BOTH gates to clear; PROVISIONAL admits
+  # rank-only (c_index in relaxed band) OR calibration-only (brier in
+  # relaxed band). REFUSED on either hard-fail or fit exception.
+  #
+  # Speculative-until-S14 (KI-NEW-P extension; per DS verdict 2026-05-26).
+  # C-index floors: 0.62 startup/growth, 0.63 mature/enterprise —
+  # calibrated against Steyerberg's "weak/fair/good" bands with DTC
+  # per-customer RFM-only covariates (richer covariates are a future
+  # iteration). Brier@90d ≤ 0.25 across stages.
+  #
+  # Chained-refusal contract (S11-T1): when same engine_run's BG/NBD
+  # ModelCard is REFUSED or INSUFFICIENT_DATA, survival short-circuits to
+  # REFUSED with ``chained_bgnbd_refusal`` warning — Cox PH hazard
+  # transforms the same gap-time signal BG/NBD evaluates.
+  survival:
+    by_business_stage:
+      startup:    {months_data_validated: 3, repeat_customers_validated: 200,  censored_events_validated: 30,  holdout_c_index_validated: 0.62, holdout_brier_score_90d_validated_max: 0.25}
+      growth:     {months_data_validated: 4, repeat_customers_validated: 300,  censored_events_validated: 50,  holdout_c_index_validated: 0.62, holdout_brier_score_90d_validated_max: 0.25}
+      mature:     {months_data_validated: 6, repeat_customers_validated: 500,  censored_events_validated: 100, holdout_c_index_validated: 0.63, holdout_brier_score_90d_validated_max: 0.25}
+      enterprise: {months_data_validated: 6, repeat_customers_validated: 1000, censored_events_validated: 200, holdout_c_index_validated: 0.63, holdout_brier_score_90d_validated_max: 0.25}
+    relaxation_factors:
+      provisional_n_multiplier: 0.5
+      provisional_c_index_floor: 0.55                # PROVISIONAL band lower bound for c_index; below → REFUSED
+      provisional_brier_score_90d_max: 0.35          # PROVISIONAL band upper bound for brier; above → REFUSED
+  # S11-T2 (DS-locked 2026-05-26): Collaborative Filtering (implicit ALS)
+  # classifier thresholds. PRIMARY gate: ``top_k_recall_validated`` (top-K
+  # recall @ K=10 on a time-based holdout — fraction of held-out
+  # customer×item interactions recovered in each customer's top-10 ALS
+  # recommendation list). SECONDARY diagnostic: ``coverage_at_10`` (fraction
+  # of catalog items appearing in any user's top-10 list); operator-visible
+  # ONLY — does NOT gate.
+  #
+  # Speculative-until-S14 (KI-NEW-P extension; per DS verdict 2026-05-26).
+  # Recall@10 floors calibrated against realistic ALS implicit-feedback
+  # densities for Beauty/Supplements catalogs (200-2000 items, 5-15 avg
+  # orders per repeat customer): VALIDATED bands {startup 0.05, growth
+  # 0.06, mature 0.08, enterprise 0.10}; PROVISIONAL floor 0.03; REFUSED
+  # below 0.03 or on convergence failure.
+  #
+  # CF is INDEPENDENT of BG/NBD (per DS S11 plan review §A.6). The
+  # customer×item interaction matrix's structural signal does not depend
+  # on the gap-time signal BG/NBD evaluates; CF fits independently when
+  # BG/NBD is OFF or REFUSED. DO NOT chain CF on BG/NBD.
+  cf:
+    by_business_stage:
+      startup:    {min_customers: 50,  min_items: 50,  min_interactions_per_user: 2, top_k_recall_validated: 0.05}
+      growth:     {min_customers: 100, min_items: 75,  min_interactions_per_user: 2, top_k_recall_validated: 0.06}
+      mature:     {min_customers: 200, min_items: 100, min_interactions_per_user: 2, top_k_recall_validated: 0.08}
+      enterprise: {min_customers: 500, min_items: 200, min_interactions_per_user: 2, top_k_recall_validated: 0.10}
+    relaxation_factors:
+      provisional_n_multiplier: 0.5
+      provisional_top_k_recall_floor: 0.03
+    coverage_at_10_warning_threshold: 0.20
+    top_k: 10
+    top_n_lookalikes_per_customer: 20
+    als_factors: 32
+    als_regularization: 0.01
+    als_iterations: 15
+  # S12-T1 (DS-locked 2026-05-28): RFM (Recency × Frequency × Monetary)
+  # segmentation substrate. PRIMARY gate: ``segment_monotonicity_spearman``
+  # — Spearman rank correlation between the named-segment LTV-rank-order
+  # and observed mean monetary value per segment. SECONDARY REFUSED guard:
+  # ``quintile_coverage_min`` — smallest quintile occupancy ratio across
+  # the R/F/M dimensions; below the floor signals degenerate quintile
+  # collapse (e.g. ties dominate, ``pd.qcut`` collapses bins).
+  #
+  # Speculative-until-S14 (KI-NEW-P extension; per DS verdict 2026-05-28).
+  # Spearman floors revised UP from IM's 0.50/0.55/0.60 draft to
+  # 0.60/0.65/0.70/0.70 (VALIDATED) per DS §F: at the floor of the S13
+  # ranking chain, weak monotonicity yields a misleading degradation
+  # surface. PROVISIONAL floor 0.40; below → REFUSED.
+  #
+  # RFM is INDEPENDENT of BG/NBD (no chained refusal) — mirrors CF
+  # (S11-T2) architectural posture, not survival. fit_rfm accepts no
+  # bgnbd_model_card argument. Per DS verdict §I, on a healthy DTC
+  # merchant (e.g. Beauty with 3,844 repeat customers) the substrate
+  # SHOULD legitimately VALIDATE; this is the first sprint where
+  # synthetics may legitimately produce VALIDATED outcomes per Pivot 5
+  # §I — failure to VALIDATE here would signal a band-mapping bug.
+  rfm:
+    by_business_stage:
+      startup:    {n_customers_validated: 50,   segment_monotonicity_spearman_validated: 0.60, quintile_coverage_min_validated: 0.10}
+      growth:     {n_customers_validated: 200,  segment_monotonicity_spearman_validated: 0.65, quintile_coverage_min_validated: 0.10}
+      mature:     {n_customers_validated: 500,  segment_monotonicity_spearman_validated: 0.70, quintile_coverage_min_validated: 0.10}
+      enterprise: {n_customers_validated: 1000, segment_monotonicity_spearman_validated: 0.70, quintile_coverage_min_validated: 0.10}
+    relaxation_factors:
+      provisional_n_multiplier: 0.5
+      provisional_segment_monotonicity_spearman_floor: 0.40
+      provisional_quintile_coverage_min_floor: 0.05
+    absolute_customers_floor: 50
+    refused_quintile_coverage_min: 0.05
+  # S12-T2 (DS-locked 2026-05-28): Retention curves substrate (cohort-
+  # aggregate diagnostic; NOT a per-customer ranker). Cohort definition:
+  # first-purchase month. PRIMARY gate: bootstrap CI width at month 3
+  # (≤ stage-keyed VALIDATED floor; AND cohort_count ≥ stage floor; AND
+  # no cumulative-retention monotonicity violation). REFUSED gate:
+  # cumulative-retention monotonicity violation (DS-mandated: was
+  # tertiary diagnostic in v1; promoted because cumulative retention
+  # CANNOT mathematically rise on the "still active" definition — a
+  # violation = data-shape bug).
+  #
+  # Speculative-until-S14 (KI-NEW-P closure). Per DS verdict 2026-05-28.
+  # CI-width floors revised DOWN from IM's 0.30/0.25/0.20/0.20 to
+  # 0.25/0.20/0.15/0.15 (VALIDATED) per DS §G: a 30pp CI band on a
+  # quantity typically 20-50% is not informative for ranking purposes.
+  # PROVISIONAL ceiling 0.35; > 0.35 → REFUSED.
+  #
+  # Retention is INDEPENDENT — no chained refusal (parallels CF + RFM
+  # independence posture). Lives in NEW top-level
+  # ``EngineRun.cohort_diagnostics`` slot, NOT ``predictive_models``
+  # (per DS §C: ranker Dict stays ranker-pure; cohort-aggregate
+  # diagnostics get their own slot).
+  retention:
+    by_business_stage:
+      startup:    {cohort_count_validated: 6,  bootstrap_ci_width_at_month_3_max_validated: 0.25}
+      growth:     {cohort_count_validated: 12, bootstrap_ci_width_at_month_3_max_validated: 0.20}
+      mature:     {cohort_count_validated: 12, bootstrap_ci_width_at_month_3_max_validated: 0.15}
+      enterprise: {cohort_count_validated: 12, bootstrap_ci_width_at_month_3_max_validated: 0.15}
+    relaxation_factors:
+      provisional_n_multiplier: 0.5
+      provisional_bootstrap_ci_width_at_month_3_max: 0.35
+    absolute_cohort_count_floor: 3
+    bootstrap_iterations: 1000
+    months_horizon: 12
+    min_cohort_size_floor: 20
+    cumulative_retention_monotonicity_violation_refused: true

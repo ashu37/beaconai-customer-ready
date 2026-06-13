@@ -1,0 +1,1840 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EngineRun v2.1.0",
+  "$ref": "#/$defs/EngineRun",
+  "$defs": {
+    "AbstainMode": {
+      "type": "string",
+      "enum": [
+        "soft_awaiting_measurement",
+        "soft_prior_unvalidated",
+        "soft_below_floor",
+        "soft_audience_too_small"
+      ]
+    },
+    "CohortDiagnosticsAbsenceReason": {
+      "type": "string",
+      "enum": [
+        "insufficient_cohort_depth",
+        "substrate_refused"
+      ]
+    },
+    "CustomerIdsNullReason": {
+      "type": "string",
+      "enum": [
+        "substrate_refused",
+        "audience_resolver_not_invoked"
+      ]
+    },
+    "DataQualityFlag": {
+      "type": "string",
+      "enum": [
+        "bfcm_overlap",
+        "post_promo_window",
+        "refund_storm",
+        "test_order_anomaly",
+        "insufficient_clean_history",
+        "vertical_not_supported",
+        "metric_incoherent_for_cadence"
+      ]
+    },
+    "DecisionState": {
+      "type": "string",
+      "enum": [
+        "publish",
+        "abstain_soft",
+        "abstain_hard"
+      ]
+    },
+    "DescriptiveDistributionSuppressionReason": {
+      "type": "string",
+      "enum": [
+        "source_series_empty",
+        "source_series_absent",
+        "integrity_failed"
+      ]
+    },
+    "DistributionKind": {
+      "type": "string",
+      "enum": [
+        "DORMANCY_DAYS",
+        "AOV_GAP",
+        "REORDER_GAP_DAYS",
+        "DISCOUNT_FRACTION"
+      ]
+    },
+    "EvidenceClass": {
+      "type": "string",
+      "enum": [
+        "measured",
+        "directional",
+        "targeting",
+        "weak"
+      ]
+    },
+    "EvidenceSourceChip": {
+      "type": "string",
+      "enum": [
+        "STORE_MEASURED",
+        "STORE_OBSERVED",
+        "INDUSTRY_PRIOR",
+        "OBSERVATIONAL"
+      ]
+    },
+    "FitWarningLevel": {
+      "type": "string",
+      "enum": [
+        "PROVISIONAL_SELECTED",
+        "MODEL_FIT_INSUFFICIENT_DATA",
+        "MODEL_FIT_REFUSED"
+      ]
+    },
+    "MechanismType": {
+      "type": "string",
+      "enum": [
+        "WINBACK_REACTIVATION_EMAIL",
+        "FIRST_TO_SECOND_NUDGE",
+        "THRESHOLD_BUNDLE_OFFER",
+        "DISCOUNT_DEPENDENCY_HYGIENE",
+        "REPLENISHMENT_REMINDER",
+        "BESTSELLER_AMPLIFY",
+        "CATEGORY_EXPANSION",
+        "SUBSCRIPTION_NUDGE",
+        "ROUTINE_BUILDER",
+        "LOOKALIKE_HIGH_VALUE_PROSPECT"
+      ]
+    },
+    "ModelCardAbsenceReason": {
+      "type": "string",
+      "enum": [
+        "substrate_not_run",
+        "substrate_refused",
+        "insufficient_data"
+      ]
+    },
+    "ModelFitStatus": {
+      "type": "string",
+      "enum": [
+        "VALIDATED",
+        "PROVISIONAL",
+        "INSUFFICIENT_DATA",
+        "REFUSED"
+      ]
+    },
+    "MonthDeltaNullReason": {
+      "type": "string",
+      "enum": [
+        "no_store_id",
+        "no_prior_run",
+        "anchor_date_unparseable",
+        "under_21d_floor",
+        "lineage_changed"
+      ]
+    },
+    "ObservationClassification": {
+      "type": "string",
+      "enum": [
+        "moved",
+        "held",
+        "anomalous"
+      ]
+    },
+    "PredictedSegmentNullReason": {
+      "type": "string",
+      "enum": [
+        "modal_floor_not_cleared",
+        "parquet_missing",
+        "parquet_unreadable",
+        "no_audience_intersection"
+      ]
+    },
+    "ReasonCode": {
+      "type": "string",
+      "enum": [
+        "audience_too_small",
+        "audience_overlap_with_higher_priority",
+        "inventory_blocked",
+        "no_measured_signal",
+        "signal_inconsistent_across_windows",
+        "anomalous_window",
+        "cold_start_insufficient_data",
+        "cannibalization_demoted",
+        "recently_run_fatigue",
+        "materiality_below_floor",
+        "data_quality_flag",
+        "cap_exceeded",
+        "targeting_held_under_abstain",
+        "supplement_cadence_outside_window",
+        "prior_unvalidated",
+        "window_disagreement",
+        "model_fit_insufficient_data",
+        "model_fit_refused"
+      ]
+    },
+    "RevenueRangeSource": {
+      "type": "string",
+      "enum": [
+        "store_observed",
+        "vertical_prior",
+        "blend"
+      ]
+    },
+    "RevenueRangeSuppressionReason": {
+      "type": "string",
+      "enum": [
+        "cold_start",
+        "audience_zero",
+        "aov_zero",
+        "observed_effect_invalid",
+        "no_prior_base_rate",
+        "prior_unvalidated",
+        "aov_unavailable",
+        "directional_no_intervention_effect",
+        "experiment_no_calibrated_lift"
+      ]
+    },
+    "RfmSegmentDistributionSuppressionReason": {
+      "type": "string",
+      "enum": [
+        "fit_not_validated",
+        "flag_off"
+      ]
+    },
+    "StoreProfileNullReason": {
+      "type": "string",
+      "enum": [
+        "profile_not_loaded",
+        "onboarding_incomplete"
+      ]
+    },
+    "WindowCorroboration": {
+      "type": "string",
+      "enum": [
+        "CORROBORATED",
+        "NEUTRAL",
+        "CONTRADICTED"
+      ]
+    },
+    "WouldBeMeasuredBy": {
+      "type": "string",
+      "enum": [
+        "INCREMENTAL_ORDERS_IN_14D",
+        "EMAIL_ATTRIBUTED_REVENUE_IN_7D",
+        "REPEAT_PURCHASE_IN_30D",
+        "LAPSED_REACTIVATION_IN_30D",
+        "REPLENISHMENT_DUE_IN_NEXT_CADENCE_WINDOW",
+        "DISCOUNT_DEPENDENCY_HYGIENE_FULL_PRICE_CONVERSION_IN_14D",
+        "AOV_THRESHOLD_CROSSING_CONVERSION_IN_14D",
+        "FIRST_TO_SECOND_PURCHASE_IN_30D"
+      ]
+    },
+    "Abstain": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "publish",
+            "abstain_soft",
+            "abstain_hard"
+          ]
+        },
+        "mode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "soft_awaiting_measurement",
+                "soft_prior_unvalidated",
+                "soft_below_floor",
+                "soft_audience_too_small"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Audience": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fraction_of_base": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overlap_with": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "descriptive_distribution": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DescriptiveDistribution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "BriefingMeta": {
+      "type": "object",
+      "properties": {
+        "confidence_mode": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "vertical": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subvertical": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seasonality_tag": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Conflicts": {
+      "type": "object",
+      "properties": {
+        "cannibalized_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audience_overlap_pct": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DataWindow": {
+      "type": "object",
+      "properties": {
+        "primary_window": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available_windows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "anchor_quality": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DescriptiveDistribution": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "DORMANCY_DAYS",
+            "AOV_GAP",
+            "REORDER_GAP_DAYS",
+            "DISCOUNT_FRACTION"
+          ]
+        },
+        "bins": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "marker": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suppressed": {
+          "type": "boolean"
+        },
+        "suppression_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "source_series_empty",
+                "source_series_absent",
+                "integrity_failed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "EngineRun": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store_id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "anchor_date": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "data_window": {
+          "$ref": "#/$defs/DataWindow"
+        },
+        "cold_start": {
+          "type": "boolean"
+        },
+        "data_quality_flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "bfcm_overlap",
+              "post_promo_window",
+              "refund_storm",
+              "test_order_anomaly",
+              "insufficient_clean_history",
+              "vertical_not_supported",
+              "metric_incoherent_for_cadence"
+            ]
+          }
+        },
+        "abstain": {
+          "$ref": "#/$defs/Abstain"
+        },
+        "state_of_store": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Observation"
+          }
+        },
+        "recommendations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlayCard"
+          }
+        },
+        "store_profile": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/StoreProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store_profile_null_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "profile_not_loaded",
+                "onboarding_incomplete"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recommended_experiments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlayCard"
+          }
+        },
+        "considered": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RejectedPlay"
+          }
+        },
+        "watching": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WatchedSignal"
+          }
+        },
+        "scale": {
+          "$ref": "#/$defs/Scale"
+        },
+        "briefing_meta": {
+          "$ref": "#/$defs/BriefingMeta"
+        },
+        "considered_truncated_count": {
+          "type": "integer"
+        },
+        "predictive_models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelCard"
+          }
+        },
+        "cohort_diagnostics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/RetentionCard"
+          }
+        },
+        "month_2_delta": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MonthDelta"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "month_2_delta_null_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "no_store_id",
+                "no_prior_run",
+                "anchor_date_unparseable",
+                "under_21d_floor",
+                "lineage_changed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "FitWarning": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "PROVISIONAL_SELECTED",
+            "MODEL_FIT_INSUFFICIENT_DATA",
+            "MODEL_FIT_REFUSED"
+          ]
+        },
+        "substrate": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "substrate"
+      ]
+    },
+    "Inventory": {
+      "type": "object",
+      "properties": {
+        "skus": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "days_of_cover": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate_passed": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "LaunchWindow": {
+      "type": "object",
+      "properties": {
+        "recommended": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Measurement": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_effect": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "n": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "primary_window": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consistency_across_windows": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "p_internal": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ci_internal": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "window_corroboration": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "CORROBORATED",
+                "NEUTRAL",
+                "CONTRADICTED"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MechanismIntent": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "WINBACK_REACTIVATION_EMAIL",
+            "FIRST_TO_SECOND_NUDGE",
+            "THRESHOLD_BUNDLE_OFFER",
+            "DISCOUNT_DEPENDENCY_HYGIENE",
+            "REPLENISHMENT_REMINDER",
+            "BESTSELLER_AMPLIFY",
+            "CATEGORY_EXPANSION",
+            "SUBSCRIPTION_NUDGE",
+            "ROUTINE_BUILDER",
+            "LOOKALIKE_HIGH_VALUE_PROSPECT"
+          ]
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "ModelCard": {
+      "type": "object",
+      "properties": {
+        "model_name": {
+          "type": "string"
+        },
+        "fit_status": {
+          "type": "string",
+          "enum": [
+            "VALIDATED",
+            "PROVISIONAL",
+            "INSUFFICIENT_DATA",
+            "REFUSED"
+          ]
+        },
+        "fit_warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "training_window_days": {
+          "type": "integer"
+        },
+        "n_observed": {
+          "type": "integer"
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "fit_timestamp": {
+          "type": "string"
+        },
+        "parquet_schema_version": {
+          "type": "integer"
+        },
+        "segment_distribution": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SegmentBand"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "segment_distribution_suppression_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "fit_not_validated",
+                "flag_off"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ModelCardRef": {
+      "type": "object",
+      "properties": {
+        "strategy_used": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fit_status_chain": {
+          "type": "array",
+          "items": {
+            "type": "array"
+          }
+        },
+        "fit_warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FitWarning"
+          }
+        },
+        "notes": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MonthDelta": {
+      "type": "object",
+      "properties": {
+        "prior_run_id": {
+          "type": "string"
+        },
+        "current_run_id": {
+          "type": "string"
+        },
+        "days_between": {
+          "type": "integer"
+        },
+        "substrate_fit_status_changes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array"
+          }
+        },
+        "segment_shifts": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retention_ci_at_month_3_delta": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "NonLiftAtom": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "semantic": {
+          "type": "string",
+          "enum": [
+            "addressable_opportunity"
+          ]
+        },
+        "aov_used": {
+          "type": "number"
+        },
+        "monthly_revenue_estimate": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "value",
+        "semantic",
+        "aov_used",
+        "monthly_revenue_estimate"
+      ]
+    },
+    "Observation": {
+      "type": "object",
+      "properties": {
+        "supporting_metric": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "change_magnitude": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "moved",
+            "held",
+            "anomalous"
+          ]
+        },
+        "current": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prior": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delta_pct": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "anomaly_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "n_days_observed": {
+          "type": "integer"
+        },
+        "n_days_expected": {
+          "type": "integer"
+        }
+      }
+    },
+    "OpportunityContext": {
+      "type": "object",
+      "properties": {
+        "audience_size": {
+          "type": "integer"
+        },
+        "non_lift": {
+          "$ref": "#/$defs/NonLiftAtom"
+        },
+        "aov_window": {
+          "type": "string"
+        },
+        "aov_source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "audience_size",
+        "non_lift"
+      ]
+    },
+    "PlayCard": {
+      "type": "object",
+      "properties": {
+        "play_id": {
+          "type": "string"
+        },
+        "evidence_class": {
+          "type": "string",
+          "enum": [
+            "measured",
+            "directional",
+            "targeting",
+            "weak"
+          ]
+        },
+        "confidence_label": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audience": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Audience"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "measurement": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Measurement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revenue_range": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RevenueRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inventory": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Inventory"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conflicts": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Conflicts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "launch_window": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/LaunchWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opportunity_context": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/OpportunityContext"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "would_be_measured_by": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "INCREMENTAL_ORDERS_IN_14D",
+                "EMAIL_ATTRIBUTED_REVENUE_IN_7D",
+                "REPEAT_PURCHASE_IN_30D",
+                "LAPSED_REACTIVATION_IN_30D",
+                "REPLENISHMENT_DUE_IN_NEXT_CADENCE_WINDOW",
+                "DISCOUNT_DEPENDENCY_HYGIENE_FULL_PRICE_CONVERSION_IN_14D",
+                "AOV_THRESHOLD_CROSSING_CONVERSION_IN_14D",
+                "FIRST_TO_SECOND_PURCHASE_IN_30D"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receipts_ref": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predicted_segment": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PredictedSegment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_card_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ModelCardRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_source": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "STORE_MEASURED",
+                "STORE_OBSERVED",
+                "INDUSTRY_PRIOR",
+                "OBSERVATIONAL"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sensitivity": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Sensitivity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provenance": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mechanism_intent": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MechanismIntent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "play_id"
+      ]
+    },
+    "PredictedSegment": {
+      "type": "object",
+      "properties": {
+        "segment_name": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audience_modal_share": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "n_audience": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "segment_name_null_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "modal_floor_not_cleared",
+                "parquet_missing",
+                "parquet_unreadable",
+                "no_audience_intersection"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Provenance": {
+      "type": "object",
+      "properties": {
+        "prior_play_id": {
+          "type": "string"
+        },
+        "prior_key": {
+          "type": "string"
+        },
+        "validation_status": {
+          "type": "string"
+        },
+        "pseudo_n_used": {
+          "type": "integer"
+        },
+        "pseudo_n_cap": {
+          "type": "integer"
+        },
+        "observed_n": {
+          "type": "integer"
+        },
+        "weight_observed": {
+          "type": "number"
+        },
+        "weight_prior": {
+          "type": "number"
+        },
+        "prior_source": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "RejectedPlay": {
+      "type": "object",
+      "properties": {
+        "play_id": {
+          "type": "string"
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "audience_too_small",
+            "audience_overlap_with_higher_priority",
+            "inventory_blocked",
+            "no_measured_signal",
+            "signal_inconsistent_across_windows",
+            "anomalous_window",
+            "cold_start_insufficient_data",
+            "cannibalization_demoted",
+            "recently_run_fatigue",
+            "materiality_below_floor",
+            "data_quality_flag",
+            "cap_exceeded",
+            "targeting_held_under_abstain",
+            "supplement_cadence_outside_window",
+            "prior_unvalidated",
+            "window_disagreement",
+            "model_fit_insufficient_data",
+            "model_fit_refused"
+          ]
+        },
+        "held_reason_detail": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audience_size": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "audience_definition": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mechanism": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/MechanismIntent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "would_be_measured_by": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "INCREMENTAL_ORDERS_IN_14D",
+                "EMAIL_ATTRIBUTED_REVENUE_IN_7D",
+                "REPEAT_PURCHASE_IN_30D",
+                "LAPSED_REACTIVATION_IN_30D",
+                "REPLENISHMENT_DUE_IN_NEXT_CADENCE_WINDOW",
+                "DISCOUNT_DEPENDENCY_HYGIENE_FULL_PRICE_CONVERSION_IN_14D",
+                "AOV_THRESHOLD_CROSSING_CONVERSION_IN_14D",
+                "FIRST_TO_SECOND_PURCHASE_IN_30D"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "play_id",
+        "reason_code"
+      ]
+    },
+    "RetentionCard": {
+      "type": "object",
+      "properties": {
+        "model_name": {
+          "type": "string"
+        },
+        "fit_status": {
+          "type": "string",
+          "enum": [
+            "VALIDATED",
+            "PROVISIONAL",
+            "INSUFFICIENT_DATA",
+            "REFUSED"
+          ]
+        },
+        "fit_warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cohort_count": {
+          "type": "integer"
+        },
+        "min_cohort_size": {
+          "type": "integer"
+        },
+        "bootstrap_ci_width_at_month_3": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cumulative_retention_monotonicity_violation": {
+          "type": "boolean"
+        },
+        "months_horizon": {
+          "type": "integer"
+        },
+        "cohorts": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "bootstrap_iterations": {
+          "type": "integer"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "fit_timestamp": {
+          "type": "string"
+        },
+        "parquet_schema_version": {
+          "type": "integer"
+        }
+      }
+    },
+    "RevenueRange": {
+      "type": "object",
+      "properties": {
+        "p10": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "p50": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "p90": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "store_observed",
+                "vertical_prior",
+                "blend"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "drivers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "suppressed": {
+          "type": "boolean"
+        },
+        "suppression_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "cold_start",
+                "audience_zero",
+                "aov_zero",
+                "observed_effect_invalid",
+                "no_prior_base_rate",
+                "prior_unvalidated",
+                "aov_unavailable",
+                "directional_no_intervention_effect",
+                "experiment_no_calibrated_lift"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Scale": {
+      "type": "object",
+      "properties": {
+        "monthly_revenue": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "customer_base_est": {
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "materiality_floor": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SegmentBand": {
+      "type": "object",
+      "properties": {
+        "segment_name": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "share": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "segment_name",
+        "n",
+        "share"
+      ]
+    },
+    "Sensitivity": {
+      "type": "object",
+      "properties": {
+        "scenario_observed_n_halved": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RevenueRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scenario_observed_n_doubled": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RevenueRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scenario_prior_shifted_down": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RevenueRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scenario_prior_shifted_up": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RevenueRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pseudo_n_used": {
+          "type": "integer"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "StoreProfile": {
+      "type": "object",
+      "properties": {
+        "store_id": {
+          "type": "string"
+        },
+        "taxonomy": {},
+        "business_stage": {},
+        "business_model": {},
+        "cadence": {},
+        "seasonality": {},
+        "data_depth": {},
+        "gate_calibration": {},
+        "measurement": {},
+        "provenance": {}
+      }
+    },
+    "WatchedSignal": {
+      "type": "object",
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "current": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prior": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trend": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threshold_to_act": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "metric"
+      ]
+    }
+  }
+}

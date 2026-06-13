@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+engine/.history/
+coverage/
+dist/
+build/
+.vite/
+.turbo/
+*.log

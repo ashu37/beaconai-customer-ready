@@ -1,0 +1,423 @@
+playbooks:
+  - id: winback_21_45
+    title: "Winback 21–45 days"
+    category: lifecycle
+    effort: 2
+    risk: 2
+    cooldown_weeks: 2   # 14 days
+    do_this: "Launch a 2-step winback for customers idle 21–45 days."
+    targeting: "Include: last order 21–45d ago. Exclude: orders last 7d, unsubscribed, VIP discount abusers."
+    channels: ["email","sms"]
+    cadence: "Email Day 0, Reminder Day 3; SMS if unopened"
+    copy_snippets: ["winback_email_subjects.txt.j2","winback_email_body.txt.j2","winback_sms.txt.j2"]
+    assets: ["segment_winback_21_45.csv"]
+    how_to_launch:
+      - "Import segment CSV into Klaviyo."
+      - "Start 'Winback 21–45' flow: Email Day 0, Reminder Day 3."
+      - "Add SMS if Email unopened by Day 3."
+    success_criteria: ["+1–2 pts repeat within 14 days", "Unsub rate < 0.4%"]
+    risks_mitigations: ["Over-discounting → enforce min spend & expiry"]
+    owner_suggested: "Lifecycle/CRM"
+    time_to_set_up_minutes: 30
+    holdout_plan: "Hold out 10% of segment; evaluate at Day 14."
+    variants:
+      - id: free_ship
+        offer_type: free_shipping
+        eligible_if: "policy.allow_free_shipping"
+        lift_multiplier: 1.0
+        cost_type: flat_per_order
+        cost_value: 5
+      - id: pct_10_min50
+        offer_type: percent_off
+        value: 10
+        eligible_if: "policy.max_discount_pct >= 10"
+        lift_multiplier: 1.2
+        cost_type: percent_of_aov
+        cost_value: 10
+        note: "Min spend $50; 7-day expiry"
+
+  - id: dormant_multibuyers_60_120
+    title: "Dormant Multibuyers 60–120 days"
+    category: lifecycle
+    effort: 3
+    risk: 3
+    cooldown_weeks: 3   # 21 days
+    do_this: "Reactivate VIPs who bought multiple times but went quiet."
+    targeting: "Include: 2+ lifetime orders; last purchase 60–120d ago."
+    channels: ["email"]
+    cadence: "Email Day 0 (no discount), Day 4 follow-up with credit-style offer"
+    copy_snippets: ["dormant_email_subjects.txt.j2","dormant_email_body.txt.j2"]
+    assets: ["segment_dormant_multibuyers_60_120.csv"]
+    how_to_launch:
+      - "Import segment CSV into Klaviyo."
+      - "Send VIP-toned email (no discount) on Day 0."
+      - "Follow up Day 4 with credit-style offer."
+    success_criteria: ["+1–1.5 pts repeat", "Margin protected"]
+    risks_mitigations: ["Avoid training on discount: no code on step 1"]
+    owner_suggested: "Lifecycle/CRM"
+    time_to_set_up_minutes: 25
+    holdout_plan: "10% holdout; escalate only if lift evident."
+    variants:
+      - id: no_discount_vip
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: credit_15_on_75
+        offer_type: store_credit
+        value: 15
+        eligible_if: "policy.max_discount_pct >= 10"
+        lift_multiplier: 1.1
+        cost_type: flat_per_order
+        cost_value: 15
+        note: "Apply only on step 2; min spend $75"
+
+  - id: bestseller_amplify
+    title: "Amplify Bestseller"
+    category: merchandising
+    effort: 3
+    risk: 3
+    cooldown_weeks: 2   # 14 days
+    do_this: "Promote the current top seller with a simple bundle and hero placement."
+    targeting: "Past buyers of the top SKU; lookalike to all; exclude last 7d purchasers."
+    channels: ["email","site"]
+    cadence: "Email hero + site banner for 7 days"
+    copy_snippets: ["bestseller_email_subjects.txt.j2","bestseller_email_body.txt.j2"]
+    assets: ["segment_bestseller_amplify.csv"]
+    how_to_launch:
+      - "Create a bundle for the top SKU in Shopify."
+      - "Add site banner (7 days)."
+      - "Email hero block featuring the bundle."
+    success_criteria: ["+2–4% AOV in the period", "Bundle attach rate > 8%"]
+    risks_mitigations: ["Avoid cannibalization: exclude deep-discount stack"]
+    owner_suggested: "Merch + CRM"
+    time_to_set_up_minutes: 35
+    holdout_plan: "20% pilot audience; promote if CI excludes 0 at day 14."
+    variants:
+      - id: email_only
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: email_plus_bundle
+        offer_type: bundle
+        eligible_if: "True"
+        lift_multiplier: 1.15
+
+  - id: discount_hygiene
+    title: "Discount Hygiene"
+    category: pricing
+    effort: 2
+    risk: 2
+    cooldown_weeks: 1   # 7 days
+    do_this: "Cap discounts >25%, add $50 min spend, exclude top SKUs; test free-ship threshold."
+    targeting: "Customers with high discount propensity; sitewide guardrail."
+    channels: ["site","email"]
+    cadence: "Immediate policy change"
+    copy_snippets: ["discount_policy_checklist.txt.j2"]
+    assets: ["segment_discount_hygiene.csv"]
+    how_to_launch:
+      - "Update discount settings in Shopify."
+      - "Sync to Klaviyo coupon blocks."
+      - "QA 2 recent receipts for policy adherence."
+    success_criteria: ["Lower promo leakage", "Stable conversion"]
+    risks_mitigations: ["Monitor conversion drop; roll back cap if needed"]
+    owner_suggested: "Growth Ops"
+    time_to_set_up_minutes: 15
+    holdout_plan: "Monitor for 7 days; compare against prior policy."
+    variants:
+      # scope metadata for inventory handling
+      # scope: sitewide (policy/guardrail), product_specific (targeted SKUs)
+      # This play is effectively sitewide
+      - id: tighten_policy_no_discount
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: targeted_5
+        offer_type: percent_off
+        value: 5
+        eligible_if: "policy.max_discount_pct >= 5"
+        lift_multiplier: 1.0
+        cost_type: percent_of_aov
+        cost_value: 5
+      - id: targeted_10
+        offer_type: percent_off
+        value: 10
+        eligible_if: "policy.max_discount_pct >= 10"
+        lift_multiplier: 1.2
+        cost_type: percent_of_aov
+        cost_value: 10
+
+  - id: subscription_nudge
+    title: "Convert Regulars to Subscription"
+    category: lifecycle
+    effort: 3
+    risk: 2
+    cooldown_weeks: 2
+    do_this: "Offer 15% off + free shipping for subscription signup on frequently purchased items"
+    targeting: "Customers with 3+ orders of same product in 90 days"
+    expected_lift: "20-30% LTV increase"
+    why_it_works: "Beauty/supplements have natural replenishment cycles"
+    channels: ["email","site"]
+    cadence: "Always-on message; target product pages and post-purchase"
+    variants:
+      - id: sub_15_free_ship
+        offer_type: percent_off
+        value: 15
+        eligible_if: "policy.allow_free_shipping and policy.max_discount_pct >= 15"
+        lift_multiplier: 1.2
+        cost_type: percent_of_aov
+        cost_value: 15
+      - id: sub_free_ship
+        offer_type: free_shipping
+        eligible_if: "policy.allow_free_shipping"
+        lift_multiplier: 1.1
+
+  - id: sample_to_full
+    title: "Sample to Full-Size Conversion"
+    category: merchandising
+    effort: 2
+    risk: 1
+    do_this: "Follow up sample/travel size buyers with full-size discount"
+    targeting: "Bought travel/sample 14–21 days ago, no full-size purchase"
+    expected_lift: "35% conversion on samples"
+    channels: ["email","site"]
+    cadence: "Email Day 14; Reminder Day 21; PDP banner for 7 days"
+    variants:
+      - id: pct_15
+        offer_type: percent_off
+        value: 15
+        eligible_if: "policy.max_discount_pct >= 15"
+        lift_multiplier: 1.2
+        cost_type: percent_of_aov
+        cost_value: 15
+
+  - id: routine_builder
+    title: "Complete Your Routine"
+    category: merchandising
+    effort: 4
+    risk: 2
+    do_this: "Bundle complementary products (cleanser+serum+moisturizer)"
+    targeting: "Single-product purchasers in skincare"
+    expected_lift: "40% AOV increase"
+    channels: ["email","site"]
+    cadence: "7-day push with bundle hero + PDP upsell"
+    variants:
+      - id: bundle_no_discount
+        offer_type: bundle
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: bundle_10
+        offer_type: percent_off
+        value: 10
+        eligible_if: "policy.max_discount_pct >= 10"
+        lift_multiplier: 1.1
+        cost_type: percent_of_aov
+        cost_value: 10
+
+  - id: ingredient_education
+    title: "Ingredient Education Campaign"
+    category: lifecycle
+    effort: 3
+    risk: 1
+    do_this: "Educational email series about key ingredients they've purchased"
+    targeting: "First-time buyers of technical products (retinol, acids, peptides)"
+    expected_lift: "25% higher retention"
+    channels: ["email"]
+    cadence: "3-part series over 10 days"
+    variants:
+      - id: edu_series
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+
+  - id: empty_bottle
+    title: "Running Low Reminder"
+    category: lifecycle
+    effort: 2
+    risk: 1
+    do_this: "Timely reorder reminder based on product size and usage rate"
+    targeting: "Calculate based on oz/ml purchased and typical usage"
+    timing: "Size-based: 30ml=25 days, 50ml=40 days, 100ml=75 days"
+    channels: ["email","sms"]
+    cadence: "Automated reminders on predicted depletion date"
+    variants:
+      - id: nudge_no_discount
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+
+  # Phase 2: High-Impact Action Portfolio
+  - id: frequency_accelerator
+    title: "Frequency Accelerator"
+    category: growth
+    effort: 3
+    risk: 2
+    cooldown_weeks: 4   # 28 days
+    do_this: "Target repeat customers for higher purchase frequency"
+    targeting: "Include: Customers with 2+ orders in L90. Exclude: recent orders last 14d."
+    expected_lift: "15-25% frequency increase"
+    channels: ["email","sms","push"]
+    cadence: "Multi-touch sequence: Email Day 0, SMS Day 3, Push Day 7"
+    copy_snippets: ["frequency_email_subjects.txt.j2","frequency_email_body.txt.j2","frequency_sms.txt.j2"]
+    assets: ["segment_frequency_accelerator.csv"]
+    how_to_launch:
+      - "Import repeat customer segment into Klaviyo."
+      - "Launch frequency sequence with personalized product recommendations."
+      - "Add urgency/scarcity elements for proven products."
+    success_criteria: ["+15% order frequency within 28 days", "Maintain AOV", "Unsub rate < 0.3%"]
+    risks_mitigations: ["Over-promotion → limit to 1x/month", "Fatigue → personalize recommendations"]
+    owner_suggested: "CRM/Growth"
+    time_to_set_up_minutes: 45
+    holdout_plan: "Hold out 15% of repeat customers; evaluate at Day 28."
+    variants:
+      - id: personalized_recs
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: early_access
+        offer_type: early_access
+        eligible_if: "policy.allow_early_access"
+        lift_multiplier: 1.2
+        cost_type: flat_per_order
+        cost_value: 2
+
+  - id: aov_momentum
+    title: "AOV Momentum"
+    category: growth
+    effort: 2
+    risk: 2
+    cooldown_weeks: 3   # 21 days
+    do_this: "Capitalize on existing AOV growth trends"
+    targeting: "Include: Recent customers in growth segments (AOV increasing). Recent orders 7-30d."
+    expected_lift: "Amplify AOV growth by 50%"
+    channels: ["email","site"]
+    cadence: "Smart upsell sequence triggered by growth patterns"
+    copy_snippets: ["aov_momentum_email_subjects.txt.j2","aov_momentum_email_body.txt.j2"]
+    assets: ["segment_aov_momentum.csv"]
+    how_to_launch:
+      - "Identify customers with increasing AOV trends."
+      - "Deploy targeted upsell campaigns with premium products."
+      - "Use dynamic product recommendations based on purchase progression."
+    success_criteria: ["+20% AOV on targeted segment", "Maintain conversion rate", "Positive ROI"]
+    risks_mitigations: ["Over-pricing → test price sensitivity", "Poor timing → optimize send windows"]
+    owner_suggested: "Merchandising/Growth"
+    time_to_set_up_minutes: 30
+    holdout_plan: "Hold out 10% of growth segment; compare AOV increase."
+    variants:
+      - id: premium_recs
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+      - id: bundle_premium
+        offer_type: bundle
+        eligible_if: "policy.allow_bundles"
+        lift_multiplier: 1.3
+        cost_type: percent_of_aov
+        cost_value: 5
+
+  - id: retention_mastery
+    title: "Retention Mastery"
+    category: retention
+    effort: 4
+    risk: 1
+    cooldown_weeks: 6   # 42 days
+    do_this: "Prevent churn in high-value customers"
+    targeting: "Include: Customers at risk based on purchase timing patterns. High LTV customers."
+    expected_lift: "5-10% churn reduction"
+    channels: ["email","sms","phone"]
+    cadence: "Progressive retention: Email Day 0, SMS Day 3, Personal outreach Day 7"
+    copy_snippets: ["retention_email_subjects.txt.j2","retention_email_body.txt.j2","retention_sms.txt.j2"]
+    assets: ["segment_retention_mastery.csv"]
+    how_to_launch:
+      - "Build predictive churn model based on purchase patterns."
+      - "Create progressive retention campaign with increasing value."
+      - "Include personal touch for highest value customers."
+    success_criteria: ["+7% customer retention", "Reduce churn by 5%", "Positive LTV impact"]
+    risks_mitigations: ["Over-discounting → use non-monetary incentives first", "Privacy → respect preferences"]
+    owner_suggested: "CRM/Customer Success"
+    time_to_set_up_minutes: 60
+    holdout_plan: "Hold out 20% of at-risk customers; measure churn rates."
+    variants:
+      - id: value_incentive
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+        note: "Non-monetary value: exclusive content, early access"
+      - id: loyalty_discount
+        offer_type: percent_off
+        value: 15
+        eligible_if: "policy.max_discount_pct >= 15"
+        lift_multiplier: 1.4
+        cost_type: percent_of_aov
+        cost_value: 15
+
+  - id: journey_optimization
+    title: "Journey Optimization"
+    category: conversion
+    effort: 3
+    risk: 2
+    cooldown_weeks: 2   # 14 days
+    do_this: "Fix conversion gaps in customer journey"
+    targeting: "Include: Customers stuck at specific stages (browse→cart, cart→checkout)."
+    expected_lift: "20-40% conversion improvement in funnels"
+    channels: ["email","site","retargeting"]
+    cadence: "Stage-specific interventions: Browse recovery, Cart abandonment, Checkout assist"
+    copy_snippets: ["journey_browse_email.txt.j2","journey_cart_email.txt.j2","journey_checkout_email.txt.j2"]
+    assets: ["segment_journey_optimization.csv"]
+    how_to_launch:
+      - "Map customer journey and identify drop-off points."
+      - "Create stage-specific recovery campaigns."
+      - "Implement progressive assistance and incentives."
+    success_criteria: ["+30% funnel conversion", "Reduce abandonment by 25%", "Improved customer experience scores"]
+    risks_mitigations: ["Over-messaging → respect frequency caps", "Poor UX → A/B test messaging"]
+    owner_suggested: "Conversion/UX"
+    time_to_set_up_minutes: 45
+    holdout_plan: "Hold out 10% at each funnel stage; measure conversion rates."
+    variants:
+      - id: assistance_only
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+        note: "Help and assistance without incentives"
+      - id: cart_incentive
+        offer_type: free_shipping
+        eligible_if: "policy.allow_free_shipping"
+        lift_multiplier: 1.3
+        cost_type: flat_per_order
+        cost_value: 8
+
+  - id: category_expansion
+    title: "Category Expansion"
+    category: growth
+    effort: 3
+    risk: 2
+    cooldown_weeks: 5   # 35 days
+    do_this: "Cross-sell based on purchase patterns"
+    targeting: "Include: Single-category customers with 2+ orders. Established customers only."
+    expected_lift: "30-50% category expansion rate"
+    channels: ["email","site","social"]
+    cadence: "Cross-category education and recommendations over 14 days"
+    copy_snippets: ["category_expansion_email_subjects.txt.j2","category_expansion_email_body.txt.j2"]
+    assets: ["segment_category_expansion.csv"]
+    how_to_launch:
+      - "Identify single-category customers with expansion potential."
+      - "Create educational content about complementary categories."
+      - "Implement smart cross-category recommendations."
+    success_criteria: ["+40% cross-category purchases", "Expand customer breadth", "Increase customer LTV"]
+    risks_mitigations: ["Irrelevant recs → use purchase history", "Overwhelming → gradual introduction"]
+    owner_suggested: "Merchandising/Growth"
+    time_to_set_up_minutes: 40
+    holdout_plan: "Hold out 15% of single-category customers; measure expansion rates."
+    variants:
+      - id: education_first
+        offer_type: no_discount
+        eligible_if: "True"
+        lift_multiplier: 1.0
+        note: "Education and recommendations without discounts"
+      - id: trial_incentive
+        offer_type: percent_off
+        value: 20
+        eligible_if: "policy.max_discount_pct >= 20"
+        lift_multiplier: 1.5
+        cost_type: percent_of_aov
+        cost_value: 20
+        note: "First purchase in new category discount"

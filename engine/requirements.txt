@@ -1,0 +1,22 @@
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.11.0,<1.13  # S10-T1 hard pin: lifetimes BG/NBD optimizer paths require scipy<1.13
+lifetimes==0.11.3  # S10-T1.5 BG/NBD fit; classical Fader-Hardie via Cam Davidson-Pilon
+scikit-survival>=0.22,<0.24  # S11-T1 Cox PH survival; sklearn-ecosystem (DS-locked substitution from lifelines, 2026-05-26)
+implicit>=0.7,<0.8  # S11-T2 Collaborative Filtering ALS (implicit feedback); mac-ARM wheels available
+statsmodels>=0.14.0
+matplotlib>=3.8.0
+jinja2>=3.1.0
+pyarrow>=15.0.0
+python-dateutil>=2.9.0
+pytest>=7.4.0
+PyYAML>=6.0
+seaborn>=0.13.0
+beautifulsoup4>=4.12.0
+jsonschema>=4.0.0  # tools/validate_engine_run.py — engine_run v2 schema validation
+# --- Narration MCP (Phase 1, handoff layer) — OPTIONAL at runtime ---
+# Both are LAZILY imported by src/mcp/narration; the server + tests run in
+# MOCK mode with NEITHER installed and NO ANTHROPIC_API_KEY. Install these
+# only to go live with the real LLM / stdio MCP transport.
+anthropic>=0.40.0  # narration LLM client (src/mcp/narration/llm_client.py)
+mcp>=1.0.0         # MCP Python SDK; stdio server (src/mcp/narration/server.py)

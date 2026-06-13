@@ -1,0 +1,203 @@
+scenarios:
+  healthy_beauty_240d:
+    description: >
+      Beauty/skincare brand with 240 days of history. Healthy revenue ($90k-$150k/month),
+      good AOV ($55-$85), improving returning customer share (25%->40%+), diverse SKU mix.
+      Designed to trigger at least one PRIMARY or DIRECTIONAL recommendation.
+    seed: 42
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 90000
+    expected_monthly_revenue_max: 150000
+    expected_aov_min: 55
+    expected_aov_max: 85
+    expected_plays_considered_min: 3
+    expected_plays_watching_min: 1
+    expected_behaviors:
+      - "at_least_one_primary_or_directional"
+      - "considered_gte_3"
+      - "watching_gte_1"
+    inventory: true
+    customer_pool_size: 15000
+    category: "beauty"
+
+  healthy_beauty_low_inventory_240d:
+    description: >
+      Same as healthy_beauty_240d but the hero SKU (highest revenue product) has critically
+      low inventory (available <= 10 units). Other SKUs have healthy stock. Expected to
+      surface an inventory-blocked play in the considered or rejected section.
+    seed: 43
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 90000
+    expected_monthly_revenue_max: 150000
+    expected_aov_min: 55
+    expected_aov_max: 85
+    expected_plays_considered_min: 2
+    expected_plays_watching_min: 1
+    expected_behaviors:
+      - "inventory_blocked_play_visible"
+      - "considered_gte_2"
+    inventory: true
+    hero_sku_low_inventory: true
+    customer_pool_size: 15000
+    category: "beauty"
+
+  healthy_supplements_240d:
+    description: >
+      Supplements brand with 240 days of history mirroring the pinned
+      Beauty fixture shape for the G-1 supplements slate regression lane.
+      Healthy supplement merchant: revenue $40k-$80k/month, AOV $35-$55,
+      realistic SKU names (capsule counts, mg, serving-per-container),
+      replenishment cadences 30/60/90-day plausible. The orders/inventory
+      CSVs are byte-identical clones of supplement_replenishment_240d_*
+      (G-1, 2026-05-10); the rename pins the fixture under the same
+      naming convention as healthy_beauty_240d so the supplements slate
+      regression test mirrors the Beauty lane.
+    seed: 44
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 40000
+    expected_monthly_revenue_max: 80000
+    expected_aov_min: 35
+    expected_aov_max: 55
+    expected_plays_considered_min: 1
+    expected_plays_watching_min: 1
+    expected_behaviors:
+      - "supplements_run_does_not_crash"
+      - "considered_gte_1"
+    inventory: true
+    reorder_interval_days_min: 28
+    reorder_interval_days_max: 45
+    customer_pool_size: 1200
+    category: "supplement"
+
+  supplement_replenishment_240d:
+    description: >
+      Supplement/wellness brand with 240 days. Revenue $40k-$80k/month, AOV $35-$55.
+      Customers have reliable reorder intervals of 28-45 days. Consumable product mix
+      (protein, vitamins, pre-workout, collagen, omega-3). Replenishment signal visible.
+    seed: 44
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 40000
+    expected_monthly_revenue_max: 80000
+    expected_aov_min: 35
+    expected_aov_max: 55
+    expected_plays_considered_min: 1
+    expected_plays_watching_min: 1
+    expected_behaviors:
+      - "replenishment_signal_visible"
+      - "considered_gte_1"
+    inventory: true
+    reorder_interval_days_min: 28
+    reorder_interval_days_max: 45
+    customer_pool_size: 1200
+    category: "supplement"
+
+  small_store_240d:
+    description: >
+      Small general lifestyle/gifting brand, 240 days. Revenue $8k-$20k/month, AOV $40-$65,
+      lower order volume (20-60/month). Engine should produce useful conservative memo,
+      no fake projections.
+    seed: 45
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 8000
+    expected_monthly_revenue_max: 20000
+    expected_aov_min: 40
+    expected_aov_max: 65
+    expected_plays_considered_min: 0
+    expected_plays_watching_min: 0
+    expected_behaviors:
+      - "conservative_recommendations"
+      - "no_fake_projections"
+    inventory: false
+    customer_pool_size: 2000
+    category: "lifestyle"
+
+  cold_start_45d:
+    description: >
+      Beauty brand with only 45 days of history. Similar monthly revenue rate to
+      healthy_beauty but insufficient history. Engine should abstain or emit a
+      data-sufficiency warning rather than fabricating projections.
+    seed: 46
+    anchor_date: "2025-09-18"
+    days_history: 45
+    expected_monthly_revenue_min: 90000
+    expected_monthly_revenue_max: 150000
+    expected_aov_min: 55
+    expected_aov_max: 85
+    expected_plays_considered_min: 0
+    expected_plays_watching_min: 0
+    expected_behaviors:
+      - "data_sufficiency_abstain_or_warning"
+      - "no_primary_recommendations"
+    inventory: false
+    customer_pool_size: 15000
+    category: "beauty"
+
+  promo_anomaly_240d:
+    description: >
+      Beauty brand with 240 days. Normal revenue for most months, but month 7 (the
+      August month relative to a Sep 18 anchor) has a 2.5x-3x spike due to heavy
+      promotional discounting (>=30% average discount in promo month). Revenue
+      returns to baseline after promo. Engine should surface an anomaly warning
+      or abstain from projections based on anomalous period.
+
+      Synthetic Fix 10: promo_month_index moved from 4 (May) to 7 (August) so the
+      spike falls within L56 of the Sep 18 anchor and the engine's anomaly /
+      post-promo logic can actually exercise it. Pre-Fix-10 the May spike was
+      outside L90 entirely, so the fixture validated nothing about anomaly
+      behavior. No anomaly threshold is changed; the fixture is the only thing
+      moved.
+    seed: 47
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 90000
+    expected_monthly_revenue_max: 150000
+    expected_aov_min: 55
+    expected_aov_max: 85
+    expected_plays_considered_min: 0
+    expected_plays_watching_min: 0
+    expected_behaviors:
+      - "anomaly_warning_or_abstain"
+    inventory: false
+    promo_month_index: 7
+    promo_spike_multiplier: 2.7
+    promo_discount_pct: 0.35
+    customer_pool_size: 15000
+    category: "beauty"
+
+  winback_activation_beauty_240d:
+    description: >
+      S6-T1 activation-moment fixture (dev-run-only, NOT pinned to a slate
+      regression test). Layered on top of healthy_beauty_240d's healthy
+      baseline, this scenario INJECTS an explicit "dormant repeat-buyer"
+      cohort of `winback_cohort_target_size` customers so the 3-part
+      winback_dormant_cohort definition (last order 21-45d ago ∧ >=2
+      prior orders ∧ no order in past 28d) fires above the 500 floor.
+
+      Used to demonstrate the Klaviyo validated_external prior anchoring
+      a non-suppressed BLEND-sourced revenue range on a real fixture —
+      the activation moment for the S7.5 priors-validation contract.
+      No CI pin; regenerate on demand via:
+
+        python scripts/generate_synthetic_shopify.py --scenario winback_activation_beauty_240d
+
+    seed: 48
+    anchor_date: "2025-09-18"
+    days_history: 240
+    expected_monthly_revenue_min: 90000
+    expected_monthly_revenue_max: 150000
+    expected_aov_min: 55
+    expected_aov_max: 85
+    expected_plays_considered_min: 0
+    expected_plays_watching_min: 0
+    expected_behaviors:
+      - "winback_dormant_cohort_above_floor"
+    inventory: true
+    customer_pool_size: 15000
+    # S6-T1 activation knob: explicit dormant repeat-buyer cohort size.
+    winback_cohort_target_size: 700
+    category: "beauty"

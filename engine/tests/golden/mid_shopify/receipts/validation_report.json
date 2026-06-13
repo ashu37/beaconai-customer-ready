@@ -1,0 +1,65 @@
+{
+  "checks": {
+    "AOV Consistency": {
+      "details": {
+        "aligned_net_sales": 64367.840800000005,
+        "aligned_orders": 742,
+        "alt_delta_pct": 0.13205532243051427,
+        "aov_aligned": 86.74911159029651,
+        "aov_calc": 86.74911159029651,
+        "aov_line_items_per_order": 0.0,
+        "aov_subtotal_minus_discount": 86.74911159029651,
+        "aov_total_minus_shipping_taxes": 75.29342968867924,
+        "delta_pct": 0.0,
+        "method_used": "subtotal_minus_discount",
+        "net_sales_line_items_per_order": 0.0,
+        "net_sales_subtotal_minus_discount": 64367.840800000005,
+        "net_sales_total_minus_shipping_taxes": 55867.724829,
+        "orders_in_window": 742
+      },
+      "message": "\u2713 AOV consistent (\u0394 0.0%)",
+      "severity": "info",
+      "status": "green"
+    },
+    "Data Anomalies": {
+      "details": {
+        "anomalies": [
+          "All orders have identical discount rate: 0%",
+          "100% line items missing product names"
+        ]
+      },
+      "message": "\u26a0\ufe0f 2 anomalies detected - review recommended",
+      "severity": "warning",
+      "status": "amber"
+    },
+    "Metric Consistency": {
+      "details": {
+        "warnings": [
+          "Repeat rate 0% suspiciously low for 742 orders"
+        ]
+      },
+      "message": "\u26a0\ufe0f Metric warnings: Repeat rate 0% suspiciously low for 742 orders",
+      "severity": "warning",
+      "status": "amber"
+    },
+    "Transaction Volume": {
+      "details": {
+        "financial_completeness": "100%",
+        "issues": [],
+        "total_orders": 10002
+      },
+      "message": "\u2713 Transaction volume verified: 10002 clean orders",
+      "severity": "info",
+      "status": "green"
+    }
+  },
+  "critical_issues": [],
+  "data_quality_grade": "B+",
+  "overall_status": "amber",
+  "summary": "Some issues detected",
+  "validation_score": 85,
+  "warnings": [
+    "\u26a0\ufe0f 2 anomalies detected - review recommended",
+    "\u26a0\ufe0f Metric warnings: Repeat rate 0% suspiciously low for 742 orders"
+  ]
+}

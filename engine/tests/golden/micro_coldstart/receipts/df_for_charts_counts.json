@@ -1,0 +1,7 @@
+{
+  "has_customer_email": false,
+  "has_customer_id": true,
+  "has_lineitem_name": true,
+  "recent_30_rows": 47,
+  "rows": 600
+}

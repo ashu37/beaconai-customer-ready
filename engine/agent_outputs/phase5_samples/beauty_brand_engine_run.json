@@ -1,0 +1,179 @@
+{
+  "run_id": "0754f16b-379f-4244-a373-37c249e805b0",
+  "store_id": "beauty_brand_phase5_final",
+  "anchor_date": "2025-09-18T23:00:25.488000+00:00",
+  "schema_version": "1.0.0",
+  "data_window": {
+    "primary_window": "L28",
+    "available_windows": [
+      "L7",
+      "L28",
+      "L56",
+      "L90"
+    ],
+    "anchor_quality": null
+  },
+  "cold_start": false,
+  "data_quality_flags": [],
+  "abstain": {
+    "state": "publish",
+    "reason": null
+  },
+  "state_of_store": [
+    {
+      "text": "AOV (L28): $69 (1.7% vs prior)",
+      "supporting_metric": "aov",
+      "change_magnitude": 0.01732519760022961,
+      "classification": "moved"
+    },
+    {
+      "text": "Repeat rate (L28): 34.0% (-3.7% vs prior)",
+      "supporting_metric": "repeat_rate_within_window",
+      "change_magnitude": -0.03690228690228699,
+      "classification": "moved"
+    },
+    {
+      "text": "Orders (L28): 1374 (0.0% vs prior)",
+      "supporting_metric": "orders",
+      "change_magnitude": 0.0,
+      "classification": "held"
+    },
+    {
+      "text": "Returning-customer share (L28): 91.5% (6.6% vs prior)",
+      "supporting_metric": "returning_customer_share",
+      "change_magnitude": 0.06591479908493385,
+      "classification": "moved"
+    },
+    {
+      "text": "Net sales (L28): $94,405 (1.7% vs prior)",
+      "supporting_metric": "net_sales",
+      "change_magnitude": 0.01732519760022969,
+      "classification": "held"
+    }
+  ],
+  "recommendations": [
+    {
+      "play_id": "first_to_second_purchase",
+      "evidence_class": "directional",
+      "confidence_label": "Emerging",
+      "recommendation_text": "Send a structured first-to-second purchase nudge to single-purchase customers.",
+      "why_now": "Returning-customer share moved up 6.6% on L28 with consistent direction across L56/L90 windows. The retention trend supports a measured first-to-second nudge to the single-purchase cohort.",
+      "audience": {
+        "id": "phase5_first_to_second_purchase",
+        "definition": "customers with exactly one historical order",
+        "size": 286,
+        "fraction_of_base": null,
+        "overlap_with": []
+      },
+      "measurement": {
+        "metric": "returning_customer_share",
+        "observed_effect": 0.06591479908493385,
+        "n": 962,
+        "primary_window": "L28",
+        "consistency_across_windows": 3,
+        "p_internal": 9.509356992436168e-05,
+        "ci_internal": null
+      },
+      "revenue_range": {
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "source": null,
+        "drivers": [
+          {
+            "name": "suppression_reason",
+            "source": "measurement_builder_v2",
+            "value": "directional_no_intervention_effect",
+            "rationale": "supporting signal is a state statistic, not an intervention effect; revenue suppressed until campaign realization data calibrates lift"
+          },
+          {
+            "name": "returning_customer_share",
+            "source": "store_observed",
+            "value": 0.9147609147609148,
+            "primary_window": "L28",
+            "delta": 0.06591479908493385,
+            "consistency_across_windows": 3
+          }
+        ],
+        "suppressed": true
+      },
+      "inventory": null,
+      "conflicts": null,
+      "launch_window": null,
+      "klaviyo_brief_inputs": {},
+      "receipts_ref": null
+    }
+  ],
+  "considered": [
+    {
+      "play_id": "winback_21_45",
+      "reason_code": "no_measured_signal",
+      "reason_text": "No measured signal yet for this play at this store; held as targeting until campaign outcomes calibrate the lift.",
+      "evidence_snapshot": "Audience: 432 people | last purchase 21-45 days before anchor",
+      "would_fire_if": "Would fire once the audience can be measured against a valid comparison group."
+    },
+    {
+      "play_id": "bestseller_amplify",
+      "reason_code": "no_measured_signal",
+      "reason_text": "No measured signal yet for this play at this store; held as targeting until campaign outcomes calibrate the lift.",
+      "evidence_snapshot": "Audience: 489 people | buyers of top-revenue product",
+      "would_fire_if": "Would fire once the audience can be measured against a valid comparison group."
+    },
+    {
+      "play_id": "discount_hygiene",
+      "reason_code": "no_measured_signal",
+      "reason_text": "No measured signal yet for this play at this store; held as targeting until campaign outcomes calibrate the lift.",
+      "evidence_snapshot": "Audience: 962 people | customers with discounted orders in last 28 days",
+      "would_fire_if": "Would fire once the audience can be measured against a valid comparison group."
+    },
+    {
+      "play_id": "subscription_nudge",
+      "reason_code": "audience_too_small",
+      "reason_text": "Eligible audience is below the minimum send threshold this run.",
+      "evidence_snapshot": "Audience: 29 people | customers with >=3 same-product orders in last 90 days",
+      "would_fire_if": "Would fire if the eligible audience grows above the minimum threshold."
+    },
+    {
+      "play_id": "routine_builder",
+      "reason_code": "no_measured_signal",
+      "reason_text": "No measured signal yet for this play at this store; held as targeting until campaign outcomes calibrate the lift.",
+      "evidence_snapshot": "Audience: 92 people | skincare single-product buyers in last 60 days",
+      "would_fire_if": "Would fire once the audience can be measured against a valid comparison group."
+    },
+    {
+      "play_id": "empty_bottle",
+      "reason_code": "no_measured_signal",
+      "reason_text": "No measured signal yet for this play at this store; held as targeting until campaign outcomes calibrate the lift.",
+      "evidence_snapshot": "Audience: 0 people | customers within +/-3d of depletion based on size token",
+      "would_fire_if": "Would fire once the audience can be measured against a valid comparison group."
+    }
+  ],
+  "watching": [
+    {
+      "metric": "net_sales",
+      "current": null,
+      "prior": null,
+      "trend": "up",
+      "threshold_to_act": "+/- 10% to revisit revenue plays"
+    },
+    {
+      "metric": "orders",
+      "current": null,
+      "prior": null,
+      "trend": "flat",
+      "threshold_to_act": "+/- 10% to fire an orders-driven play"
+    }
+  ],
+  "scale": {
+    "monthly_revenue": 94404.94,
+    "customer_base_est": 962,
+    "materiality_floor": 10000.0
+  },
+  "briefing_meta": {
+    "confidence_mode": "learning",
+    "vertical": "beauty",
+    "subvertical": "general",
+    "stage": null,
+    "seasonality_tag": null
+  }
+}

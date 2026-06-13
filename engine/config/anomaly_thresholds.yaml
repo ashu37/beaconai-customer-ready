@@ -1,0 +1,72 @@
+# Anomaly detector thresholds — Milestone 1 (T1.2).
+#
+# These thresholds are intentionally conservative for M1. Per the M1 plan,
+# the gates are OFF in M1 (M5 wires gating). M1 only DETECTS and writes flags
+# to the receipts-only `engine_run.json`. No detector here should change any
+# merchant-facing output.
+#
+# Schema version is keyed so M5 can tighten thresholds without breaking M1.
+schema_version: "1.0.0"
+
+# Window the detector inspects, anchored at the engine's anchor_date.
+analysis_window_days: 28
+
+# bfcm_overlap: triggers when the analysis window overlaps the canonical
+# Black Friday / Cyber Monday week. The engine treats the BFCM week as the
+# 7 days up to and including the US Cyber Monday for any year present in the
+# data. M1 detects overlap on the calendar; M5 escalates to ABSTAIN_HARD.
+bfcm_overlap:
+  enabled: true
+  # Treat any overlap (>= 1 day) as a flag; M5 will tune.
+  min_overlap_days: 1
+  # Window radius (days before/after Cyber Monday) considered "BFCM" itself.
+  bfcm_radius_days: 7
+
+# post_promo_window: the detector flags the 14 days *after* a known BFCM
+# week even if the analysis window doesn't overlap BFCM directly. The post
+# promotion period has unusually low repeat behavior and skews evidence.
+post_promo_window:
+  enabled: true
+  post_window_days: 14
+
+# refund_storm: triggers when the refund-rate within the analysis window is
+# more than `multiplier_over_baseline` times the prior-period refund rate
+# AND the absolute refund count exceeds `min_refunds` (avoids false-positive
+# on tiny stores).
+refund_storm:
+  enabled: true
+  multiplier_over_baseline: 3.0
+  min_refunds: 5
+  # Absolute backstop: if refund rate exceeds this, fire regardless of baseline.
+  absolute_rate_floor: 0.10
+
+# test_order_anomaly: triggers when implausibly small / repeated orders
+# (e.g., $0 totals, single-customer-many-orders) exceed thresholds. M1 uses
+# simple heuristics; M5 will refine.
+test_order_anomaly:
+  enabled: true
+  zero_value_order_pct: 0.02      # >2% zero-value orders
+  single_customer_concentration: 0.30  # one customer >30% of orders in window
+
+# insufficient_clean_history: not enough rows pre-anchor to compute a
+# defensible repeat-rate or AOV baseline.
+insufficient_clean_history:
+  enabled: true
+  min_clean_days: 60
+  min_clean_orders: 50
+
+# promo_spike (B-1): fires when revenue inside the L56 analysis window
+# is >= multiplier_over_baseline times the immediately-prior L56 period,
+# AND the prior period has enough volume to be a credible baseline. Uses
+# the soft POST_PROMO_WINDOW flag because the spike has already arrived;
+# downstream routing demotes to ABSTAIN_SOFT (per-play hold) rather than
+# ABSTAIN_HARD. Calibrated against:
+#   * promo_anomaly_240d  → L56 ratio = 2.28 (fires)
+#   * healthy_beauty_240d → L56 ratio = 1.17 (does NOT fire)
+#   * other healthy fixtures all < 1.5
+promo_spike:
+  enabled: true
+  window_days: 56
+  multiplier_over_baseline: 2.0
+  min_prior_orders: 50
+  min_prior_days_covered: 28

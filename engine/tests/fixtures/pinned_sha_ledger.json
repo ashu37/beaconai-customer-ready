@@ -1,0 +1,111 @@
+{
+  "_meta": {
+    "ticket": "S13.6-T7a",
+    "purpose": "S13.6-T7a (DS adjudication 2026-06-01 + founder approved 2026-06-01): RULE A flag-aware absence-of-data pattern. ADDED 3 closed-set null-reason enums in src/engine_run.py — RevenueRangeSuppressionReason (9 members matching the producer string literals byte-for-byte per DS Q1), MonthDeltaNullReason (5 members; LINEAGE_CHANGED reserved as forward-compat), and PredictedSegmentNullReason (4 members; inner-field shape). ADDED 3 paired _null_reason fields — RevenueRange.suppression_reason (paired with the existing suppressed: bool flag at the seam; invariant: suppressed=True iff suppression_reason is set), EngineRun.month_2_delta_null_reason (paired with month_2_delta: Optional[MonthDelta]), PredictedSegment.segment_name_null_reason (paired with the inner segment_name: Optional[str] per D-S13-2). Wrapped 7 producer-site strings at the seam — 6 in src/sizing.py (_suppressed_range helper), 3 in src/measurement_builder.py (directional_no_intervention_effect / prior_unvalidated / aov_unavailable), 1 in src/decide.py (experiment_no_calibrated_lift). NO producer rewrites per DS Q1. Legacy 'targeting_non_causal_prior' string is dead-code under ENGINE_V2_PRIORS_VALIDATION=true (default-ON at S7.5-T3.5) — defensively maps to OBSERVED_EFFECT_INVALID with a TODO(S13.7-cleanup) for the dead-code sweep. Refactored src.predictive.month_2_delta.detect_month_2_delta to return Tuple[Optional[MonthDelta], Optional[MonthDeltaNullReason]] (Option (a) tuple-return enforces always-paired emission at the seam). Refactored src.predictive.consumer_wiring._compute_modal_segment to return a 4-tuple with the paired enum. Annotated every other Optional[X] field on contract dataclasses with '# null_reason_exempt: <rationale>' source-level comments per the revised RULE A. AST sweep at tests/test_s13_6_t7a_no_silent_nulls.py walks every Optional on a contract dataclass and asserts the rule. DEFERRED to S13.7 (T7b): substrate refusal-card audit + StoreProfileNullReason (producer surface not yet aligned with DS §(e) members PROFILE_NOT_LOADED | ONBOARDING_INCOMPLETE — TODO(T7b) annotation in place). DEFERRED to S13.7+: CustomerIdsNullReason. T1a/T1b/T2/T3/T4/T5/T6 strips/types/wrappers/grammar/atoms preserved (no re-touch). Pivot 7 single-demote-channel invariant unaffected.",
+    "captured_date": "2026-06-01",
+    "captured_by": "code-refactor-engineer",
+    "briefing_html_sha_pin_retired_note": "Per S13.6-T1a Option D (founder + DS approved 2026-05-30, see PIVOTS.md Pivot 2 addendum + agent_outputs/implementation-manager-s13.5-s13.6-s13.7-plan.md REVISION HISTORY v2.1), briefing.html byte-identity is no longer the canary. The renderer (src/storytelling_v2.py + src/briefing.py + src/debug_renderer.py) stays runnable for local dev convenience but is no longer load-bearing on the contract. briefing.html sha values are not recorded post-T1a.",
+    "engine_run_json_sha_caveat": "engine_run.json contains wall-clock fit_timestamp values from the predictive substrate ModelCards (S10-S12 introduced these). These shas are NOT byte-stable across re-runs even at fixed code; they record the post_s13_6_t<X> state at this commit moment only. The load-bearing post-T<X> test gates are the structural dataclass/enum introspection + AST sweep + emitted-JSON shape assertions in the per-ticket test files (e.g. tests/test_s13_6_t6_mechanism_intent_atom.py), NOT this ledger. This ledger is documentation, not a re-runnable test fixture.",
+    "post_s13_t3_5_definition": "ENGINE_V2_PLAY_PREDICTED_SEGMENT=true, ENGINE_V2_MONTH_2_DELTA=true (T3.5 atomic flip), all other ML flags unchanged.",
+    "post_s13_6_t1a_definition": "Same flag set as post_s13_t3_5 PLUS INCLUDE_DEBUG_FIELDS=false (new DEFAULTS flag at T1a). Six prose slots stripped from dataclasses (PlayCard.recommendation_text, PlayCard.why_now, RejectedPlay.reason_text, RejectedPlay.evidence_snapshot, RejectedPlay.would_fire_if, Abstain.reason); notes: List[str] debris on Sensitivity/Provenance/PredictedSegment/ModelCardRef/MonthDelta gated OFF.",
+    "post_s13_6_t1b_definition": "Same flag set as post_s13_6_t1a. Observation.text additionally stripped from the contract surface (T1a's six prose strips preserved). State-of-store sentence is now synthesized at render time from typed Observation numerics (supporting_metric / classification / delta_pct / anomaly_flags) via src.storytelling_v2._synthesize_observation_sentence.",
+    "post_s13_6_t6_definition": "Same flag set as post_s13_6_t1b. Cumulative additive contract changes from T2 (PlayCard.klaviyo_brief_inputs REMOVED; EngineRun typed slots), T3 (OpportunityContext NonLiftAtom wrapper), T4 (typed FitWarning + FitWarningLevel on ModelCardRef.fit_warnings), T5 (schema_version 1.0.0 -> 2.0.0 + CHANGELOG block), and T6 (PlayCard.mechanism_intent: Optional[MechanismIntent] ADDED; RejectedPlay.mechanism: Optional[str] -> Optional[MechanismIntent] RETYPED; MechanismType + MechanismIntent exported via __all__ per DS R6 single-file authority). Producer wiring lands typed mechanism atom at all PlayCard + RejectedPlay assembly sites; storytelling_v2 retains YAML-lookup fallback at the renderer until T8 rewires structurally.",
+    "post_s13_6_t7a_definition": "Same flag set as post_s13_6_t6. Cumulative additive contract changes from T7a: 3 closed-set null-reason enums (RevenueRangeSuppressionReason / MonthDeltaNullReason / PredictedSegmentNullReason) ADDED + 3 paired _null_reason fields (RevenueRange.suppression_reason; EngineRun.month_2_delta_null_reason; PredictedSegment.segment_name_null_reason). Round-trip serialization wired through _from_dict_revenue_range / _from_dict_predicted_segment / _from_dict_engine_run with strict-cutover carry-forward (pre-T7a snapshots have no key → None). Producer wraps the existing string literals at the seam per DS Q1 (no producer rewrites). detect_month_2_delta now returns a 2-tuple; _compute_modal_segment returns a 4-tuple. Renderer not touched; renderer remains runnable.",
+    "post_s13_7_t7b_definition": "Same flag set as post_s13_6_t7a. Cumulative additive contract changes from S13.7-T7b (KI-NEW-AA close): ADDED StoreProfileNullReason(str,Enum) 2-member + EngineRun.store_profile_null_reason: Optional[StoreProfileNullReason] = None (paired with store_profile; wired in main.py — PROFILE_NOT_LOADED on exception, None on success/flag-OFF). ADDED ModelCardAbsenceReason(str,Enum) 3-member + CohortDiagnosticsAbsenceReason(str,Enum) 2-member (dict-field vocab only; no paired _null_reason fields). All 3 exported via __all__. Dead-code sweep: _surface_mechanism_for_play removed from src/decide.py (zero call sites confirmed); targeting_non_causal_prior in src/sizing.py NOT removed (active call sites + pinned test assertions; deferred per KI-NEW-AB). engine_run.json shape change: store_profile_null_reason key ADDED (value null when ENGINE_V2_STORE_PROFILE is OFF or profile loaded successfully; value 'profile_not_loaded' when flag-ON and build_store_profile raises).",
+    "post_s_fe_descriptive_distribution_definition": "Same flag set as post_s13_7_t7b. FOUNDER-AUTHORIZED additive contract change (docs/evidence_layer.md §7 L-EV-19/20, 2026-06-02): schema_version 2.0.0 -> 2.1.0 (additive within the founder lock-in #3 2.x.x freeze). ADDED Audience.descriptive_distribution: Optional[DescriptiveDistribution] = None — a richer rendering of M4, NOT a 10th evidence member (L-EV-2 preserved). ADDED DescriptiveDistribution dataclass (kind + bins + counts + optional marker + paired RULE-A suppressed/suppression_reason), DistributionKind(str,Enum) 4-member closed (DORMANCY_DAYS/AOV_GAP/REORDER_GAP_DAYS/DISCOUNT_FRACTION), DescriptiveDistributionSuppressionReason(str,Enum) 3-member, build_descriptive_distribution pure binning helper; all 4 exported via __all__. Producer: audience_builders stashes descriptive_kind/descriptive_series/descriptive_marker on AudienceResult for the 4 distributional plays (winback_dormant_cohort/replenishment_due/discount_dependency_hygiene/aov_lift_via_threshold_bundle); measurement_builder.build_prior_anchored_play_card bins via build_descriptive_distribution and attaches to Audience. DESCRIPTIVE-ONLY (L-EV-20): observed counts + optional real marker; NO dollar/lift/rate field on the atom; engine emits binned series only, no chart-spec (L-EV-3). Markers: winback = dormancy-window upper bound (real); threshold/replenishment/discount = None today (threshold_aov/replenishment_window_days/target_discount_share are None/TODO(S14)). engine_run.json shape change: recommendations[*].audience.descriptive_distribution key ADDED (null on non-distributional plays; typed atom on the 4 distributional plays when they surface in head lanes; suppressed-atom with typed reason when the source series is empty/absent/integrity-failed). schemas/engine_run.v2.json regenerated (title -> v2.1.0; new dataclass + enums auto-discovered). NOTE: these 5 synthetic engine_run.json shas are NOT re-pinned here (see engine_run_json_sha_caveat — wall-clock fit_timestamp makes them non-byte-stable; the load-bearing gates are the structural/AST/round-trip tests in tests/test_s_fe_descriptive_distribution.py + the schema-validate). briefing.html unchanged (renderer does not consume the new field). from_dict tolerates absence (2.0.0 back-compat).",
+    "post_s_fe_rfm_segment_distribution_definition": "Same flag set as post_s_fe_descriptive_distribution. FOUNDER-AUTHORIZED additive contract change (docs/evidence_layer.md §7 L-EV-17, 2026-06-03): NO version bump — schema_version stays 2.1.0 (additive WITHIN the existing 2.1.0). ADDED SegmentBand dataclass ({segment_name: str, n: int, share: float}) in src/predictive/model_card.py — AGGREGATE-ONLY + DESCRIPTIVE (L-EV-17/20): named segment + observed count + fraction of analyzed base; NO per-customer rows, NO monetary magnitude, NO lift/rate/dollar. ADDED ModelCard.segment_distribution: Optional[List[SegmentBand]] = None (RFM-SCOPED: populated ONLY on the rfm ModelCard, ONLY when fit_status in {VALIDATED, PROVISIONAL}; other substrates leave it None) + ModelCard.segment_distribution_suppression_reason: Optional[RfmSegmentDistributionSuppressionReason] = None (paired RULE-A null-reason). ADDED RfmSegmentDistributionSuppressionReason(str,Enum) 2-member closed (FIT_NOT_VALIDATED/FLAG_OFF). Bands come from rfm_table['segment_name'].value_counts() (already computed, previously reduced to n_segments_observed and discarded — L-EV-18 diagnosis applied to RFM); ordering n DESCENDING, ties broken by canonical LTV rank (SEGMENT_LTV_RANK_ORDER). Population in src/predictive/rfm.py::_compute_segment_distribution (pure; computes from its own rfm_table; no new cross-module coupling). RULE-A typed suppression: on REFUSED/INSUFFICIENT_DATA the rfm card carries segment_distribution=None + FIT_NOT_VALIDATED (RFM has no descriptive twin — L-EV-15 — suppresses as a unit, never a fabricated/partial distribution). Engine emits typed bands only — NO chart-spec (L-EV-3). engine_run.json shape change: predictive_models.rfm.segment_distribution + .segment_distribution_suppression_reason keys ADDED (on the rfm card only; bands populated when RFM VALIDATED/PROVISIONAL, null+reason otherwise; absent/null on non-RFM substrate cards). schemas/engine_run.v2.json regenerated (title remains v2.1.0; ADDED $defs.SegmentBand + $defs.RfmSegmentDistributionSuppressionReason + the two new ModelCard properties — purely additive). NOTE: the synthetic engine_run.json shas are NOT re-pinned here (see engine_run_json_sha_caveat — wall-clock fit_timestamp makes them non-byte-stable; the load-bearing gates are the structural/serialize/round-trip tests in tests/test_s_fe_rfm_segment_distribution.py + the schema-validate). briefing.html unchanged (renderer does not consume the new field). from_dict tolerates absence (older runs / non-RFM cards -> None; back-compat).",
+    "small_sm_golden_exclusion": "VALIDATED-RFM golden small_sm (data/SM_orders.csv, 13899 rows, brand=small_sm) is intentionally NOT in this ledger; T3 exercised it separately via tests/test_s13_t3_month_2_delta_positive_control.py + tests/test_s13_t3_small_sm_golden_e2e.py. The 5 fixtures here are the synthetic_scenarios.yaml pinned fixtures (healthy_beauty_240d, healthy_supplements_240d, small_store_240d, cold_start_45d, healthy_beauty_low_inventory_240d) — small_store_240d is a SEPARATE synthetic fixture from the small_sm golden."
+  },
+  "healthy_beauty_240d": {
+    "engine_run_json": {
+      "pre_s13": "f0e345a423961fb73ed2a46829df7904e1ea3784b6a93d93f4e266b1bcbaad26",
+      "post_s13_t3_5": "4be39382fdd28e98bf41afd183909292a5a0e27ca00281b9ed8f740340af3b59",
+      "post_s13_6_t1a": "88aee4c61583768423ca34dce5d7b4609a5cf4eafb10f0905f2df02e8ea84cab",
+      "post_s13_6_t1b": "c501dae64b949213870f95b8a0060aec08813118394c180c7fee16a8bddb626f",
+      "post_s13_6_t6": "a0205a291359e30fb0fae12cf8a4c91df0e476a03449a0b68c5c971c4c5ebae0",
+      "post_s13_6_t7a": "e3e585c74491757563c06c938aca5ea1d8a232d8632960203036b251516da8d9",
+      "sha_changed_as_expected": true,
+      "diff_confined_to": [
+        "recommendations[*].recommendation_text REMOVED (T1a)",
+        "recommendations[*].why_now REMOVED (T1a)",
+        "considered[*].reason_text REMOVED (T1a)",
+        "considered[*].evidence_snapshot REMOVED (T1a)",
+        "considered[*].would_fire_if REMOVED (T1a)",
+        "abstain.reason REMOVED (T1a)",
+        "notes: List[str] keys on Sensitivity/Provenance/PredictedSegment/ModelCardRef/MonthDelta dropped (INCLUDE_DEBUG_FIELDS=false default, T1a)",
+        "state_of_store[*].text REMOVED (T1b)",
+        "recommendations[*].klaviyo_brief_inputs REMOVED (T2)",
+        "opportunity_context wrapped in NonLiftAtom + duplicate aov/addressable_value keys stripped (T3)",
+        "model_card_ref.fit_warnings shape changed from List[str] to List[FitWarning dict] (T4)",
+        "schema_version: 1.0.0 -> 2.0.0 (T5)",
+        "recommendations[*].mechanism_intent ADDED (T6; populated as typed MechanismIntent dict on mapped play_ids, null otherwise)",
+        "considered[*].mechanism shape changed from prose str -> typed MechanismIntent dict (T6; null on unmapped play_ids)",
+        "recommendations[*].revenue_range.suppression_reason ADDED (T7a; populated when suppressed=True, null otherwise)",
+        "recommendations[*].predicted_segment.segment_name_null_reason ADDED (T7a; populated when segment_name is None under modal-floor or parquet-absent paths)",
+        "month_2_delta_null_reason ADDED (T7a; populated when month_2_delta is None under flag-ON; pairs with the existing month_2_delta slot)"
+      ]
+    }
+  },
+  "healthy_supplements_240d": {
+    "engine_run_json": {
+      "pre_s13": "1d97c6a100fad726537f35c405172128c272b3d36a1e88d47b05c81b458521ec",
+      "post_s13_t3_5": "f1ac32e51f76bc3187c072b766deb7afd6f7204c59bd0e592611dec0e9adf94e",
+      "post_s13_6_t1a": "691e63281940a3f05960128f968259aa6501db1ee05c0d5abe42c70906f18519",
+      "post_s13_6_t1b": "03dddfe7cf7b4a0508cb314b2e7d354b0dcb2cd44dac98f6d8dcf2dcc11b1ce9",
+      "post_s13_6_t6": "be366fe20b9174c6d0b3e70a4e10544942a20e5aaa61e55c3b709c3f84c8f238",
+      "post_s13_6_t7a": "c2d39973d696c6d688874307b78269af9c9b2038bd60dc9a40170e075b3e9db9",
+      "sha_changed_as_expected": true,
+      "diff_confined_to": [
+        "T1a six-prose-slot strip + notes gating (preserved)",
+        "state_of_store[*].text REMOVED (T1b)",
+        "T2/T3/T4/T5 contract changes (cumulative)",
+        "T6 mechanism_intent ADD on PlayCard + mechanism RETYPE on RejectedPlay",
+        "T7a 3 paired _null_reason fields ADDED (suppression_reason / segment_name_null_reason / month_2_delta_null_reason)"
+      ],
+      "note": "supplements n_recommendations=0 at T2.5/T3.5/T1a (abstain_soft decision_state); the engine_run.json sha change from pre_s13 reflects upstream predictive_models substrate fit_timestamps drift + abstain.reason removal + cumulative T2..T6 contract changes."
+    }
+  },
+  "small_store_240d": {
+    "engine_run_json": {
+      "pre_s13": "18bf90fb4be4800df6efe1cbd77001ab4d94c5fe27222e57cc14ee8b306c15f9",
+      "post_s13_t3_5": "c10eb9d1e92a06ef03461077b5ef5d06ef5a20e2c44de04ceb68ded47389cf81",
+      "post_s13_6_t1a": "2bcee38701103e706c2c77c60d3ce9dc421c4886e7cc9ebc269fae0fd0e646ca",
+      "post_s13_6_t1b": "76eec1c48901865f337d8a049c9f6da95bc1ac34946fbfeaf9216401b2502615",
+      "post_s13_6_t6": "248d5de54ffb08ef73e8b1563f3c5d40b85d6be14a39a64e92bd4384b308f7ff",
+      "post_s13_6_t7a": "4278c44e043ff3467c16309680b7ceb56b9d74800f6d7f0e3c3ca83acd81a7d1",
+      "sha_changed_as_expected": true,
+      "diff_confined_to": [
+        "Same as healthy_beauty_240d (T1a six-prose strip + notes gating; T1b state_of_store[*].text REMOVED; T2..T5 contract; T6 mechanism_intent ADD + mechanism RETYPE; T7a 3 paired _null_reason fields ADDED)"
+      ]
+    }
+  },
+  "cold_start_45d": {
+    "engine_run_json": {
+      "pre_s13": "40df24cb5c58bdcf73b5452d8f7b36d21d3be69b32c704244b52f7afd345e0f6",
+      "post_s13_t3_5": "06b69bc696b841307da2d1bcb427f9cb1cdc531e34ddfc332b89279b2576887d",
+      "post_s13_6_t1a": "156021afd3cdafeec141d424ee4dca22150a34bb9ab5e3d533323e21d356a09d",
+      "post_s13_6_t1b": "aafb6adc2932213aabbfb86504da08ad987340f2224efe1ef5245e4e2a1ac3c4",
+      "post_s13_6_t6": "6fde7cb27b660c6f482c104252cdfab93df4224dfd4c2911bbe969cfa887725a",
+      "post_s13_6_t7a": "96e95d06134d123f1e8c4e1d098430f728717b1d1909133b1df595073291a5fa",
+      "sha_changed_as_expected": true,
+      "diff_confined_to": [
+        "Same as healthy_beauty_240d (T1a six-prose strip + notes gating; T1b state_of_store[*].text REMOVED; T2..T5 contract; T6 mechanism_intent ADD + mechanism RETYPE; T7a 3 paired _null_reason fields ADDED)"
+      ],
+      "note": "cold_start_45d n_recommendations=0 (45-day cold-start fixture); engine_run.json sha drift driven primarily by abstain.reason removal + upstream substrate fit_timestamps + cumulative T2..T6 contract changes."
+    }
+  },
+  "healthy_beauty_low_inventory_240d": {
+    "engine_run_json": {
+      "pre_s13": "8689d92aa573c205164b1b5f055e459c4be3439cee18527fbb4b84e8f6e8ac0d",
+      "post_s13_t3_5": "c7eeeeaca940132797e88f3fb0503db59bed2fe73e925443e2034bf3ca165948",
+      "post_s13_6_t1a": "7d3811eeac2227a81eeaef027d1237bd999974f49071ebe390aa5fa2c3d52078",
+      "post_s13_6_t1b": "dea47b7510fe1425973e78d68050799dbf4d76cd66a238cb3bdc6f4ec42066db",
+      "post_s13_6_t6": "4597df61d2314f3317371c6c300e07cd8fb056a655e98949d7c14041fbb9cbe1",
+      "post_s13_6_t7a": "c1062c4e0bc77983acf2feea23d41a05d639fc2efa58fb508ce06f2c94aa47f8",
+      "sha_changed_as_expected": true,
+      "diff_confined_to": [
+        "Same as healthy_beauty_240d (T1a six-prose strip + notes gating; T1b state_of_store[*].text REMOVED; T2..T5 contract; T6 mechanism_intent ADD + mechanism RETYPE; T7a 3 paired _null_reason fields ADDED)"
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "beaconai-fullstack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Combined BeaconAI MVP API and frontend.",
+  "scripts": {
+    "dev:api": "npm --prefix api run dev",
+    "dev:web": "npm --prefix web run dev",
+    "start:api": "npm --prefix api start",
+    "build:web": "npm --prefix web run build",
+    "db:init": "npm --prefix api run db:init",
+    "install:all": "npm install --prefix api && npm install --prefix web",
+    "engine:setup": "cd engine && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt"
+  },
+  "workspaces": [
+    "api",
+    "web"
+  ]
+}

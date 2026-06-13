@@ -1,0 +1,69 @@
+# Milestone 0 golden fixture set for the BeaconAI Action Engine.
+#
+# These three CSVs in `data/` are pinned as the canonical regression set for
+# every milestone after M0. The engine should produce byte-identical output
+# (modulo normalized non-deterministic fields) against each fixture until a
+# milestone explicitly justifies regenerating goldens.
+#
+# Anchor dates are recorded for documentation only -- the engine derives the
+# anchor from the max `Created at` (or `created_at` / `order_date`) value in
+# the CSV, which is stable for these pinned files. The freeze script does not
+# inject anchor dates today; if a future ticket adds explicit anchor support
+# in main.py, this YAML is the authoritative source.
+#
+# Schema:
+#   merchants:
+#     - id:          slug used as the directory name under tests/golden/
+#       label:       human-friendly description (size bucket)
+#       csv:         path relative to repo root
+#       brand:       --brand argument passed to main.py
+#       anchor:      ISO timestamp of the most recent order in the CSV
+#       row_count:   number of CSV rows (excluding header) at fixture pin
+#       notes:       why this CSV was chosen / known caveats
+schema_version: 1
+merchants:
+  - id: micro_coldstart
+    label: "Micro / cold-start (~1 yr, ~600 customers)"
+    csv: data/shopify_orders_micro_20250826_202615.csv
+    brand: micro_coldstart
+    anchor: "2025-08-25T11:38:00"
+    row_count: 988
+    notes: >
+      Shopify-format line-item CSV. Matches the plan's `shopify_orders_micro_*`
+      hint. Cold-start signal: ~$52K total, ~$3K L28, low repeat behavior.
+      Engine produces zero PRIMARY actions on this fixture today; that is the
+      baseline we want to lock.
+
+  - id: small_sm
+    label: "Small (~$500K-ARR scale, full year of 2024)"
+    csv: data/SM_orders.csv
+    brand: small_sm
+    anchor: "2024-12-31T06:26:36"
+    row_count: 13899
+    notes: >
+      Non-Shopify order-level schema (order_id, customer_id, ...). Loader
+      adapts via enhance_order_level. Matches the plan's `SM_*` hint. Engine
+      currently emits 3 PRIMARY actions on this fixture; locking that surface.
+
+  - id: mid_shopify
+    label: "Mid (~$2M-ARR scale, ~10K orders, full year)"
+    csv: data/shopify_orders_mid.csv
+    brand: mid_shopify
+    anchor: "2025-08-25T23:16:00"
+    row_count: 16369
+    notes: >
+      Shopify-format with snake_case headers + line items. Matches the plan's
+      `shopify_orders_mid.csv` hint. Mid-scale data with multi-window history.
+
+# How to regenerate goldens (must be done deliberately when a milestone
+# explicitly changes engine output):
+#
+#   python scripts/freeze_golden.py --regenerate
+#
+# Or, equivalently, via the Makefile:
+#
+#   make golden-regenerate
+#
+# Any PR that changes goldens MUST commit the regenerated tests/golden/ tree
+# along with a justification line in the PR description naming the milestone
+# ticket that authorizes the change.

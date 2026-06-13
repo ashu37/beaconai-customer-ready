@@ -1,0 +1,36 @@
+{
+  "customers": {
+    "df_unique": 2800,
+    "g_unique": 2800,
+    "overlap": 2800
+  },
+  "date_ranges": {
+    "anchor": "<TIMESTAMP>",
+    "df_max": "<TIMESTAMP>",
+    "df_min": "<TIMESTAMP>",
+    "g_max": "<TIMESTAMP>",
+    "g_min": "<TIMESTAMP>"
+  },
+  "order_counts": {
+    "aligned_l28_orders": 1157,
+    "df_unique_orders": 13899,
+    "g_unique_orders": 13899
+  },
+  "revenue_methods": {
+    "aligned_l28_window": 127543.55971200002,
+    "data_source_type": "unknown",
+    "processed_net_sales": 1388624.624996,
+    "raw_csv_subtotal_discount": 1388624.624996
+  },
+  "shapes": {
+    "df_charts_rows": 13899,
+    "df_raw_rows": 13899,
+    "g_features_rows": 13899
+  },
+  "window_check": {
+    "aligned_orders": 1157,
+    "expected_orders": 1157,
+    "l28_end": "<TIMESTAMP>",
+    "l28_start": "<TIMESTAMP>"
+  }
+}

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>beacon - Brand Identity Guidelines</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --navy: #0F172A;
+            --blue: #3B82F6;
+            --amber: #F59E0B;
+            --success: #10B981;
+            --error: #EF4444;
+            --gray-900: #111827;
+            --gray-600: #4B5563;
+            --gray-400: #9CA3AF;
+            --gray-200: #E5E7EB;
+            --gray-50: #F9FAFB;
+            --white: #FFFFFF;
+            --bg-blue: #EFF6FF;
+            --bg-amber: #FEF3C7;
+            --bg-green: #D1FAE5;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            line-height: 1.6;
+            color: var(--gray-900);
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; padding: 40px 20px; }
+        header { background: var(--navy); color: var(--white); padding: 60px 0; margin-bottom: 60px; }
+        h1 { font-size: 48px; font-weight: 800; margin-bottom: 16px; }
+        h2 { font-size: 32px; font-weight: 700; margin: 48px 0 24px; color: var(--navy); }
+        h3 { font-size: 20px; font-weight: 600; margin: 32px 0 16px; color: var(--gray-900); }
+        .subtitle { font-size: 20px; color: var(--gray-400); }
+        .section { margin-bottom: 80px; }
+        
+        .logo-grid, .color-grid, .usage-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 32px;
+            margin: 32px 0;
+        }
+        
+        .logo-card, .usage-card {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 12px;
+            padding: 32px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 200px;
+        }
+        
+        .logo-card.dark { background: var(--navy); }
+        .logo-label { margin-top: 20px; font-size: 14px; color: var(--gray-600); font-weight: 500; }
+        .logo-card.dark .logo-label { color: var(--gray-400); }
+        
+        .icon-circle {
+            width: 60px; 
+            height: 60px;
+            background: var(--amber);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 36px;
+            font-weight: 700;
+            color: white;
+            letter-spacing: -1px;
+        }
+        
+        .icon-circle.small { 
+            width: 40px; 
+            height: 40px; 
+            font-size: 24px;
+        }
+        
+        .wordmark {
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--navy);
+        }
+        
+        .wordmark .dot { color: var(--amber); }
+        .wordmark.white { color: var(--white); }
+        
+        .color-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; }
+        
+        .color-card {
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .color-swatch {
+            height: 80px;
+            display: flex;
+            align-items: flex-end;
+            padding: 12px;
+            font-weight: 600;
+        }
+        
+        .color-info {
+            background: white;
+            padding: 12px;
+            font-size: 12px;
+        }
+        
+        .color-name {
+            font-weight: 600;
+        }
+        
+        .color-hex {
+            color: var(--gray-600);
+        }
+        
+        .type-sample {
+            margin: 24px 0;
+            padding: 24px;
+            background: var(--gray-50);
+            border-radius: 8px;
+        }
+        
+        .type-label {
+            font-size: 12px;
+            color: var(--gray-600);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .usage-preview {
+            background: var(--gray-50);
+            padding: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 200px;
+        }
+        
+        .usage-info { padding: 24px; }
+        .usage-title { font-weight: 600; margin-bottom: 8px; }
+        .usage-specs { font-size: 14px; color: var(--gray-600); }
+        
+        .warning-box {
+            background: var(--bg-amber);
+            border-left: 4px solid var(--amber);
+            padding: 24px;
+            border-radius: 8px;
+            margin: 32px 0;
+        }
+        
+        .code-block {
+            background: var(--gray-900);
+            color: var(--gray-50);
+            padding: 24px;
+            border-radius: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            margin: 16px 0;
+        }
+        
+        .pill {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            margin: 0 4px;
+        }
+        
+        .pill.amber { background: var(--bg-amber); color: var(--amber); }
+        .pill.blue { background: var(--bg-blue); color: var(--blue); }
+        .pill.green { background: var(--bg-green); color: var(--success); }
+        
+        .dos-donts { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin: 32px 0; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>beacon</h1>
+            <p class="subtitle">Brand Identity Guidelines v2.1</p>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Brand Strategy -->
+        <section class="section">
+            <h2>Brand Name Strategy</h2>
+            <div class="warning-box">
+                <h3 style="margin-top: 0; color: var(--amber);">⚠️ Important Guidelines</h3>
+                <p><strong>Company name:</strong> Always "beacon" (lowercase) - never "Beacon AI"</p>
+                <p><strong>Icon mark:</strong> Amber circle with white "b" in Space Grotesk Bold</p>
+                <p><strong>Wordmark:</strong> "beacon" with amber dot (•) replacing the "o"</p>
+            </div>
+        </section>
+
+        <!-- Logo System -->
+        <section class="section">
+            <h2>Logo System</h2>
+            <div class="logo-grid">
+                <div class="logo-card">
+                    <div class="wordmark">beac<span class="dot">•</span>n</div>
+                    <span class="logo-label">Primary Wordmark</span>
+                </div>
+                <div class="logo-card">
+                    <div class="icon-circle">b</div>
+                    <span class="logo-label">Icon Mark</span>
+                </div>
+                <div class="logo-card">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div class="icon-circle small">b</div>
+                        <div class="wordmark" style="font-size: 24px;">beac<span class="dot">•</span>n</div>
+                    </div>
+                    <span class="logo-label">Horizontal Layout</span>
+                </div>
+                <div class="logo-card dark">
+                    <div class="wordmark white">beac<span class="dot">•</span>n</div>
+                    <span class="logo-label">Logo on Dark</span>
+                </div>
+                <div class="logo-card">
+                    <div>
+                        <div class="wordmark">beac<span class="dot">•</span>n</div>
+                        <div style="margin-top: 8px; font-size: 12px; color: var(--gray-600);">Revenue Intelligence</div>
+                    </div>
+                    <span class="logo-label">With Tagline</span>
+                </div>
+                <div class="logo-card">
+                    <div class="wordmark">beacon</div>
+                    <span class="logo-label">Monochrome</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Colors -->
+        <section class="section">
+            <h2>Color System</h2>
+            <h3>Primary Colors</h3>
+            <div class="color-grid">
+                <div class="color-card">
+                    <div class="color-swatch" style="background: #0F172A; color: white;">Aa</div>
+                    <div class="color-info">
+                        <div class="color-name">Navy</div>
+                        <div class="color-hex">#0F172A</div>
+                    </div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: #F59E0B; color: white;">Aa</div>
+                    <div class="color-info">
+                        <div class="color-name">Amber</div>
+                        <div class="color-hex">#F59E0B</div>
+                    </div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: #3B82F6; color: white;">Aa</div>
+                    <div class="color-info">
+                        <div class="color-name">Blue</div>
+                        <div class="color-hex">#3B82F6</div>
+                    </div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: #10B981; color: white;">Aa</div>
+                    <div class="color-info">
+                        <div class="color-name">Success</div>
+                        <div class="color-hex">#10B981</div>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Semantic Colors</h3>
+                <div class="color-grid">
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #10B981; color: white;">Aa</div>
+                        <div class="color-info">
+                            <div class="color-name">Success</div>
+                            <div class="color-hex">#10B981</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #F59E0B; color: white;">Aa</div>
+                        <div class="color-info">
+                            <div class="color-name">Warning</div>
+                            <div class="color-hex">#F59E0B</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #EF4444; color: white;">Aa</div>
+                        <div class="color-info">
+                            <div class="color-name">Error</div>
+                            <div class="color-hex">#EF4444</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #3B82F6; color: white;">Aa</div>
+                        <div class="color-info">
+                            <div class="color-name">Info</div>
+                            <div class="color-hex">#3B82F6</div>
+                        </div>
+                    </div>
+                </div>
+
+                <h3>Background Colors (Content Categories)</h3>
+                <div class="color-grid">
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #EFF6FF; color: #3B82F6;">Analytics</div>
+                        <div class="color-info">
+                            <div class="color-name">Blue Background</div>
+                            <div class="color-hex">#EFF6FF</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #FEF3C7; color: #F59E0B;">Insights</div>
+                        <div class="color-info">
+                            <div class="color-name">Amber Background</div>
+                            <div class="color-hex">#FEF3C7</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #D1FAE5; color: #10B981;">Growth</div>
+                        <div class="color-info">
+                            <div class="color-name">Green Background</div>
+                            <div class="color-hex">#D1FAE5</div>
+                        </div>
+                    </div>
+                    <div class="color-card">
+                        <div class="color-swatch" style="background: #EDE9FE; color: #8B5CF6;">Premium</div>
+                        <div class="color-info">
+                            <div class="color-name">Purple Background</div>
+                            <div class="color-hex">#EDE9FE</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        <!-- Typography -->
+        <section class="section">
+            <h2>Typography</h2>
+            <div class="type-sample">
+                <div class="type-label">Logo Mark • Space Grotesk 700 • Variable</div>
+                <div style="font-family: 'Space Grotesk', sans-serif; font-size: 48px; font-weight: 700; letter-spacing: -2px;">b</div>
+            </div>
+            <div class="type-sample">
+                <div class="type-label">Display • Inter 800 • 48px</div>
+                <div style="font-size: 48px; font-weight: 800;">Find Revenue Hidden in Your Data</div>
+            </div>
+            <div class="type-sample">
+                <div class="type-label">Heading • Inter 700 • 32px</div>
+                <div style="font-size: 32px; font-weight: 700;">Revenue Intelligence Platform</div>
+            </div>
+            <div class="type-sample">
+                <div class="type-label">Body • Inter 400 • 16px</div>
+                <div style="font-size: 16px;">beacon analyzes your Shopify data to identify revenue opportunities.</div>
+            </div>
+            <div class="type-sample">
+                <div class="type-label">Data • JetBrains Mono 400 • 14px</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 14px;">Revenue: $47,293 (+12.3%)</div>
+            </div>
+        </section>
+
+        <!-- Applications -->
+        <section class="section">
+            <h2>Real-World Applications</h2>
+            <div class="usage-grid">
+                <!-- App Icons -->
+                <div class="usage-card">
+                    <div class="usage-preview">
+                        <div style="display: flex; gap: 16px;">
+                            <div style="width: 60px; height: 60px; background: var(--amber); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                                <span style="color: white; font-family: 'Space Grotesk', sans-serif; font-size: 36px; font-weight: 700; letter-spacing: -1px;">b</span>
+                            </div>
+                            <div style="width: 60px; height: 60px; background: var(--navy); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                                <div style="width: 45px; height: 45px; background: var(--amber); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                                    <span style="color: white; font-family: 'Space Grotesk', sans-serif; font-size: 27px; font-weight: 700;">b</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="usage-info">
+                        <div class="usage-title">App Icons</div>
+                        <div class="usage-specs">Space Grotesk Bold for distinctive character</div>
+                    </div>
+                </div>
+
+                <!-- Email Signature -->
+                <div class="usage-card">
+                    <div class="usage-preview">
+                        <div style="font-size: 14px; text-align: left;">
+                            <div style="font-weight: 600;">John Smith</div>
+                            <div style="color: var(--gray-600);">CEO</div>
+                            <div style="margin: 12px 0; height: 2px; background: var(--amber); width: 40px;"></div>
+                            <div style="font-weight: 600;">beac<span style="color: var(--amber);">•</span>n</div>
+                            <div style="color: var(--gray-600); margin-top: 8px;">
+                                <div>📊 Revenue Intelligence</div>
+                                <div>🔗 runbeacon.ai</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="usage-info">
+                        <div class="usage-title">Email Signature</div>
+                        <div class="usage-specs">Clean, professional format</div>
+                    </div>
+                </div>
+
+                <!-- Social Media -->
+                <div class="usage-card">
+                    <div class="usage-preview">
+                        <div style="background: linear-gradient(135deg, var(--blue), var(--amber)); padding: 20px; border-radius: 8px;">
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <div style="width: 50px; height: 50px; background: white; border-radius: 50%; padding: 4px;">
+                                    <div style="width: 100%; height: 100%; background: var(--amber); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                                        <span style="color: white; font-family: 'Space Grotesk', sans-serif; font-size: 28px; font-weight: 700;">b</span>
+                                    </div>
+                                </div>
+                                <span style="color: white; font-size: 24px; font-weight: 700;">beacon</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="usage-info">
+                        <div class="usage-title">Social Media</div>
+                        <div class="usage-specs">Bold geometric 'b' for impact</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Content Categories -->
+        <section class="section">
+            <h2>Content Color System</h2>
+            <div style="display: grid; gap: 24px;">
+                <div style="background: var(--bg-blue); padding: 24px; border-radius: 8px; border-left: 4px solid var(--blue);">
+                    <h3 style="color: var(--blue); margin-top: 0;">Analytics</h3>
+                    <p>Use blue for data and metrics.</p>
+                    <span class="pill blue">Orders: 1,247</span>
+                    <span class="pill blue">AOV: $127</span>
+                </div>
+                <div style="background: var(--bg-amber); padding: 24px; border-radius: 8px; border-left: 4px solid var(--amber);">
+                    <h3 style="color: var(--amber); margin-top: 0;">Insights</h3>
+                    <p>Use amber for opportunities.</p>
+                    <span class="pill amber">$12K opportunity</span>
+                    <span class="pill amber">Quick win</span>
+                </div>
+                <div style="background: var(--bg-green); padding: 24px; border-radius: 8px; border-left: 4px solid var(--success);">
+                    <h3 style="color: var(--success); margin-top: 0;">Growth</h3>
+                    <p>Use green for success metrics.</p>
+                    <span class="pill green">+12% revenue</span>
+                    <span class="pill green">Goal achieved</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Code -->
+        <section class="section">
+            <h2>CSS Implementation</h2>
+            <div class="code-block">
+/* beacon brand colors */
+:root {
+  --beacon-navy: #0F172A;
+  --beacon-amber: #F59E0B;
+  --beacon-blue: #3B82F6;
+}
+
+/* Import Space Grotesk for logo */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&display=swap');
+
+.beacon-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--beacon-amber);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: -0.5px;
+}
+            </div>
+        </section>
+
+        <!-- Guidelines -->
+        <section class="section">
+            <h2>Do's and Don'ts</h2>
+            <div class="dos-donts">
+                <div>
+                    <h3 style="color: var(--success);">✓ Do's</h3>
+                    <ul style="line-height: 2; color: var(--gray-600);">
+                        <li>Use lowercase "beacon"</li>
+                        <li>Use Space Grotesk Bold for the 'b'</li>
+                        <li>Use amber dot in wordmarks</li>
+                        <li>Maintain clear space around logos</li>
+                        <li>Use Inter for body text</li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 style="color: var(--error);">✗ Don'ts</h3>
+                    <ul style="line-height: 2; color: var(--gray-600);">
+                        <li>Don't use "Beacon AI"</li>
+                        <li>Don't capitalize BEACON</li>
+                        <li>Don't use other typefaces for the 'b'</li>
+                        <li>Don't alter proportions</li>
+                        <li>Don't use off-brand fonts</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <footer style="background: var(--navy); color: white; padding: 40px 0; margin-top: 80px;">
+        <div class="container">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <div class="wordmark white" style="font-size: 20px;">beac<span class="dot">•</span>n</div>
+                    <p style="margin-top: 8px; color: var(--gray-400); font-size: 14px;">© 2025 beacon</p>
+                </div>
+                <div style="color: var(--gray-400); font-size: 14px;">Brand Guidelines v2.1</div>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

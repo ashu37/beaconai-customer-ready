@@ -1,0 +1,88 @@
+# Replenishment-size parser configuration (G-2, extended in S6-T2).
+#
+# Per-vertical regex used by ``empty_bottle`` (and any future replenishment-
+# timing emitter) to identify SKU line-items whose product-name encodes a
+# unit volume that the engine knows how to interpret as "depletes after one
+# typical use cycle."
+#
+# Each block keyed on a vertical_mode string (see
+# ``src/play_registry.py::_ALL_VERTICALS``). The vertical the engine resolves
+# at runtime selects the active block. ``case_insensitive: true`` is the
+# expected default; the engine lowercases the lineitem text before matching.
+#
+# Schema shape:
+# - ``size_regex`` (string | null): the beauty/legacy single-regex form. If a
+#   block carries only ``size_regex``, it returns a boolean "matched" via
+#   ``get_size_regex(vertical)`` (G-2 contract, unchanged).
+# - ``coherent_units`` (list[dict] | absent): the S6-T2 unit-coherent form.
+#   Each list entry is ``{key: <count|day_supply|serving>, regex: <str>}``.
+#   The parser walks the list in declared order and returns the FIRST match
+#   as a ``(coherence_key, value)`` tuple. Precedence is the list order:
+#   ``count > day_supply > serving`` (count is engineering-canonical;
+#   day_supply unambiguously maps to "depletes after one cycle"; serving
+#   requires container-size to be coherent and is the loosest signal).
+# - ``case_insensitive`` (bool): regex match casing toggle; defaults to True.
+#
+# A block MAY carry both ``size_regex`` (legacy beauty boolean form) and
+# ``coherent_units`` (S6-T2 unit-coherent form) — they coexist; the legacy
+# accessor ``get_size_regex`` continues to read ``size_regex`` and the
+# unit-coherent accessor ``parse_unit_coherent`` reads ``coherent_units``.
+#
+# Vertical coverage policy (per audit post-6b §G-2 + S6-T2):
+#
+# - ``beauty``: PRESERVED VERBATIM from the pre-G-2 hard-coded regex
+#   (``30ml|1 oz|1oz|50ml|1.7 oz|1.7oz|100ml|3.4 oz|3.4oz``). Any change
+#   here perturbs the M0 Beauty pinned-fixture goldens; refresh the pin in
+#   the same commit if you change this regex.
+# - ``supplements``: S6-T2 adds ``coherent_units`` covering count / day_supply
+#   / servings forms (e.g., ``60ct``, ``30-day supply``, ``30 servings``).
+#   Weight-only (``1lb``, ``500g``) and named-blend SKUs (``Pre-Workout
+#   Energy Complex``) intentionally do NOT parse — weight forms lack a
+#   serving-size context required for unit coherence; named blends carry no
+#   container-volume signal at all. Such SKUs return ``None`` (no fall-back
+#   to a fabricated unit). Status: heuristic_unvalidated — covers the
+#   common count/day_supply forms observed on the G-1 supplements fixture;
+#   broader validation deferred to subsequent supplements traffic.
+#   KI-27 (``empty_bottle.vertical_applicable`` expansion) is intentionally
+#   NOT auto-closed in S6-T2 — founder confirmation required per IM plan.
+# - ``mixed``: maps to the Beauty regex because ``mixed = literal beauty +
+#   supplements blend`` (per src/play_registry.py:142 and Addendum 3) and
+#   the Beauty regex catches the beauty half of the blend; the supplements
+#   half is a no-op until KI-27 closes.
+
+beauty:
+  size_regex: "30ml|1 oz|1oz|50ml|1.7 oz|1.7oz|100ml|3.4 oz|3.4oz"
+  case_insensitive: true
+  notes: "Preserved from the pre-G-2 hard-coded regex. M0 byte-identical."
+
+supplements:
+  # Precedence (declared order, first-match-wins):
+  #   count > day_supply > serving
+  # Returned tuple: (coherence_key, integer_value).
+  # Validation status: heuristic_unvalidated (S6-T2).
+  coherent_units:
+    # count: container count (capsules / tablets / softgels / gummies / ct).
+    - key: count
+      regex: '(?:^|\s)(\d+)\s*(?:ct|caps?|capsules?|tablets?|softgels?|gummies)\b'
+    # day_supply: explicit "N day supply" or "N-day supply" forms.
+    - key: day_supply
+      regex: '(?:^|\s)(\d+)[-\s]*day\s*supply\b'
+    # serving: "N servings" / "N serving" form.
+    - key: serving
+      regex: '(?:^|\s)(\d+)\s*servings?\b'
+  case_insensitive: true
+  notes: |
+    S6-T2 unit-coherent parser. Weight-only SKUs (1lb, 500g) and named
+    blends (Pre-Workout Energy Complex) return None by design — weight
+    lacks serving-size context required for unit coherence; named blends
+    carry no container-volume signal. Closes KI-18 (parser stub).
+    KI-27 (empty_bottle.vertical_applicable expansion) stays accepted
+    pending founder confirmation per IM plan §S6-T2.
+
+mixed:
+  size_regex: "30ml|1 oz|1oz|50ml|1.7 oz|1.7oz|100ml|3.4 oz|3.4oz"
+  case_insensitive: true
+  notes: |
+    Beauty regex applied; matches the Beauty half of the
+    ``beauty + supplements`` blend. The supplements half remains a no-op
+    until KI-27 closes (founder confirmation for empty_bottle expansion).

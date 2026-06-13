@@ -1,0 +1,316 @@
+# BeaconAI sub-vertical token dictionary (Sprint 6.5 Ticket T2).
+#
+# Token-dictionary for the revenue-weighted sub-vertical classifier
+# (src/profile/builder.py::detect_subvertical). Tokens are matched
+# case-insensitively against product titles from the orders DataFrame
+# (the "product" / "lineitem_any" / "Lineitem name" column).
+#
+# Founder Q1 (2026-05-17): Sephora + iHerb scraped vocabulary is the
+# source-of-truth. Every cell is tagged ``validation_status:
+# heuristic_unvalidated`` mirroring the priors-validation discipline
+# established at Sprint 7.5. Cell-by-cell validation lands post-beta.
+#
+# Source URLs (per founder Q1):
+sources:
+  - url: https://www.sephora.com/shop/skincare
+    accessed: 2026-05-17
+    vertical: beauty
+    subvertical: skincare
+    notes: "Sephora skincare category landing — token vocabulary for skincare cell"
+  - url: https://www.sephora.com/shop/makeup-cosmetics
+    accessed: 2026-05-17
+    vertical: beauty
+    subvertical: cosmetics
+    notes: "Sephora cosmetics category landing — token vocabulary for cosmetics cell"
+  - url: https://www.sephora.com/shop/hair
+    accessed: 2026-05-17
+    vertical: beauty
+    subvertical: haircare
+    notes: "Sephora hair category landing — token vocabulary for haircare cell"
+  - url: https://www.sephora.com/shop/bath-body
+    accessed: 2026-05-17
+    vertical: beauty
+    subvertical: personal_care
+    notes: "Sephora bath & body category landing — token vocabulary for personal_care cell"
+  - url: https://www.iherb.com/c/sports-nutrition
+    accessed: 2026-05-17
+    vertical: supplements
+    subvertical: protein
+    notes: "iHerb sports nutrition category — protein subvertical token vocabulary"
+  - url: https://www.iherb.com/c/multivitamins
+    accessed: 2026-05-17
+    vertical: supplements
+    subvertical: multivitamin
+    notes: "iHerb multivitamins category — multivitamin subvertical token vocabulary"
+  - url: https://www.iherb.com/c/probiotics
+    accessed: 2026-05-17
+    vertical: supplements
+    subvertical: probiotics
+    notes: "iHerb probiotics category — probiotics subvertical token vocabulary"
+  - url: https://www.iherb.com/c/brain-cognitive-function
+    accessed: 2026-05-17
+    vertical: supplements
+    subvertical: nootropics
+    notes: "iHerb brain & cognitive function category — nootropics subvertical token vocabulary"
+  - url: https://www.iherb.com/c/adaptogens
+    accessed: 2026-05-17
+    vertical: supplements
+    subvertical: functional
+    notes: "iHerb adaptogens / functional supplements category — functional subvertical token vocabulary"
+
+schema_version: "1.0.0"
+last_reviewed: "2026-05-17"
+validation_status: heuristic_unvalidated
+
+verticals:
+  beauty:
+    skincare:
+      validation_status: heuristic_unvalidated
+      source_authority: "sephora.com/shop/skincare (2026-05-17)"
+      tokens:
+        - serum
+        - moisturizer
+        - cleanser
+        - toner
+        - exfoliant
+        - exfoliator
+        - retinol
+        - hyaluronic
+        - hyaluronic acid
+        - vitamin c serum
+        - spf
+        - sunscreen
+        - eye cream
+        - face mask
+        - face oil
+        - niacinamide
+        - peptide
+        - face serum
+        - face cream
+        - face wash
+        - skincare
+        - anti-aging
+        - micellar
+        - essence
+        - ampoule
+      excluded_tokens:
+        - shampoo
+        - conditioner
+        - mascara
+        - lipstick
+        - protein powder
+    cosmetics:
+      validation_status: heuristic_unvalidated
+      source_authority: "sephora.com/shop/makeup-cosmetics (2026-05-17)"
+      tokens:
+        - foundation
+        - concealer
+        - mascara
+        - lipstick
+        - lip gloss
+        - lip liner
+        - eyeshadow
+        - eye shadow
+        - blush
+        - bronzer
+        - highlighter
+        - eyeliner
+        - eye liner
+        - brow
+        - eyebrow
+        - primer
+        - setting spray
+        - setting powder
+        - powder foundation
+        - tinted moisturizer
+        - bb cream
+        - cc cream
+        - makeup
+      excluded_tokens:
+        - shampoo
+        - face serum
+        - face moisturizer
+    haircare:
+      validation_status: heuristic_unvalidated
+      source_authority: "sephora.com/shop/hair (2026-05-17)"
+      tokens:
+        - shampoo
+        - conditioner
+        - hair mask
+        - hair oil
+        - scalp
+        - leave-in
+        - leave in conditioner
+        - dry shampoo
+        - hair serum
+        - heat protectant
+        - hair spray
+        - hairspray
+        - hair gel
+        - hair cream
+        - hair treatment
+        - hair color
+        - hair dye
+        - styling cream
+        - mousse
+        - hair tonic
+      excluded_tokens:
+        - face serum
+        - face moisturizer
+        - face cream
+    personal_care:
+      validation_status: heuristic_unvalidated
+      source_authority: "sephora.com/shop/bath-body (2026-05-17)"
+      tokens:
+        - body wash
+        - body lotion
+        - body scrub
+        - hand cream
+        - hand lotion
+        - deodorant
+        - antiperspirant
+        - bath salt
+        - bath bomb
+        - shower gel
+        - shower oil
+        - soap
+        - body butter
+        - body oil
+        - foot cream
+        - body mist
+        - body spray
+        - body cream
+        - bubble bath
+        - exfoliating scrub
+      excluded_tokens:
+        - face
+        - hair
+        - shampoo
+  supplements:
+    protein:
+      validation_status: heuristic_unvalidated
+      source_authority: "iherb.com/c/sports-nutrition (2026-05-17)"
+      tokens:
+        - protein
+        - whey
+        - casein
+        - whey isolate
+        - whey concentrate
+        - protein isolate
+        - amino acid
+        - bcaa
+        - eaa
+        - creatine
+        - mass gainer
+        - protein bar
+        - protein powder
+        - protein shake
+        - plant protein
+        - pea protein
+        - rice protein
+        - soy protein
+        - collagen protein
+        - protein blend
+      excluded_tokens:
+        - multivitamin
+        - probiotic
+    multivitamin:
+      validation_status: heuristic_unvalidated
+      source_authority: "iherb.com/c/multivitamins (2026-05-17)"
+      tokens:
+        - multivitamin
+        - multi
+        - daily vitamin
+        - daily multi
+        - mineral complex
+        - vitamin d
+        - vitamin b
+        - vitamin c
+        - vitamin e
+        - vitamin k
+        - vitamin a
+        - calcium
+        - zinc
+        - iron supplement
+        - magnesium
+        - folate
+        - folic acid
+        - b12
+        - b-complex
+        - prenatal vitamin
+        - mineral
+      excluded_tokens:
+        - protein
+        - probiotic
+        - whey
+    probiotics:
+      validation_status: heuristic_unvalidated
+      source_authority: "iherb.com/c/probiotics (2026-05-17)"
+      tokens:
+        - probiotic
+        - lactobacillus
+        - bifidobacterium
+        - gut health
+        - digestive
+        - prebiotic
+        - digestive enzyme
+        - acidophilus
+        - cfu
+        - gut flora
+        - intestinal
+        - microbiome
+        - synbiotic
+        - probiotic blend
+        - yogurt culture
+        - kefir culture
+      excluded_tokens: []
+    nootropics:
+      validation_status: heuristic_unvalidated
+      source_authority: "iherb.com/c/brain-cognitive-function (2026-05-17)"
+      tokens:
+        - nootropic
+        - focus
+        - brain
+        - cognitive
+        - lion's mane
+        - lions mane
+        - l-theanine
+        - theanine
+        - phosphatidylserine
+        - bacopa
+        - ginkgo
+        - choline
+        - alpha gpc
+        - rhodiola
+        - memory
+        - mental clarity
+        - cognition
+        - acetyl carnitine
+      excluded_tokens: []
+    functional:
+      validation_status: heuristic_unvalidated
+      source_authority: "iherb.com/c/adaptogens (2026-05-17)"
+      tokens:
+        - adaptogen
+        - ashwagandha
+        - turmeric
+        - curcumin
+        - collagen
+        - sleep
+        - melatonin
+        - immunity
+        - immune support
+        - energy
+        - elderberry
+        - reishi
+        - cordyceps
+        - chaga
+        - mushroom complex
+        - holy basil
+        - tulsi
+        - schisandra
+        - maca
+        - apple cider vinegar
+      excluded_tokens:
+        - protein
+        - multivitamin

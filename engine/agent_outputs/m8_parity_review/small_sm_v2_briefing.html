@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>BeaconAI briefing - m8_smoke_v2</title><style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: #1a1a1a; background: #fafafa; margin: 0; padding: 0; }
+.briefing-v2 { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+.briefing-v2__header { margin-bottom: 24px; }
+.briefing-v2__title { font-size: 28px; margin: 0 0 8px; }
+.briefing-v2__subtitle { color: #555; margin: 0; }
+.section__title { font-size: 20px; margin: 32px 0 12px; }
+.section__lede { color: #555; margin: 0 0 12px; }
+.section__empty { color: #888; font-style: italic; }
+.state-of-store__lead { background: #fff; border-left: 4px solid #2c5282; padding: 12px 16px; }
+.play-card-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.play-card { background: #fff; border: 1px solid #d8d8d8; border-radius: 8px; padding: 16px 20px; }
+.play-card--measured { border-left: 6px solid #2f855a; }
+.play-card--directional { border-left: 6px solid #b7791f; }
+.play-card--targeting { border-left: 6px solid #4a5568; border-style: dashed; }
+.play-card--rejected { background: #f4f4f4; border-left: 6px solid #a0aec0; opacity: 0.92; }
+.play-card__title { margin: 0 0 4px; font-size: 18px; }
+.play-card__class-badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; margin-bottom: 8px; font-weight: 600; }
+.play-card__class-badge--measured { background: #c6f6d5; color: #22543d; }
+.play-card__class-badge--directional { background: #faf089; color: #744210; }
+.play-card__class-badge--targeting { background: #e2e8f0; color: #2d3748; }
+.play-card__recommendation { margin: 8px 0; }
+.play-card__why-now { margin: 4px 0; color: #444; }
+.play-card-aud { margin: 8px 0; font-size: 14px; color: #2d3748; }
+.play-card-aud > span { display: inline-block; margin-right: 12px; }
+.play-card-range-chip { display: inline-block; background: #ebf4ff; color: #2c5282; padding: 4px 10px; border-radius: 6px; font-size: 13px; margin-top: 8px; }
+.play-card-range-chip__label { font-weight: 600; margin-right: 4px; }
+.play-card-context { margin-top: 8px; font-size: 13px; color: #555; }
+.play-card-context__label { font-weight: 600; }
+.play-card-metric { margin-top: 8px; font-size: 14px; color: #2f855a; }
+.play-card__disclaimer { margin: 10px 0 0; font-size: 12px; color: #555; font-style: italic; border-top: 1px dashed #cbd5e0; padding-top: 8px; }
+.play-card__reason { margin: 6px 0; }
+.play-card__reason-detail { margin: 4px 0; color: #444; font-size: 14px; }
+.play-card__evidence-snapshot { margin: 4px 0; color: #4a5568; font-size: 13px; }
+.play-card__would-fire-if { margin: 6px 0; font-size: 13px; color: #2c5282; }
+.abstain-callout { padding: 12px 16px; border-radius: 6px; margin: 0 0 12px; }
+.abstain-callout--soft { background: #fffaf0; border-left: 4px solid #b7791f; color: #744210; }
+.abstain-callout__label { display: block; margin-bottom: 4px; }
+.abstain-hard__reason { background: #fff; padding: 12px 16px; border-left: 4px solid #c53030; }
+.abstain-hard__flags { margin: 12px 0 0; padding-left: 20px; }
+.abstain-hard__flag { margin: 4px 0; }
+.abstain-hard__guidance { margin-top: 12px; color: #4a5568; }
+.watching-list { list-style: none; padding: 0; margin: 0; }
+.watching-row { background: #fff; border: 1px solid #e2e8f0; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.watching-row__metric { flex: 0 0 auto; }
+.watching-row__trend { flex: 0 0 auto; color: #4a5568; }
+.watching-row__threshold { flex: 1 1 auto; color: #4a5568; font-size: 13px; }
+.dq-footer { margin-top: 32px; background: #f7fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 6px; }
+.dq-footer__title { font-size: 16px; margin: 0 0 8px; }
+.dq-footer__flags, .dq-footer__window, .dq-footer__scale { padding-left: 20px; margin: 4px 0; }
+</style></head><body><main class="briefing-v2"><header class="briefing-v2__header"><h1 class="briefing-v2__title">BeaconAI Action Brief</h1><p class="briefing-v2__subtitle">No measured opportunities cleared; review the considered list and watching signals.</p></header><section class="state-of-store" aria-label="State of store"><h2 class="state-of-store__title">State of store</h2><p class="state-of-store__lead"><strong>m8_smoke_v2.</strong> AOV (L28): $110 (1.2% vs prior). Repeat rate (L28): 18.9% (19.7% vs prior). Orders (L28): 1157 (13.8% vs prior).</p></section><section class="recommended" aria-label="Recommended"><h2 class="section__title">Recommended</h2><div class="abstain-callout abstain-callout--soft" role="note"><strong class="abstain-callout__label">No measured opportunities cleared.</strong> <span class="abstain-callout__reason">no measured or directional recommendation cleared materiality + cannibalization gating</span></div><p class="section__empty">No targeting plays met audience-floor and overlap rules this run.</p></section><section class="considered" aria-label="Considered, not recommended"><h2 class="section__title">Considered, not recommended</h2><p class="section__empty">No plays were considered and held this run.</p></section><section class="watching" aria-label="Watching"><h2 class="section__title">Watching</h2><p class="section__empty">No deterministic signals to watch this run.</p></section><footer class="dq-footer" aria-label="Data quality"><h2 class="dq-footer__title">Data quality</h2><p class="dq-footer__no-flags">No data-quality flags on this run.</p><ul class="dq-footer__window"><li>Primary window: L28</li><li>Available windows: L7, L28, L56, L90</li></ul><ul class="dq-footer__scale"><li>Monthly revenue est.: $127,544</li><li>Materiality floor: $10,000</li></ul></footer></main></body></html>
