@@ -171,12 +171,14 @@ function normalizeAtulPlay(play, index) {
   const audienceSize = play.audience_size ?? play.audience?.size ?? play.audience?.n ?? play.segment_size ?? 0;
   const narration = play.narration || {};
   const title = play.play_name || play.title || titleizeId(play.play_id || play.id);
+  const role = play.role || play.lane || (play.reason_code ? "considered" : "recommendation");
   return {
     id: play.play_id || play.id || `atul-play-${index + 1}`,
     play_id: play.play_id || play.id || `atul-play-${index + 1}`,
     play_name: title,
-    role: play.role || "recommendation",
-    lane: play.lane || "recommendation",
+    role,
+    lane: play.lane || role,
+    reason_code: play.reason_code || play.null_reason || null,
     mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Engine recommendation ready for merchant review.",
     audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Engine audience",
     audience_size: audienceSize,
@@ -264,17 +266,52 @@ function formatRevenueRange(play) {
   return `${prefix}${low?.toLocaleString?.() || low}-${prefix}${high?.toLocaleString?.() || high}`;
 }
 
+function revenueRangeParts(play) {
+  const range = play?.revenue_range;
+  if (!range || range.low == null || range.high == null) return null;
+  const prefix = range.currency === "USD" || !range.currency ? "$" : `${range.currency} `;
+  const low = Number(range.low) || 0;
+  const high = Number(range.high) || 0;
+  const median = range.median ?? Math.round((low + high) / 2);
+  return {
+    low,
+    high,
+    median,
+    labelLow: `${prefix}${low.toLocaleString()}`,
+    labelHigh: `${prefix}${high.toLocaleString()}`,
+    labelMedian: `${prefix}${Number(median).toLocaleString()}`,
+  };
+}
+
+function classifyPlayLane(play) {
+  const lane = String(play?.lane || play?.role || "").toLowerCase();
+  if (play?.reason_code || lane.includes("considered") || lane.includes("held")) return "considered";
+  if (lane.includes("experiment")) return "experiment";
+  return "recommended";
+}
+
+function confidenceTone(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("strong") || text.includes("approved")) return "strong";
+  if (text.includes("emerging") || text.includes("trend")) return "emerging";
+  return "neutral";
+}
+
 function RecommendationRow({ play, selected, onSelect }) {
   const confidence = play.evidence_source || play.evidence?.evidence_source || play.confidence || "Review";
+  const lane = classifyPlayLane(play);
   return (
     <button className={`recommendation-row ${selected ? "selected" : ""}`} onClick={() => onSelect(play.play_id || play.id)}>
-      <span className="recommendation-icon">R</span>
+      <span className={`recommendation-icon ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
       <span className="recommendation-row-body">
+        {selected ? <span className="recommendation-overline">Primary</span> : null}
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
         <span className="recommendation-meta">
           <span>{formatAudience(play.audience_size)} customers</span>
           <span className="recommendation-dot" />
+          <span className={`confidence-dot ${confidenceTone(confidence)}`} />
           <span>{statusLabel(confidence)}</span>
+          {selected ? <span>✓ Approved</span> : null}
         </span>
       </span>
       <span className="recommendation-chevron">›</span>
@@ -291,21 +328,26 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
 
   const confidence = play.evidence_source || play.evidence?.evidence_source || play.confidence || "Review";
   const narration = play.narration || {};
+  const lane = classifyPlayLane(play);
+  const revenue = revenueRangeParts(play);
   const tabLabels = [
     ["thesis", "Play thesis"],
     ["send", "What we'd send"],
+    ["evidence", "Evidence"],
     ["audience", "Audience"],
+    ["sensitivity", "Sensitivity"],
   ];
 
   return (
     <div className="recommendation-detail">
       <div className="recommendation-detail-head">
-        <span className="recommendation-icon large">R</span>
+        <span className={`recommendation-icon large ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
         <div>
-          <div className="section-kicker">Recommendation</div>
+          <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Considered and held" : "Primary recommendation"}</div>
           <h2>{play.play_name || play.play_id}</h2>
           <span className="detail-id-chip">{play.play_id || play.id}</span>
         </div>
+        <button className="icon-menu" type="button" aria-label="More actions">...</button>
       </div>
 
       <div className="recommendation-stat-strip">
@@ -341,18 +383,24 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
       <div className="recommendation-tab-body">
         {activeTab === "thesis" ? (
           <>
-            <div className="model-row">
-              <span>Why now</span>
-              <strong>{narration.play_thesis || play.mechanism || "Recommendation ready for review"}</strong>
+            <div className="detail-copy-block">
+              <div className="section-kicker">Play thesis</div>
+              <p>{narration.play_thesis || play.mechanism || "Recommendation ready for merchant review."}</p>
             </div>
-            <div className="model-row">
-              <span>Evidence</span>
-              <strong>{narration.evidence_summary || statusLabel(confidence)}</strong>
-            </div>
-            <div className="model-row">
-              <span>Status</span>
-              <strong>Ready for template review</strong>
-            </div>
+            {revenue ? (
+              <div className="revenue-range">
+                <div className="section-kicker">Est. revenue range</div>
+                <div className="range-track">
+                  <span className="range-fill" />
+                  <span className="range-marker" style={{ left: "88%" }} />
+                </div>
+                <div className="range-labels">
+                  <span>{revenue.labelLow}</span>
+                  <span>median {revenue.labelMedian}</span>
+                  <span>{revenue.labelHigh}</span>
+                </div>
+              </div>
+            ) : null}
           </>
         ) : null}
 
@@ -373,6 +421,23 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
           </>
         ) : null}
 
+        {activeTab === "evidence" ? (
+          <>
+            <div className="model-row">
+              <span>Evidence summary</span>
+              <strong>{narration.evidence_summary || play.evidence?.evidence_class || statusLabel(confidence)}</strong>
+            </div>
+            <div className="model-row">
+              <span>Signal source</span>
+              <strong>{play.evidence_source || play.evidence?.evidence_source || "Engine output"}</strong>
+            </div>
+            <div className="model-row">
+              <span>Decision status</span>
+              <strong>{play.reason_code ? statusLabel(play.reason_code) : "Ready for review"}</strong>
+            </div>
+          </>
+        ) : null}
+
         {activeTab === "audience" ? (
           <>
             <div className="model-row">
@@ -389,11 +454,29 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
             </div>
           </>
         ) : null}
+
+        {activeTab === "sensitivity" ? (
+          <>
+            <div className="model-row">
+              <span>Confidence</span>
+              <strong>{statusLabel(confidence)}</strong>
+            </div>
+            <div className="model-row">
+              <span>Estimated upside</span>
+              <strong>{formatRevenueRange(play)}</strong>
+            </div>
+            <div className="model-row">
+              <span>Review note</span>
+              <strong>{play.reason_code ? "Held by engine guardrail" : "Merchant approval required before template work"}</strong>
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="recommendation-detail-footer">
-        <button className="btn primary" onClick={() => onSendToReview(play)}>Send to Review Queue</button>
-        <button className="btn" onClick={() => onViewEvidence?.(play)}>View details</button>
+        <button className="btn primary" onClick={() => onSendToReview(play)}>✓ Approve</button>
+        <button className="btn danger" onClick={() => onViewEvidence?.(play)}>Reject</button>
+        <button className="btn" onClick={() => onViewEvidence?.(play)}>Defer</button>
       </div>
     </div>
   );
@@ -687,8 +770,12 @@ function App() {
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
   const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
   const onboardingReadyToFinish = status.shopify && status.klaviyo;
-  const briefingRows = workflowPlays.map((play) => ({ play }));
-  const selectedBriefingRow = briefingRows.find((row) => row.play.play_id === selectedBriefingPlayId) || briefingRows[0] || null;
+  const briefingRows = workflowPlays.map((play) => ({ play, lane: classifyPlayLane(play) }));
+  const recommendedRows = briefingRows.filter((row) => row.lane === "recommended");
+  const experimentRows = briefingRows.filter((row) => row.lane === "experiment");
+  const consideredRows = briefingRows.filter((row) => row.lane === "considered");
+  const selectableRows = [...recommendedRows, ...experimentRows, ...consideredRows];
+  const selectedBriefingRow = selectableRows.find((row) => row.play.play_id === selectedBriefingPlayId) || selectableRows[0] || null;
 
   useEffect(() => {
     checkConnections();
@@ -702,10 +789,10 @@ function App() {
   }, [reviewPlayId, workflowPlays]);
 
   useEffect(() => {
-    if (!briefingRows.length) return;
-    const stillPresent = briefingRows.some((row) => row.play.play_id === selectedBriefingPlayId);
-    if (!stillPresent) setSelectedBriefingPlayId(briefingRows[0].play.play_id);
-  }, [briefingRows, selectedBriefingPlayId]);
+    if (!selectableRows.length) return;
+    const stillPresent = selectableRows.some((row) => row.play.play_id === selectedBriefingPlayId);
+    if (!stillPresent) setSelectedBriefingPlayId(selectableRows[0].play.play_id);
+  }, [selectableRows, selectedBriefingPlayId]);
 
   useEffect(() => {
     if (onboardingReadyToFinish && !onboardingHidden) {
@@ -1052,18 +1139,26 @@ function App() {
 
           {activePage === "briefing" && (
             <>
+              <div className="briefing-titlebar">
+                <div>
+                  <h2>Your briefing slate is ready — {recommendedRows.length || workflowPlays.length} plays for your review</h2>
+                  <p>
+                    <strong>{recommendedRows.length}</strong> recommended now · <strong>{experimentRows.length}</strong> experiments · <strong>{consideredRows.length}</strong> considered.
+                  </p>
+                </div>
+                <button className="btn" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh briefing</button>
+              </div>
               <div className="briefing-workbench">
                 <div className="recommendation-list">
                   <div className="lane-box">
                     <div className="lane-head">
-                      <span>Recommendations</span>
+                      <span>Recommended now</span>
                       <div className="lane-head-actions">
-                        <button className="btn small" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh</button>
-                        <strong>{briefingRows.length}</strong>
+                        <strong>{recommendedRows.length}</strong>
                       </div>
                     </div>
                     <div className="recommendation-row-stack">
-                      {briefingRows.map(({ play }) => (
+                      {(recommendedRows.length ? recommendedRows : selectableRows).map(({ play }) => (
                         <RecommendationRow
                           key={play.play_id}
                           play={play}
@@ -1071,7 +1166,46 @@ function App() {
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
+                      {!selectableRows.length ? <div className="empty-panel inline">Refresh briefing to load engine recommendations.</div> : null}
                     </div>
+                  </div>
+
+                  {experimentRows.length ? (
+                    <div className="lane-box">
+                      <div className="lane-head">
+                        <span>Recommended experiment</span>
+                        <strong>{experimentRows.length}</strong>
+                      </div>
+                      <div className="recommendation-row-stack">
+                        {experimentRows.map(({ play }) => (
+                          <RecommendationRow
+                            key={play.play_id}
+                            play={play}
+                            selected={selectedBriefingRow?.play.play_id === play.play_id}
+                            onSelect={setSelectedBriefingPlayId}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="lane-box compact-lane">
+                    <div className="lane-head">
+                      <span>Considered (not selected)</span>
+                      <strong>{consideredRows.length}</strong>
+                    </div>
+                    {consideredRows.length ? (
+                      <div className="recommendation-row-stack">
+                        {consideredRows.map(({ play }) => (
+                          <RecommendationRow
+                            key={play.play_id}
+                            play={play}
+                            selected={selectedBriefingRow?.play.play_id === play.play_id}
+                            onSelect={setSelectedBriefingPlayId}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
