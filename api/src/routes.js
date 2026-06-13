@@ -7,7 +7,7 @@ const {
   getEngineInput,
 } = require("./services/shopifyRepository");
 const { runMockEngine, saveEngineRun } = require("./services/engineService");
-const { runAtulEngine } = require("./services/atulEngineService");
+const { narrateAtulRun, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 const {
   testKlaviyo,
@@ -278,13 +278,22 @@ router.post("/engine/atul/run", async (req, res) => {
       shopDomain,
       useFixture: Boolean(req.body.useFixture),
     });
-    const presentedRun = presentEngineRun(result.engineRun, result.manifest);
+    let narration = null;
+    try {
+      narration = await narrateAtulRun(result);
+    } catch (narrationError) {
+      narration = {
+        error: narrationError.message,
+      };
+    }
+    const presentedRun = presentEngineRun(result.engineRun, result.manifest, narration);
 
     res.json({
       ok: true,
       shopDomain,
       engineRun: result.engineRun,
       presentedRun,
+      narration,
       manifest: result.manifest,
       runSummary: {
         data_quality: result.runSummary.data_quality,

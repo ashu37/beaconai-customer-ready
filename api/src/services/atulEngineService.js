@@ -319,7 +319,36 @@ async function runAtulEngine(input, options = {}) {
   };
 }
 
+async function narrateAtulRun(result, options = {}) {
+  const manifestPath = result?.artifacts?.manifestPath;
+  const runId = result?.engineRun?.run_id || result?.manifest?.run_id;
+  if (!manifestPath || !runId) return null;
+
+  const engineDir = path.resolve(options.engineDir || process.env.BEACONAI_ENGINE_DIR || defaultEngineDir());
+  const pythonPath = process.env.BEACONAI_ENGINE_PYTHON || defaultPythonPath(engineDir);
+  const manifestDir = path.dirname(manifestPath);
+  const runsDir = path.dirname(manifestDir);
+  const storeDir = path.basename(path.dirname(runsDir));
+  const dataRoot = path.join(engineDir, "data");
+
+  const code = `
+import contextlib
+import io
+import json
+from src.mcp.narration.server import narrate_run_payload
+
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    payload = narrate_run_payload(${JSON.stringify(storeDir)}, ${JSON.stringify(runId)}, data_root=${JSON.stringify(dataRoot)})
+print(json.dumps(payload))
+`;
+
+  const output = await runProcess(pythonPath, ["-c", code], { cwd: engineDir, env: process.env });
+  return JSON.parse(output.stdout);
+}
+
 module.exports = {
+  narrateAtulRun,
   runAtulEngine,
   writeOrdersCsv,
 };

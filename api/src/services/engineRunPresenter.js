@@ -99,10 +99,34 @@ function audienceArtifactFor(card, manifest) {
   return audiences.find((entry) => entry.play_id === card.play_id || entry.audience_definition_id === audienceId) || null;
 }
 
-function normalizeCard(card, role, index, manifest) {
+function narrationByPlay(narration) {
+  const cards = narration?.cards || [];
+  const map = new Map();
+  for (const card of cards) {
+    map.set(`${card.role}:${card.play_id}`, card);
+    map.set(card.play_id, card);
+  }
+  return map;
+}
+
+function narrationFor(map, id, role) {
+  return map.get(`${role}:${id}`) || map.get(id) || null;
+}
+
+function normalizeCard(card, role, index, manifest, narrationMap) {
   const id = card.play_id || `${role}-${index + 1}`;
   const revenueRange = normalizeRevenueRange(card.revenue_range);
-  const narration = narrationForCard(card, role);
+  const guardedNarration = narrationFor(narrationMap, id, role);
+  const fallbackNarration = narrationForCard(card, role);
+  const narration = guardedNarration ? {
+    role,
+    play_thesis: guardedNarration.play_thesis,
+    what_we_d_send: guardedNarration.what_we_d_send,
+    evidence_summary: guardedNarration.evidence_summary,
+    guard_violations: guardedNarration.guard_violations || [],
+    used_fallback: Boolean(guardedNarration.used_fallback),
+    llm_mode: "atul-narration",
+  } : fallbackNarration;
   const audienceArtifact = audienceArtifactFor(card, manifest);
 
   return {
@@ -144,8 +168,9 @@ function normalizeCard(card, role, index, manifest) {
   };
 }
 
-function normalizeRejectedCard(card, index) {
+function normalizeRejectedCard(card, index, narrationMap) {
   const id = card.play_id || `considered-${index + 1}`;
+  const guardedNarration = narrationFor(narrationMap, id, "considered");
   return {
     id,
     play_id: id,
@@ -154,14 +179,25 @@ function normalizeRejectedCard(card, index) {
     reason_code: card.reason_code || null,
     audience_size: card.audience_size ?? 0,
     audience_archetype: card.audience_definition || "Held for more evidence",
+    mechanism: guardedNarration?.play_thesis || "This play was considered and held by the engine.",
+    narration: guardedNarration ? {
+      role: "considered",
+      play_thesis: guardedNarration.play_thesis,
+      what_we_d_send: guardedNarration.what_we_d_send,
+      evidence_summary: guardedNarration.evidence_summary,
+      guard_violations: guardedNarration.guard_violations || [],
+      used_fallback: Boolean(guardedNarration.used_fallback),
+      llm_mode: "atul-narration",
+    } : null,
     raw: card,
   };
 }
 
-function presentEngineRun(engineRun, manifest = null) {
+function presentEngineRun(engineRun, manifest = null, narration = null) {
+  const narrationMap = narrationByPlay(narration);
   const recommendations = [
-    ...(engineRun?.recommendations || []).map((card, index) => normalizeCard(card, "recommendation", index, manifest)),
-    ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest)),
+    ...(engineRun?.recommendations || []).map((card, index) => normalizeCard(card, "recommendation", index, manifest, narrationMap)),
+    ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest, narrationMap)),
   ];
 
   return {
@@ -172,7 +208,7 @@ function presentEngineRun(engineRun, manifest = null) {
     generated_at: engineRun?.created_at || manifest?.created_at || null,
     recommendation_count: recommendations.length,
     recommendations,
-    considered: (engineRun?.considered || []).map(normalizeRejectedCard),
+    considered: (engineRun?.considered || []).map((card, index) => normalizeRejectedCard(card, index, narrationMap)),
     watching: engineRun?.watching || [],
     abstain: engineRun?.abstain || null,
     manifest: manifest ? {
