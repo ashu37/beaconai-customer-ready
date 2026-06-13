@@ -195,11 +195,13 @@ function normalizeAtulPlay(play, index) {
 
 function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
   const presented = atulEngineResult?.presentedRun?.recommendations || [];
+  const presentedConsidered = atulEngineResult?.presentedRun?.considered || [];
   const rawEngineCards = [
     ...(atulEngineResult?.engineRun?.recommendations || []),
     ...(atulEngineResult?.engineRun?.recommended_experiments || []),
+    ...(atulEngineResult?.engineRun?.considered || []),
   ];
-  const atulPlays = (presented.length ? presented : rawEngineCards).map(normalizeAtulPlay);
+  const atulPlays = (presented.length || presentedConsidered.length ? [...presented, ...presentedConsidered] : rawEngineCards).map(normalizeAtulPlay);
   if (atulPlays.length) return atulPlays;
 
   const packagePlays = campaignPackages.map((item) => ({
@@ -300,18 +302,19 @@ function confidenceTone(value) {
 function RecommendationRow({ play, selected, onSelect }) {
   const confidence = play.evidence_source || play.evidence?.evidence_source || play.confidence || "Review";
   const lane = classifyPlayLane(play);
+  const selectedActionable = selected && lane !== "considered";
   return (
     <button className={`recommendation-row ${selected ? "selected" : ""}`} onClick={() => onSelect(play.play_id || play.id)}>
       <span className={`recommendation-icon ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
       <span className="recommendation-row-body">
-        {selected ? <span className="recommendation-overline">Primary</span> : null}
+        {selectedActionable ? <span className="recommendation-overline">Primary</span> : null}
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
         <span className="recommendation-meta">
           <span>{formatAudience(play.audience_size)} customers</span>
           <span className="recommendation-dot" />
           <span className={`confidence-dot ${confidenceTone(confidence)}`} />
           <span>{statusLabel(confidence)}</span>
-          {selected ? <span>✓ Approved</span> : null}
+          {selectedActionable ? <span>✓ Approved</span> : null}
         </span>
       </span>
       <span className="recommendation-chevron">›</span>
@@ -755,14 +758,15 @@ function App() {
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
     [atulEngineResult, campaignPackages, campaign]
   );
-  const reviewPlay = workflowPlays.find((play) => play.id === reviewPlayId) || workflowPlays[0];
+  const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
+  const reviewPlay = reviewablePlays.find((play) => play.id === reviewPlayId) || reviewablePlays[0];
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
   const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id]) : null;
-  const finalCampaigns = workflowPlays
+  const finalCampaigns = reviewablePlays
     .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id]))
     .map((item) => item ? { ...item, status: authorizedPackageIds.includes(item.id) ? "authorized" : item.status } : item)
     .filter(Boolean);
-  const reviewPendingCount = workflowPlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
+  const reviewPendingCount = reviewablePlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
   const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "authorized").length;
   const approvedCount = finalCampaigns.filter((item) => item.status === "authorized").length;
   const productCount = counts.products ?? engineInput?.products?.length ?? "—";
@@ -783,10 +787,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!reviewPlayId && workflowPlays[0]) {
-      setReviewPlayId(workflowPlays[0].id);
+    if (!reviewPlayId && reviewablePlays[0]) {
+      setReviewPlayId(reviewablePlays[0].id);
     }
-  }, [reviewPlayId, workflowPlays]);
+  }, [reviewPlayId, reviewablePlays]);
 
   useEffect(() => {
     if (!selectableRows.length) return;
@@ -985,7 +989,7 @@ function App() {
         {nav.map(([key, label]) => (
           <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => setActivePage(key)}>
             {label}
-            {key === "queue" && workflowPlays.length ? <span className="badge">{workflowPlays.length}</span> : null}
+            {key === "queue" && reviewPendingCount ? <span className="badge">{reviewPendingCount}</span> : null}
             {key === "campaigns" && finalCampaigns.length ? <span className="badge">{finalCampaigns.length}</span> : null}
           </button>
         ))}
@@ -1044,9 +1048,9 @@ function App() {
                 </HomeModule>
 
                 <HomeModule title="Pending Review" detail="Recommendations waiting for a template decision." action="Open" onAction={() => setActivePage("queue")}>
-                  {workflowPlays.length ? (
+                  {reviewablePlays.length ? (
                     <div className="home-list">
-                      {workflowPlays.slice(0, 4).map((play) => (
+                      {reviewablePlays.slice(0, 4).map((play) => (
                         <button key={play.id} className="home-list-row" onClick={() => { setReviewPlayId(play.id); setActivePage("queue"); }}>
                           <span>{selectedTemplateByPlay[play.id] ? "Template selected" : "Needs template"}</span>
                           <strong>{play.play_name || play.play_id}</strong>
@@ -1223,7 +1227,7 @@ function App() {
               <div className="queue-layout">
                 <div className="draft-list">
                   <div className="section-kicker">Recommendations</div>
-                  {workflowPlays.length ? workflowPlays.map((play) => {
+                  {reviewablePlays.length ? reviewablePlays.map((play) => {
                     const chosen = klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]);
                     return (
                       <button key={play.id} className={`draft-card ${reviewPlay?.id === play.id ? "selected" : ""}`} onClick={() => setReviewPlayId(play.id)}>
