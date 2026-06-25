@@ -50,6 +50,49 @@ async function getKlaviyoTemplates(privateKey) {
   return response.data;
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function campaignTemplateName(campaign) {
+  return campaign.klaviyo?.template_name
+    || campaign.templateName
+    || `BeaconAI - ${campaign.playTitle || campaign.play_name || "Campaign"}`;
+}
+
+function campaignHtml(campaign) {
+  if (campaign.email?.html) return campaign.email.html;
+
+  return `
+<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f7f5f0;font-family:Arial,sans-serif;color:#151515;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f5f0;padding:24px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #ded7cc;">
+            <tr>
+              <td style="padding:32px;">
+                <p style="margin:0 0 12px;color:#f08a24;font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;">BeaconAI</p>
+                <h1 style="margin:0 0 16px;font-size:30px;line-height:1.15;color:#111111;">${escapeHtml(campaign.bodyH2 || campaign.subject || campaign.playTitle)}</h1>
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(campaign.bodyP1 || campaign.previewText)}</p>
+                ${campaign.bodyP2 ? `<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(campaign.bodyP2)}</p>` : ""}
+                <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "Shop now")}</a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
 async function createTemplate(privateKey, campaign) {
   const client = createKlaviyoClient(privateKey);
 
@@ -57,9 +100,9 @@ async function createTemplate(privateKey, campaign) {
     data: {
       type: "template",
       attributes: {
-        name: campaign.klaviyo?.template_name || `BeaconAI - ${campaign.play_name}`,
+        name: campaignTemplateName(campaign),
         editor_type: "CODE",
-        html: campaign.email.html,
+        html: campaignHtml(campaign),
       },
     },
   };

@@ -274,6 +274,7 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .campaign-item small { color: var(--muted); margin-top: 6px; }
 .campaign-status { display: inline-flex; color: var(--accent); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; margin-bottom: 8px; }
 .campaign-status.authorized { color: var(--positive); }
+.campaign-status.created { color: var(--positive); }
 .pkg-origin { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); margin-bottom: 16px; }
 .pkg-origin strong { color: var(--ink-strong); }
 .segment-spec { display: grid; gap: 10px; margin: 18px 0; }

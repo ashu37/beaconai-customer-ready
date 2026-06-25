@@ -598,7 +598,7 @@ function CohortRetentionChart({ curves }) {
   );
 }
 
-function CampaignPackages({ campaigns, onAuthorize }) {
+function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId }) {
   const [selectedId, setSelectedId] = useState(campaigns[0]?.id || "");
   const selected = campaigns.find((item) => item.id === selectedId) || campaigns[0];
 
@@ -645,8 +645,15 @@ function CampaignPackages({ campaigns, onAuthorize }) {
           <div><span>Send</span><strong>{selected.sendTime}</strong></div>
           <div><span>Suppression</span><strong>{selected.suppression}</strong></div>
         </div>
+        {selected.klaviyoTemplateId ? (
+          <div className="success-box">
+            Created in Klaviyo as template <strong>{selected.klaviyoTemplateId}</strong>.
+          </div>
+        ) : null}
         <div className="action-row">
-          <button className="btn primary" onClick={() => onAuthorize(selected.id)}>Authorize package</button>
+          <button className="btn primary" onClick={() => onCreateInKlaviyo(selected)} disabled={publishingId === selected.id || Boolean(selected.klaviyoTemplateId)}>
+            {selected.klaviyoTemplateId ? "Created in Klaviyo" : publishingId === selected.id ? "Creating..." : "Create in Klaviyo"}
+          </button>
           <button className="btn">Request changes</button>
         </div>
       </div>
@@ -762,6 +769,8 @@ function App() {
   const [selectedTemplateByPlay, setSelectedTemplateByPlay] = useState({});
   const [draftEditsByPlay, setDraftEditsByPlay] = useState({});
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
+  const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
+  const [publishingCampaignId, setPublishingCampaignId] = useState("");
   const [reviewPlayId, setReviewPlayId] = useState("");
   const [selectedBriefingPlayId, setSelectedBriefingPlayId] = useState("");
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
@@ -780,11 +789,19 @@ function App() {
   const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id]) : null;
   const finalCampaigns = reviewablePlays
     .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id]))
-    .map((item) => item ? { ...item, status: authorizedPackageIds.includes(item.id) ? "authorized" : item.status } : item)
+    .map((item) => {
+      if (!item) return item;
+      const asset = klaviyoAssetsByCampaign[item.id];
+      return {
+        ...item,
+        status: asset ? "created" : authorizedPackageIds.includes(item.id) ? "authorized" : item.status,
+        klaviyoTemplateId: asset?.templateId || null,
+      };
+    })
     .filter(Boolean);
   const reviewPendingCount = reviewablePlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
-  const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "authorized").length;
-  const approvedCount = finalCampaigns.filter((item) => item.status === "authorized").length;
+  const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "created").length;
+  const approvedCount = finalCampaigns.filter((item) => item.status === "created").length;
   const productCount = counts.products ?? engineInput?.products?.length ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
@@ -946,6 +963,26 @@ function App() {
   function authorizeCampaignPackage(campaignId) {
     setCampaignPackages((prev) => prev.map((item) => item.id === campaignId ? { ...item, status: "authorized" } : item));
     setAuthorizedPackageIds((prev) => prev.includes(campaignId) ? prev : [...prev, campaignId]);
+  }
+
+  async function createCampaignTemplateInKlaviyo(campaignDraft) {
+    setPublishingCampaignId(campaignDraft.id);
+    try {
+      const result = await runStep("Klaviyo template creation", () => api.createTemplate(campaignDraft));
+      const templateId = result.template?.data?.id;
+      setKlaviyoAssetsByCampaign((prev) => ({
+        ...prev,
+        [campaignDraft.id]: {
+          templateId,
+          template: result.template,
+          createdAt: new Date().toISOString(),
+        },
+      }));
+      setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
+      return result;
+    } finally {
+      setPublishingCampaignId("");
+    }
   }
 
   function chooseTemplate(playId, templateId) {
@@ -1347,7 +1384,7 @@ function App() {
                 </p>
               </div>
               {finalCampaigns.length ? (
-                <CampaignPackages campaigns={finalCampaigns} onAuthorize={authorizeCampaignPackage} />
+                <CampaignPackages campaigns={finalCampaigns} onCreateInKlaviyo={createCampaignTemplateInKlaviyo} publishingId={publishingCampaignId} />
               ) : (
                 <div className="empty-panel">Select a template in Review Queue to assemble the final campaign package.</div>
               )}
