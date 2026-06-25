@@ -144,7 +144,7 @@ h1 { font-family: var(--font-display); font-size: 24px; font-weight: 700; color:
 .recommendation-overline { color: var(--accent); font-family: var(--font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: .16em; }
 .recommendation-title { color: var(--ink-strong); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recommendation-meta { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; min-width: 0; flex-wrap: wrap; }
-.recommendation-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--muted-2); }
+.recommendation-meta-item { display: inline-flex; align-items: center; gap: 5px; }
 .confidence-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); }
 .confidence-dot.strong { background: var(--positive); }
 .confidence-dot.emerging { background: var(--accent); }

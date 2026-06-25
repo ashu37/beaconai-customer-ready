@@ -126,6 +126,15 @@ function statusLabel(value) {
   return String(value || "pending").replaceAll("_", " ");
 }
 
+function readableMetaLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase().replaceAll("_", " ");
+  if (["engine", "review", "pending", "placeholder"].includes(normalized)) return null;
+  if (normalized === "store observed") return "Observed in store data";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function buildDashboardRun(placeholderRun, counts) {
   const productCount = placeholderRun?.input_summary?.products ?? counts.products ?? 0;
   const customerCount = placeholderRun?.input_summary?.customers ?? counts.customers ?? 0;
@@ -300,7 +309,10 @@ function confidenceTone(value) {
 }
 
 function RecommendationRow({ play, selected, onSelect }) {
-  const confidence = play.evidence_source || play.evidence?.evidence_source || play.confidence || "Review";
+  const confidence = play.confidence || play.confidence_label || play.model_confidence || null;
+  const evidenceSource = play.evidence_source || play.evidence?.evidence_source || null;
+  const confidenceLabel = readableMetaLabel(confidence);
+  const evidenceLabel = readableMetaLabel(evidenceSource);
   const lane = classifyPlayLane(play);
   const selectedActionable = selected && lane !== "considered";
   return (
@@ -311,9 +323,13 @@ function RecommendationRow({ play, selected, onSelect }) {
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
         <span className="recommendation-meta">
           <span>{formatAudience(play.audience_size)} customers</span>
-          <span className="recommendation-dot" />
-          <span className={`confidence-dot ${confidenceTone(confidence)}`} />
-          <span>{statusLabel(confidence)}</span>
+          {confidenceLabel ? (
+            <span className="recommendation-meta-item">
+              <span className={`confidence-dot ${confidenceTone(confidence)}`} />
+              {confidenceLabel}
+            </span>
+          ) : null}
+          {evidenceLabel && evidenceLabel !== confidenceLabel ? <span>{evidenceLabel}</span> : null}
           {selectedActionable ? <span>✓ Approved</span> : null}
         </span>
       </span>
@@ -329,7 +345,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
     return <div className="recommendation-detail empty-panel">Select a recommendation to review the details.</div>;
   }
 
-  const confidence = play.evidence_source || play.evidence?.evidence_source || play.confidence || "Review";
+  const confidence = play.confidence || play.confidence_label || play.model_confidence || "Review";
   const narration = play.narration || {};
   const lane = classifyPlayLane(play);
   const revenue = revenueRangeParts(play);
