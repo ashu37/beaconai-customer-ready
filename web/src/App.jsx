@@ -202,7 +202,7 @@ function normalizeAtulPlay(play, index) {
   };
 }
 
-function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
+function buildWorkflowPlays({ atulEngineResult, dashboardRun, campaignPackages, campaign }) {
   const presented = atulEngineResult?.presentedRun?.recommendations || [];
   const presentedConsidered = atulEngineResult?.presentedRun?.considered || [];
   const rawEngineCards = [
@@ -226,6 +226,18 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
   }));
   if (packagePlays.length) return packagePlays;
 
+  const dashboardPlays = [
+    ...(dashboardRun.slate?.recommended_now || []),
+    ...(dashboardRun.slate?.recommended_experiment || []),
+  ].map((play, index) => ({
+    id: play.play_id || `placeholder-${index + 1}`,
+    ...play,
+    confidence: play.evidence?.evidence_class || "placeholder",
+    source: "placeholder",
+    raw: play,
+  }));
+
+  if (dashboardPlays.length) return dashboardPlays;
   if (!campaign) return [];
 
   return [{
@@ -493,7 +505,11 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
       </div>
 
       <div className="recommendation-detail-footer">
-        <button className="btn primary" onClick={() => onSendToReview(play)}>✓ Approve</button>
+        {lane === "considered" ? (
+          <button className="btn" onClick={() => onViewEvidence?.(play)}>Held by engine</button>
+        ) : (
+          <button className="btn primary" onClick={() => onSendToReview(play)}>✓ Approve</button>
+        )}
         <button className="btn danger" onClick={() => onViewEvidence?.(play)}>Reject</button>
         <button className="btn" onClick={() => onViewEvidence?.(play)}>Defer</button>
       </div>
@@ -647,12 +663,13 @@ function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId }) {
         </div>
         {selected.klaviyoTemplateId ? (
           <div className="success-box">
-            Created in Klaviyo as template <strong>{selected.klaviyoTemplateId}</strong>.
+            Created in Klaviyo as template <strong>{selected.klaviyoTemplateId}</strong>
+            {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
           </div>
         ) : null}
         <div className="action-row">
           <button className="btn primary" onClick={() => onCreateInKlaviyo(selected)} disabled={publishingId === selected.id || Boolean(selected.klaviyoTemplateId)}>
-            {selected.klaviyoTemplateId ? "Created in Klaviyo" : publishingId === selected.id ? "Creating..." : "Create in Klaviyo"}
+            {selected.klaviyoTemplateId ? "Created in Klaviyo" : publishingId === selected.id ? "Creating..." : "Create Klaviyo send package"}
           </button>
           <button className="btn">Request changes</button>
         </div>
@@ -780,8 +797,8 @@ function App() {
   const counts = sync?.synced || {};
   const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
-    () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
-    [atulEngineResult, campaignPackages, campaign]
+    () => buildWorkflowPlays({ atulEngineResult, dashboardRun, campaignPackages, campaign }),
+    [atulEngineResult, dashboardRun, campaignPackages, campaign]
   );
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
   const reviewPlay = reviewablePlays.find((play) => play.id === reviewPlayId) || reviewablePlays[0];
@@ -796,15 +813,16 @@ function App() {
         ...item,
         status: asset ? "created" : authorizedPackageIds.includes(item.id) ? "authorized" : item.status,
         klaviyoTemplateId: asset?.templateId || null,
+        klaviyoAudience: asset?.audience || null,
       };
     })
     .filter(Boolean);
   const reviewPendingCount = reviewablePlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
   const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "created").length;
   const approvedCount = finalCampaigns.filter((item) => item.status === "created").length;
-  const productCount = counts.products ?? engineInput?.products?.length ?? "—";
-  const customerCount = counts.customers ?? engineInput?.customers?.length ?? "—";
-  const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
+  const productCount = counts.products ?? engineInput?.products?.length ?? placeholderRun?.input_summary?.products ?? "—";
+  const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
+  const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
   const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
   const onboardingReadyToFinish = status.shopify && status.klaviyo;
   const briefingRows = workflowPlays.map((play) => ({ play, lane: classifyPlayLane(play) }));
@@ -817,6 +835,7 @@ function App() {
   useEffect(() => {
     checkConnections();
     preloadStoreSnapshot();
+    preloadEngineRecommendations();
   }, []);
 
   useEffect(() => {
@@ -885,6 +904,15 @@ function App() {
     }
   }
 
+  async function preloadEngineRecommendations() {
+    try {
+      const result = await api.runAtulEngine(false);
+      setAtulEngineResult(result);
+    } catch (_) {
+      // Placeholder recommendations stay available when the local engine is not ready.
+    }
+  }
+
   async function syncShopify() {
     const result = await runStep("Shopify sync", () => api.syncShopify());
     setSync(result);
@@ -944,7 +972,7 @@ function App() {
           status: "building",
           builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
           customers: play.audience_size || 0,
-          segment: play.audience_archetype || "Engine audience",
+          segment: play.audience_archetype || "Engine placeholder audience",
           subject: "Placeholder subject from engine play",
           previewText: "Waiting for real engine copy.",
           bodyH2: play.play_name || play.play_id,
@@ -975,6 +1003,7 @@ function App() {
         [campaignDraft.id]: {
           templateId,
           template: result.template,
+          audience: result.audience,
           createdAt: new Date().toISOString(),
         },
       }));

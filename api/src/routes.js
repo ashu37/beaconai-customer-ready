@@ -27,6 +27,7 @@ const {
   resolveStoredShopifyToken,
   resolveStoredKlaviyoToken,
 } = require("./services/oauthService");
+const { resolveCampaignAudience } = require("./services/campaignAudienceService");
 
 const router = express.Router();
 
@@ -324,16 +325,17 @@ router.post("/klaviyo/templates/from-engine", async (req, res) => {
 
     const input = await getEngineInput(shopDomain);
     const campaign = req.body.campaign || runMockEngine(input);
+    const audience = await resolveCampaignAudience(shopDomain, campaign);
 
     const template = await createTemplate(privateKey, campaign);
     await saveKlaviyoAsset({
       shopDomain,
       assetType: "template",
       externalId: template?.data?.id,
-      payload: template,
+      payload: { template, campaign, audience },
     });
 
-    res.json({ ok: true, campaign, template });
+    res.json({ ok: true, campaign, template, audience });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
