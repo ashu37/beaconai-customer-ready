@@ -811,6 +811,7 @@ function App() {
   const [sync, setSync] = useState(null);
   const [campaign, setCampaign] = useState(null);
   const [engineInput, setEngineInput] = useState(null);
+  const [brandContext, setBrandContext] = useState(null);
   const [placeholderRun, setPlaceholderRun] = useState(null);
   const [atulEngineResult, setAtulEngineResult] = useState(null);
   const [klaviyoTemplates, setKlaviyoTemplates] = useState([]);
@@ -874,6 +875,7 @@ function App() {
     checkConnections();
     preloadStoreSnapshot();
     preloadEngineRecommendations();
+    loadBrandContext();
   }, []);
 
   useEffect(() => {
@@ -942,6 +944,15 @@ function App() {
     }
   }
 
+  async function loadBrandContext() {
+    try {
+      const result = await api.brandContext();
+      setBrandContext(result.brandContext || null);
+    } catch (_) {
+      // Brand context is additive; campaign review still works without it.
+    }
+  }
+
   async function preloadEngineRecommendations() {
     try {
       const result = await api.runAtulEngine(false);
@@ -976,6 +987,7 @@ function App() {
     const result = await runStep("Klaviyo templates load", () => api.getKlaviyoTemplates());
     setKlaviyoTemplates(result.templates || []);
     setTemplateSource(result.source || "");
+    if (result.brandContext) setBrandContext(result.brandContext);
     return result;
   }
 
@@ -1416,6 +1428,21 @@ function App() {
                   </div>
 
                   {templateSource ? <div className="success-box">Templates loaded from {templateSource}.</div> : null}
+
+                  {brandContext ? (
+                    <div className="brand-context-box">
+                      <div>
+                        <span className="section-kicker">Brand voice from Shopify</span>
+                        <h4>{brandContext.brandName} · {brandContext.category}</h4>
+                        <p>
+                          Using {brandContext.productLanguage?.bestSellers?.[0]?.title || "top products"},
+                          {brandContext.productLanguage?.productTypes?.[0]?.name ? ` ${brandContext.productLanguage.productTypes[0].name},` : ""}
+                          {" "}and store words like {(brandContext.messaging?.useWords || []).slice(0, 5).join(", ") || "catalog language"}.
+                        </p>
+                      </div>
+                      <button className="btn small" onClick={loadBrandContext}>Refresh</button>
+                    </div>
+                  ) : null}
 
                   <div className="template-grid">
                     {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (

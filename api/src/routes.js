@@ -30,6 +30,11 @@ const {
   resolveStoredKlaviyoToken,
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
+const {
+  applyBrandVoiceToCampaign,
+  buildBeaconTemplates,
+  buildBrandContext,
+} = require("./services/brandContextService");
 
 const router = express.Router();
 
@@ -136,6 +141,17 @@ router.get("/connections/status", async (req, res) => {
   }
 });
 
+router.get("/brand/context", async (req, res) => {
+  try {
+    const shopDomain = req.query.shopDomain || config.shopify.shopDomain;
+    const input = await getEngineInput(shopDomain);
+    const brandContext = buildBrandContext(input);
+    res.json({ ok: true, shopDomain, brandContext });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 router.get("/klaviyo/lists", async (req, res) => {
   try {
     const data = await getKlaviyoLists(await resolveKlaviyoKey(req.query));
@@ -155,40 +171,11 @@ router.get("/klaviyo/profiles", async (req, res) => {
 });
 
 router.get("/klaviyo/templates", async (req, res) => {
-  const beaconTemplates = [
-    {
-      id: "beacon-winback-clean",
-      source: "beacon",
-      name: "BeaconAI winback offer",
-      subject: "A fresh reason to come back",
-      previewText: "A concise returning-customer campaign generated from the selected play.",
-      bodyH2: "Your next favorite is ready.",
-      bodyP1: "Use this draft when the engine recommends reactivating previous buyers.",
-      cta: "Shop the edit",
-    },
-    {
-      id: "beacon-second-purchase",
-      source: "beacon",
-      name: "BeaconAI second purchase journey",
-      subject: "Make the most of your first order",
-      previewText: "Education and complementary-product copy for first-time buyers.",
-      bodyH2: "Here is what pairs well with your first pick.",
-      bodyP1: "Use this draft for first-to-second purchase recommendations.",
-      cta: "See recommendations",
-    },
-    {
-      id: "beacon-lifecycle-soft-nudge",
-      source: "beacon",
-      name: "BeaconAI lifecycle nudge",
-      subject: "Picked for where you are now",
-      previewText: "A flexible lifecycle template for lower-confidence plays.",
-      bodyH2: "A small nudge, matched to your timing.",
-      bodyP1: "Use this draft when BeaconAI recommends a measured experiment.",
-      cta: "Explore now",
-    },
-  ];
-
   try {
+    const shopDomain = req.query.shopDomain || config.shopify.shopDomain;
+    const input = await getEngineInput(shopDomain);
+    const brandContext = buildBrandContext(input);
+    const beaconTemplates = buildBeaconTemplates(brandContext);
     const data = await getKlaviyoTemplates(await resolveKlaviyoKey(req.query));
     const existingTemplates = (data.data || []).map((template) => ({
       id: template.id,
@@ -204,12 +191,16 @@ router.get("/klaviyo/templates", async (req, res) => {
     res.json({
       ok: true,
       templates: [...existingTemplates, ...beaconTemplates],
+      brandContext,
       source: data.mock ? "beacon-fallback" : "klaviyo",
     });
   } catch (error) {
+    const input = await getEngineInput(req.query.shopDomain || config.shopify.shopDomain);
+    const brandContext = buildBrandContext(input);
     res.json({
       ok: true,
-      templates: beaconTemplates,
+      templates: buildBeaconTemplates(brandContext),
+      brandContext,
       source: "beacon-fallback",
       warning: error.response?.data || error.message,
     });
@@ -326,7 +317,8 @@ router.post("/klaviyo/templates/from-engine", async (req, res) => {
     const privateKey = await resolveKlaviyoKey(req.body);
 
     const input = await getEngineInput(shopDomain);
-    const campaign = req.body.campaign || runMockEngine(input);
+    const brandContext = buildBrandContext(input);
+    const campaign = applyBrandVoiceToCampaign(req.body.campaign || runMockEngine(input), brandContext);
     const audience = await resolveCampaignAudience(shopDomain, campaign);
 
     const template = await createTemplate(privateKey, campaign);
@@ -337,7 +329,7 @@ router.post("/klaviyo/templates/from-engine", async (req, res) => {
       payload: { template, campaign, audience },
     });
 
-    res.json({ ok: true, campaign, template, audience });
+    res.json({ ok: true, campaign, template, audience, brandContext });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
@@ -349,7 +341,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const privateKey = await resolveKlaviyoKey(req.body);
 
     const input = await getEngineInput(shopDomain);
-    const campaign = req.body.campaign || runMockEngine(input);
+    const brandContext = buildBrandContext(input);
+    const campaign = applyBrandVoiceToCampaign(req.body.campaign || runMockEngine(input), brandContext);
     const audience = await resolveCampaignAudience(shopDomain, campaign);
     const packageResult = await createCampaignSendPackage(privateKey, campaign, audience);
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
@@ -365,6 +358,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       ok: true,
       campaign,
       audience,
+      brandContext,
       template: packageResult.template,
       list: packageResult.list,
       importJob: packageResult.importJob,
@@ -419,7 +413,8 @@ router.post("/demo/run", async (req, res) => {
     await upsertAllShopifyData(shopDomain, shopifyData);
 
     const input = await getEngineInput(shopDomain);
-    const campaign = runMockEngine(input);
+    const brandContext = buildBrandContext(input);
+    const campaign = applyBrandVoiceToCampaign(runMockEngine(input), brandContext);
     const engineRun = await saveEngineRun(shopDomain, input, campaign);
 
     const template = await createTemplate(privateKey, campaign);
@@ -441,6 +436,7 @@ router.post("/demo/run", async (req, res) => {
       },
       engineRunId: engineRun.id,
       campaign,
+      brandContext,
       klaviyoTemplate: template,
     });
   } catch (error) {

@@ -71,6 +71,9 @@ function campaignName(campaign) {
 
 function campaignHtml(campaign) {
   if (campaign.email?.html) return campaign.email.html;
+  const brand = campaign.brandContext?.brandName || "BeaconAI";
+  const bestSeller = campaign.brandContext?.productLanguage?.bestSellers?.[0]?.title;
+  const supportCopy = campaign.bodyP2 || (bestSeller ? `A customer favorite from the current catalog: ${bestSeller}.` : "");
 
   return `
 <!doctype html>
@@ -82,10 +85,10 @@ function campaignHtml(campaign) {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #ded7cc;">
             <tr>
               <td style="padding:32px;">
-                <p style="margin:0 0 12px;color:#f08a24;font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;">BeaconAI</p>
+                <p style="margin:0 0 12px;color:#f08a24;font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;">${escapeHtml(brand)}</p>
                 <h1 style="margin:0 0 16px;font-size:30px;line-height:1.15;color:#111111;">${escapeHtml(campaign.bodyH2 || campaign.subject || campaign.playTitle)}</h1>
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(campaign.bodyP1 || campaign.previewText)}</p>
-                ${campaign.bodyP2 ? `<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(campaign.bodyP2)}</p>` : ""}
+                ${supportCopy ? `<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(supportCopy)}</p>` : ""}
                 <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "Shop now")}</a>
               </td>
             </tr>
