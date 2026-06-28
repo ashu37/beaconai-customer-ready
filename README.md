@@ -11,7 +11,7 @@ api/       Node/Express API, OAuth, Shopify/Klaviyo sync, engine runner
 web/       Vite React customer dashboard
 engine/    Atul BeaconAI Python engine source
 Dockerfile Render-compatible app + API + Python engine image
-render.yaml Render app + Postgres blueprint
+render.yaml Render app blueprint; expects Supabase DATABASE_URL
 DEPLOYMENT.md hosted customer-trial checklist
 ```
 
@@ -20,7 +20,7 @@ DEPLOYMENT.md hosted customer-trial checklist
 1. Customer opens the hosted BeaconAI frontend.
 2. Customer connects Shopify through OAuth.
 3. Customer connects Klaviyo through OAuth.
-4. BeaconAI syncs Shopify data into Postgres.
+4. BeaconAI syncs Shopify data into Supabase Postgres.
 5. Atul's engine runs on synced store data.
 6. Customer reviews recommendations, chooses/edits a Klaviyo template, and approves a campaign package.
 
@@ -74,7 +74,7 @@ SHOPIFY_SCOPES=read_products,read_customers,read_orders
 
 KLAVIYO_CLIENT_ID=...
 KLAVIYO_CLIENT_SECRET=...
-KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:write profiles:read profiles:write segments:read templates:read templates:write
+KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:read lists:write profiles:read profiles:write segments:read templates:read templates:write
 ```
 
 ## Deploy

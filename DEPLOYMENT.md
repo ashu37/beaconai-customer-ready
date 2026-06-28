@@ -5,7 +5,7 @@ This is the fastest path to a shareable MVP URL for friendly customer trials.
 ## Recommended MVP Stack
 
 - App + API + Python engine: Render web service from the root `Dockerfile`
-- Database: Render Postgres
+- Database: Supabase free Postgres for trial deployments
 - Shopify/Klaviyo OAuth: app-level credentials owned by BeaconAI
 
 ## 1. Push The Repo
@@ -19,12 +19,24 @@ git status
 
 Make sure the `engine/` submodule is available to the deploy provider.
 
-## 2. Deploy On Render
+## 2. Create Supabase Trial Database
+
+Create a Supabase project on the Free plan, then copy its Postgres connection string.
+Use the pooled connection string if Supabase offers both direct and pooled options.
+
+Render will use this value as:
+
+```env
+DATABASE_URL=<Supabase Postgres connection string>
+```
+
+Supabase free is enough for a friendly pilot, but it has smaller compute/storage limits than paid production Postgres.
+
+## 3. Deploy On Render
 
 Create a Render Blueprint from `render.yaml`. This creates:
 
 - `beaconai-app`: one Docker web service that serves the React app and `/api/*`
-- `beaconai-postgres`: Postgres database
 
 Manual settings:
 
@@ -37,7 +49,7 @@ Health check path: /api/health
 Set these API environment variables:
 
 ```env
-DATABASE_URL=<Render Postgres internal connection string>
+DATABASE_URL=<Supabase Postgres connection string>
 PORT=4000
 API_BASE_URL=https://YOUR-RENDER-APP.onrender.com/api
 WEB_BASE_URL=https://YOUR-RENDER-APP.onrender.com
@@ -49,7 +61,7 @@ SHOPIFY_SCOPES=read_products,read_customers,read_orders
 
 KLAVIYO_CLIENT_ID=<BeaconAI Klaviyo app client id>
 KLAVIYO_CLIENT_SECRET=<BeaconAI Klaviyo app client secret>
-KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:write profiles:read profiles:write segments:read templates:read templates:write
+KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:read lists:write profiles:read profiles:write segments:read templates:read templates:write
 KLAVIYO_REVISION=2026-04-15
 ```
 
