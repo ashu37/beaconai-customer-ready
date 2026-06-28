@@ -15,6 +15,8 @@ const {
   getKlaviyoProfiles,
   getKlaviyoTemplates,
   createTemplate,
+  createCampaignSendPackage,
+  sendCampaign,
   saveKlaviyoAsset,
 } = require("./services/klaviyoClient");
 const { buildPlaceholderEngineRun } = require("./services/placeholderEngineService");
@@ -336,6 +338,61 @@ router.post("/klaviyo/templates/from-engine", async (req, res) => {
     });
 
     res.json({ ok: true, campaign, template, audience });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
+router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const privateKey = await resolveKlaviyoKey(req.body);
+
+    const input = await getEngineInput(shopDomain);
+    const campaign = req.body.campaign || runMockEngine(input);
+    const audience = await resolveCampaignAudience(shopDomain, campaign);
+    const packageResult = await createCampaignSendPackage(privateKey, campaign, audience);
+    const klaviyoCampaignId = packageResult.campaign?.data?.id;
+
+    await saveKlaviyoAsset({
+      shopDomain,
+      assetType: "campaign_send_package",
+      externalId: klaviyoCampaignId,
+      payload: { campaign, audience, packageResult },
+    });
+
+    res.json({
+      ok: true,
+      campaign,
+      audience,
+      template: packageResult.template,
+      list: packageResult.list,
+      importJob: packageResult.importJob,
+      klaviyoCampaign: packageResult.campaign,
+      messages: packageResult.messages,
+      assignment: packageResult.assignment,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
+router.post("/klaviyo/campaigns/send", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const privateKey = await resolveKlaviyoKey(req.body);
+    const campaignId = req.body.campaignId;
+    if (!campaignId) throw new Error("campaignId is required to send a Klaviyo campaign.");
+
+    const sendJob = await sendCampaign(privateKey, campaignId);
+    await saveKlaviyoAsset({
+      shopDomain,
+      assetType: "campaign_send_job",
+      externalId: sendJob?.data?.id || campaignId,
+      payload: { campaignId, sendJob },
+    });
+
+    res.json({ ok: true, campaignId, sendJob });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }

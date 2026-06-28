@@ -65,6 +65,10 @@ function campaignTemplateName(campaign) {
     || `BeaconAI - ${campaign.playTitle || campaign.play_name || "Campaign"}`;
 }
 
+function campaignName(campaign) {
+  return `BeaconAI - ${campaign.playTitle || campaign.play_name || campaign.subject || "Campaign"}`;
+}
+
 function campaignHtml(campaign) {
   if (campaign.email?.html) return campaign.email.html;
 
@@ -111,6 +115,154 @@ async function createTemplate(privateKey, campaign) {
   return response.data;
 }
 
+async function createList(privateKey, name) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.post("/lists", {
+    data: {
+      type: "list",
+      attributes: { name },
+    },
+  });
+  return response.data;
+}
+
+async function importProfilesToList(privateKey, listId, recipients = []) {
+  const client = createKlaviyoClient(privateKey);
+  const profiles = recipients
+    .filter((recipient) => recipient.email)
+    .map((recipient) => ({
+      type: "profile",
+      attributes: {
+        email: recipient.email,
+        properties: {
+          beaconai_customer_id: recipient.customerId || null,
+          beaconai_order_count: recipient.orderCount || 0,
+          beaconai_total_revenue: recipient.totalRevenue || 0,
+        },
+      },
+    }));
+
+  if (!profiles.length) {
+    throw new Error("Cannot create a Klaviyo audience list without recipient emails.");
+  }
+
+  const response = await client.post("/profile-bulk-import-jobs", {
+    data: {
+      type: "profile-bulk-import-job",
+      attributes: {
+        profiles: {
+          data: profiles,
+        },
+      },
+      relationships: {
+        lists: {
+          data: [{ type: "list", id: listId }],
+        },
+      },
+    },
+  });
+  return response.data;
+}
+
+async function createCampaign(privateKey, campaign, listId) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.post("/campaigns", {
+    data: {
+      type: "campaign",
+      attributes: {
+        name: campaignName(campaign),
+        channel: "email",
+        send_strategy: {
+          method: "manual",
+        },
+        audiences: {
+          included: [listId],
+          excluded: [],
+        },
+        send_options: {
+          use_smart_sending: true,
+        },
+        tracking_options: {
+          is_add_utm: true,
+          utm_params: [
+            { name: "utm_source", value: "beaconai" },
+            { name: "utm_medium", value: "email" },
+            { name: "utm_campaign", value: campaign.playTitle || campaign.play_name || "beaconai" },
+          ],
+        },
+      },
+    },
+  });
+  return response.data;
+}
+
+async function getCampaignMessages(privateKey, campaignId) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.get(`/campaigns/${campaignId}/campaign-messages`);
+  return response.data;
+}
+
+async function assignTemplateToCampaignMessage(privateKey, messageId, templateId) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.post("/campaign-message-assign-template", {
+    data: {
+      type: "campaign-message",
+      id: messageId,
+      relationships: {
+        template: {
+          data: {
+            type: "template",
+            id: templateId,
+          },
+        },
+      },
+    },
+  });
+  return response.data;
+}
+
+async function createCampaignSendPackage(privateKey, campaign, audience) {
+  const template = await createTemplate(privateKey, campaign);
+  const templateId = template?.data?.id;
+  const list = await createList(privateKey, `${campaignName(campaign)} - Audience`);
+  const listId = list?.data?.id;
+  const importJob = await importProfilesToList(privateKey, listId, audience.recipients || []);
+  const klaviyoCampaign = await createCampaign(privateKey, campaign, listId);
+  const campaignId = klaviyoCampaign?.data?.id;
+  const messages = await getCampaignMessages(privateKey, campaignId);
+  const messageId = messages?.data?.[0]?.id;
+  const assignment = messageId && templateId
+    ? await assignTemplateToCampaignMessage(privateKey, messageId, templateId)
+    : null;
+
+  return {
+    template,
+    list,
+    importJob,
+    campaign: klaviyoCampaign,
+    messages,
+    assignment,
+  };
+}
+
+async function sendCampaign(privateKey, campaignId) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.post("/campaign-send-jobs", {
+    data: {
+      type: "campaign-send-job",
+      relationships: {
+        campaign: {
+          data: {
+            type: "campaign",
+            id: campaignId,
+          },
+        },
+      },
+    },
+  });
+  return response.data;
+}
+
 async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) {
   const result = await query(
     `
@@ -131,5 +283,7 @@ module.exports = {
   getKlaviyoProfiles,
   getKlaviyoTemplates,
   createTemplate,
+  createCampaignSendPackage,
+  sendCampaign,
   saveKlaviyoAsset,
 };

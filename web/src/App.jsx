@@ -614,7 +614,7 @@ function CohortRetentionChart({ curves }) {
   );
 }
 
-function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId, audiencePreviews, onPreviewAudience, previewingId }) {
+function CampaignPackages({ campaigns, onCreateInKlaviyo, onSendCampaign, publishingId, sendingId, audiencePreviews, onPreviewAudience, previewingId }) {
   const [selectedId, setSelectedId] = useState(campaigns[0]?.id || "");
   const selected = campaigns.find((item) => item.id === selectedId) || campaigns[0];
   const preview = audiencePreviews[selected?.id] || selected?.klaviyoAudience || null;
@@ -688,14 +688,21 @@ function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId, audience
         </div>
         {selected.klaviyoTemplateId ? (
           <div className="success-box">
-            Created in Klaviyo as template <strong>{selected.klaviyoTemplateId}</strong>
+            Created Klaviyo campaign <strong>{selected.klaviyoCampaignId || selected.klaviyoTemplateId}</strong>
             {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
+            {selected.klaviyoListId ? ` Audience list: ${selected.klaviyoListId}.` : ""}
+            {selected.klaviyoSendJobId ? ` Send job: ${selected.klaviyoSendJobId}.` : ""}
           </div>
         ) : null}
         <div className="action-row">
           <button className="btn primary" onClick={() => onCreateInKlaviyo(selected)} disabled={publishingId === selected.id || Boolean(selected.klaviyoTemplateId)}>
-            {selected.klaviyoTemplateId ? "Created in Klaviyo" : publishingId === selected.id ? "Creating..." : "Create Klaviyo send package"}
+            {selected.klaviyoTemplateId ? "Send package ready" : publishingId === selected.id ? "Creating..." : "Create Klaviyo send package"}
           </button>
+          {selected.klaviyoCampaignId ? (
+            <button className="btn danger" onClick={() => onSendCampaign(selected)} disabled={sendingId === selected.id || Boolean(selected.klaviyoSendJobId)}>
+              {selected.klaviyoSendJobId ? "Campaign sent" : sendingId === selected.id ? "Sending..." : "Send campaign now"}
+            </button>
+          ) : null}
           <button className="btn">Request changes</button>
         </div>
       </div>
@@ -813,6 +820,7 @@ function App() {
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
   const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
   const [publishingCampaignId, setPublishingCampaignId] = useState("");
+  const [sendingCampaignId, setSendingCampaignId] = useState("");
   const [audiencePreviewsByCampaign, setAudiencePreviewsByCampaign] = useState({});
   const [previewingCampaignId, setPreviewingCampaignId] = useState("");
   const [reviewPlayId, setReviewPlayId] = useState("");
@@ -840,6 +848,9 @@ function App() {
         ...item,
         status: asset ? "created" : authorizedPackageIds.includes(item.id) ? "authorized" : item.status,
         klaviyoTemplateId: asset?.templateId || null,
+        klaviyoListId: asset?.listId || null,
+        klaviyoCampaignId: asset?.campaignId || null,
+        klaviyoSendJobId: asset?.sendJobId || null,
         klaviyoAudience: asset?.audience || null,
       };
     })
@@ -1023,13 +1034,21 @@ function App() {
   async function createCampaignTemplateInKlaviyo(campaignDraft) {
     setPublishingCampaignId(campaignDraft.id);
     try {
-      const result = await runStep("Klaviyo template creation", () => api.createTemplate(campaignDraft));
+      const result = await runStep("Klaviyo send package creation", () => api.createSendPackage(campaignDraft));
       const templateId = result.template?.data?.id;
+      const listId = result.list?.data?.id;
+      const campaignId = result.klaviyoCampaign?.data?.id;
       setKlaviyoAssetsByCampaign((prev) => ({
         ...prev,
         [campaignDraft.id]: {
           templateId,
+          listId,
+          campaignId,
           template: result.template,
+          list: result.list,
+          klaviyoCampaign: result.klaviyoCampaign,
+          importJob: result.importJob,
+          assignment: result.assignment,
           audience: result.audience,
           createdAt: new Date().toISOString(),
         },
@@ -1038,6 +1057,33 @@ function App() {
       return result;
     } finally {
       setPublishingCampaignId("");
+    }
+  }
+
+  async function sendKlaviyoCampaign(campaignDraft) {
+    const campaignId = campaignDraft.klaviyoCampaignId;
+    if (!campaignId) {
+      setError("Create the Klaviyo send package before sending.");
+      return null;
+    }
+    const confirmed = window.confirm(`Send this campaign now in Klaviyo to ${campaignDraft.klaviyoAudience?.count || "the matched"} recipients?`);
+    if (!confirmed) return null;
+
+    setSendingCampaignId(campaignDraft.id);
+    try {
+      const result = await runStep("Klaviyo campaign send", () => api.sendCampaign(campaignId));
+      setKlaviyoAssetsByCampaign((prev) => ({
+        ...prev,
+        [campaignDraft.id]: {
+          ...(prev[campaignDraft.id] || {}),
+          sendJobId: result.sendJob?.data?.id || campaignId,
+          sendJob: result.sendJob,
+          sentAt: new Date().toISOString(),
+        },
+      }));
+      return result;
+    } finally {
+      setSendingCampaignId("");
     }
   }
 
@@ -1454,7 +1500,9 @@ function App() {
                 <CampaignPackages
                   campaigns={finalCampaigns}
                   onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
+                  onSendCampaign={sendKlaviyoCampaign}
                   publishingId={publishingCampaignId}
+                  sendingId={sendingCampaignId}
                   audiencePreviews={audiencePreviewsByCampaign}
                   onPreviewAudience={previewCampaignAudience}
                   previewingId={previewingCampaignId}

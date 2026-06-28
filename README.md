@@ -74,7 +74,7 @@ SHOPIFY_SCOPES=read_products,read_customers,read_orders
 
 KLAVIYO_CLIENT_ID=...
 KLAVIYO_CLIENT_SECRET=...
-KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read profiles:read segments:read templates:read templates:write
+KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:write profiles:read profiles:write segments:read templates:read templates:write
 ```
 
 ## Deploy

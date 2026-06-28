@@ -31,6 +31,8 @@ export const api = {
   getKlaviyoTemplates: () => request("/klaviyo/templates"),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaign }) }),
   createTemplate: (campaign) => request("/klaviyo/templates/from-engine", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaign }) }),
+  createSendPackage: (campaign) => request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaign }) }),
+  sendCampaign: (campaignId) => request("/klaviyo/campaigns/send", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaignId }) }),
   demoRun: (limit = 250) => request("/demo/run", { method: "POST", body: JSON.stringify({ limit }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(SHOP_DOMAIN)}`),
   getPlaceholderEngineRun: () => request(`/engine/placeholder/${encodeURIComponent(SHOP_DOMAIN)}`),
