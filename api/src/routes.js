@@ -341,6 +341,16 @@ router.post("/klaviyo/templates/from-engine", async (req, res) => {
   }
 });
 
+router.post("/campaigns/audience/preview", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const audience = await resolveCampaignAudience(shopDomain, req.body.campaign || {});
+    res.json({ ok: true, shopDomain, audience });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 router.post("/demo/run", async (req, res) => {
   try {
     const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);

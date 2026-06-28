@@ -1,5 +1,5 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
-const SHOP_DOMAIN = new URLSearchParams(window.location.search).get("shop") || import.meta.env.VITE_SHOP_DOMAIN || "";
+const SHOP_DOMAIN = import.meta.env.VITE_SHOP_DOMAIN || "testing-dev-utkexvrj.myshopify.com";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -29,6 +29,7 @@ export const api = {
   runEngine: () => request("/engine/run", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN }) }),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, useFixture }) }),
   getKlaviyoTemplates: () => request("/klaviyo/templates"),
+  previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaign }) }),
   createTemplate: (campaign) => request("/klaviyo/templates/from-engine", { method: "POST", body: JSON.stringify({ shopDomain: SHOP_DOMAIN, campaign }) }),
   demoRun: (limit = 250) => request("/demo/run", { method: "POST", body: JSON.stringify({ limit }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(SHOP_DOMAIN)}`),

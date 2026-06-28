@@ -614,9 +614,10 @@ function CohortRetentionChart({ curves }) {
   );
 }
 
-function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId }) {
+function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId, audiencePreviews, onPreviewAudience, previewingId }) {
   const [selectedId, setSelectedId] = useState(campaigns[0]?.id || "");
   const selected = campaigns.find((item) => item.id === selectedId) || campaigns[0];
+  const preview = audiencePreviews[selected?.id] || selected?.klaviyoAudience || null;
 
   if (!selected) {
     return <div className="empty-panel">No campaign packages are ready yet.</div>;
@@ -660,6 +661,30 @@ function CampaignPackages({ campaigns, onCreateInKlaviyo, publishingId }) {
           <div><span>Audience</span><strong>{selected.segment}</strong></div>
           <div><span>Send</span><strong>{selected.sendTime}</strong></div>
           <div><span>Suppression</span><strong>{selected.suppression}</strong></div>
+        </div>
+        <div className="recipient-preview">
+          <div className="recipient-preview-head">
+            <div>
+              <span className="section-meta">Recipient preview</span>
+              <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
+            </div>
+            <button className="btn" onClick={() => onPreviewAudience(selected)} disabled={previewingId === selected.id}>
+              {previewingId === selected.id ? "Loading..." : "Show emails"}
+            </button>
+          </div>
+          {preview?.recipients?.length ? (
+            <div className="recipient-list">
+              {preview.recipients.slice(0, 25).map((recipient) => (
+                <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
+                  <strong>{recipient.email}</strong>
+                  <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
+                </div>
+              ))}
+              {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
+            </div>
+          ) : preview ? (
+            <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
+          ) : null}
         </div>
         {selected.klaviyoTemplateId ? (
           <div className="success-box">
@@ -788,6 +813,8 @@ function App() {
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
   const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
   const [publishingCampaignId, setPublishingCampaignId] = useState("");
+  const [audiencePreviewsByCampaign, setAudiencePreviewsByCampaign] = useState({});
+  const [previewingCampaignId, setPreviewingCampaignId] = useState("");
   const [reviewPlayId, setReviewPlayId] = useState("");
   const [selectedBriefingPlayId, setSelectedBriefingPlayId] = useState("");
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
@@ -1011,6 +1038,17 @@ function App() {
       return result;
     } finally {
       setPublishingCampaignId("");
+    }
+  }
+
+  async function previewCampaignAudience(campaignDraft) {
+    setPreviewingCampaignId(campaignDraft.id);
+    try {
+      const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
+      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: result.audience }));
+      return result;
+    } finally {
+      setPreviewingCampaignId("");
     }
   }
 
@@ -1413,7 +1451,14 @@ function App() {
                 </p>
               </div>
               {finalCampaigns.length ? (
-                <CampaignPackages campaigns={finalCampaigns} onCreateInKlaviyo={createCampaignTemplateInKlaviyo} publishingId={publishingCampaignId} />
+                <CampaignPackages
+                  campaigns={finalCampaigns}
+                  onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
+                  publishingId={publishingCampaignId}
+                  audiencePreviews={audiencePreviewsByCampaign}
+                  onPreviewAudience={previewCampaignAudience}
+                  previewingId={previewingCampaignId}
+                />
               ) : (
                 <div className="empty-panel">Select a template in Review Queue to assemble the final campaign package.</div>
               )}

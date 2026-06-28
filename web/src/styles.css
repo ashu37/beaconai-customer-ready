@@ -280,6 +280,14 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .segment-spec { display: grid; gap: 10px; margin: 18px 0; }
 .segment-spec div { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--rule); padding-bottom: 10px; color: var(--muted); }
 .segment-spec strong { color: var(--ink); text-align: right; }
+.recipient-preview { border: 1px solid var(--rule); border-radius: 6px; padding: 14px; margin: 18px 0; background: #fbfaf7; }
+.recipient-preview-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 12px; }
+.recipient-preview-head strong { display: block; color: var(--ink-strong); margin-top: 4px; }
+.recipient-list { display: grid; gap: 0; max-height: 260px; overflow: auto; border-top: 1px solid var(--rule); }
+.recipient-row { display: flex; justify-content: space-between; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.recipient-row strong { color: var(--ink-strong); overflow-wrap: anywhere; }
+.recipient-row span { color: var(--muted); white-space: nowrap; }
+.recipient-list small { color: var(--muted); padding-top: 10px; }
 .delta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
 .delta-grid .placeholder-panel { grid-column: 1 / -1; }
 .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.32); z-index: 20; display: flex; justify-content: flex-end; }
