@@ -38,4 +38,4 @@ services:
 
 databases:
   - name: beaconai-postgres
-    plan: starter
+    plan: basic-256mb
