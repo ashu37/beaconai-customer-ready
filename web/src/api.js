@@ -1,5 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
-const SHOP_DOMAIN = import.meta.env.VITE_SHOP_DOMAIN || "testing-dev-utkexvrj.myshopify.com";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || `${window.location.origin}/api`;
+const SHOP_DOMAIN = new URLSearchParams(window.location.search).get("shop") || import.meta.env.VITE_SHOP_DOMAIN || "";
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {

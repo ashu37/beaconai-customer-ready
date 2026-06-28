@@ -10,8 +10,8 @@ This repo is for hosted customer trials. It does not include local seed endpoint
 api/       Node/Express API, OAuth, Shopify/Klaviyo sync, engine runner
 web/       Vite React customer dashboard
 engine/    Atul BeaconAI Python engine source
-Dockerfile Render-compatible API + Python engine image
-render.yaml Render API + Postgres blueprint
+Dockerfile Render-compatible app + API + Python engine image
+render.yaml Render app + Postgres blueprint
 DEPLOYMENT.md hosted customer-trial checklist
 ```
 
@@ -79,7 +79,7 @@ KLAVIYO_SCOPES=accounts:read campaigns:read campaigns:write catalogs:read flows:
 
 ## Deploy
 
-Use [DEPLOYMENT.md](/Users/Ashu/Documents/Codex/2026-06-02/dio-you-have-access-to-the/outputs/beaconai-customer-ready/DEPLOYMENT.md).
+Use [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Notes
 

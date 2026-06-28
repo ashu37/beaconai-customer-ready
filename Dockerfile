@@ -9,13 +9,21 @@ RUN apt-get update \
 COPY api/package*.json ./api/
 RUN cd api && npm install --omit=dev
 
+COPY web/package*.json ./web/
+RUN cd web && npm install
+
 COPY engine/requirements.txt ./engine/requirements.txt
 RUN python3 -m venv ./engine/.venv \
   && ./engine/.venv/bin/python -m pip install --upgrade pip \
   && ./engine/.venv/bin/python -m pip install -r ./engine/requirements.txt
 
 COPY api ./api
+COPY web ./web
 COPY engine ./engine
+
+RUN cd web && npm run build \
+  && mkdir -p /app/api/public \
+  && cp -R /app/web/dist/. /app/api/public/
 
 WORKDIR /app/api
 

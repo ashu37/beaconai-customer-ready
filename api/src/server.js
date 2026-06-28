@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -21,7 +22,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "beaconai-api" });
 });
 
-app.get("/", (req, res) => {
+app.get("/api", (req, res) => {
   res.json({
     ok: true,
     name: "BeaconAI API MVP",
@@ -31,6 +32,15 @@ app.get("/", (req, res) => {
       engineInput: "GET /api/engine/input/:shopDomain",
       demoRun: "POST /api/demo/run",
     },
+  });
+});
+
+const publicDir = path.join(__dirname, "..", "public");
+app.use(express.static(publicDir));
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api")) return next();
+  res.sendFile(path.join(publicDir, "index.html"), (error) => {
+    if (error) next();
   });
 });
 
