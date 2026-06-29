@@ -24,8 +24,8 @@ body { margin: 0; font-family: var(--font-body); background: var(--bg); color: v
 button { font: inherit; cursor: pointer; }
 .app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
 .sidebar { background: #101010; border-right: 1px solid #101010; padding: 28px 20px; display: flex; flex-direction: column; gap: 4px; }
-.wordmark { font-family: var(--font-display); font-size: 32px; color: #ffffff; font-weight: 700; letter-spacing: -.01em; }
-.wordmark::after { content: '·'; color: var(--accent); margin-left: 3px; }
+.wordmark { font-family: var(--font-display); font-size: 32px; color: #ffffff; font-weight: 700; letter-spacing: 0; display: inline-flex; align-items: center; line-height: 1; }
+.wordmark-dot { width: .24em; height: .24em; border-radius: 50%; background: var(--accent); display: inline-block; margin: .12em .08em 0; }
 .store-name { color: #b8b3aa; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin: 4px 0 30px; word-break: break-word; }
 .nav-item { width: 100%; display: flex; justify-content: space-between; align-items: center; background: transparent; color: #d8d3cb; border: 0; border-radius: 5px; padding: 10px 12px; text-align: left; margin-bottom: 7px; }
 .nav-item:hover, .nav-item.active { background: var(--accent); color: #101010; }

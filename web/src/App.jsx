@@ -1144,7 +1144,7 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="wordmark">beacon</div>
+        <div className="wordmark" aria-label="beacon">beac<span className="wordmark-dot" />n</div>
         <div className="store-name">{api.shopDomain}</div>
         {nav.map(([key, label]) => (
           <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => setActivePage(key)}>
