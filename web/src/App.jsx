@@ -202,7 +202,7 @@ function normalizeAtulPlay(play, index) {
   };
 }
 
-function buildWorkflowPlays({ atulEngineResult, dashboardRun, campaignPackages, campaign }) {
+function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
   const presented = atulEngineResult?.presentedRun?.recommendations || [];
   const presentedConsidered = atulEngineResult?.presentedRun?.considered || [];
   const rawEngineCards = [
@@ -226,18 +226,6 @@ function buildWorkflowPlays({ atulEngineResult, dashboardRun, campaignPackages, 
   }));
   if (packagePlays.length) return packagePlays;
 
-  const dashboardPlays = [
-    ...(dashboardRun.slate?.recommended_now || []),
-    ...(dashboardRun.slate?.recommended_experiment || []),
-  ].map((play, index) => ({
-    id: play.play_id || `placeholder-${index + 1}`,
-    ...play,
-    confidence: play.evidence?.evidence_class || "placeholder",
-    source: "placeholder",
-    raw: play,
-  }));
-
-  if (dashboardPlays.length) return dashboardPlays;
   if (!campaign) return [];
 
   return [{
@@ -833,8 +821,8 @@ function App() {
   const counts = sync?.synced || {};
   const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
-    () => buildWorkflowPlays({ atulEngineResult, dashboardRun, campaignPackages, campaign }),
-    [atulEngineResult, dashboardRun, campaignPackages, campaign]
+    () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
+    [atulEngineResult, campaignPackages, campaign]
   );
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
   const reviewPlay = reviewablePlays.find((play) => play.id === reviewPlayId) || reviewablePlays[0];
@@ -874,11 +862,14 @@ function App() {
   useEffect(() => {
     checkConnections();
     preloadStoreSnapshot();
-    preloadEngineRecommendations();
     loadBrandContext();
   }, []);
 
   useEffect(() => {
+    if (reviewPlayId && !reviewablePlays.some((play) => play.id === reviewPlayId)) {
+      setReviewPlayId("");
+      return;
+    }
     if (!reviewPlayId && reviewablePlays[0]) {
       setReviewPlayId(reviewablePlays[0].id);
     }
@@ -950,15 +941,6 @@ function App() {
       setBrandContext(result.brandContext || null);
     } catch (_) {
       // Brand context is additive; campaign review still works without it.
-    }
-  }
-
-  async function preloadEngineRecommendations() {
-    try {
-      const result = await api.runAtulEngine(false);
-      setAtulEngineResult(result);
-    } catch (_) {
-      // Placeholder recommendations stay available when the local engine is not ready.
     }
   }
 
@@ -1212,7 +1194,7 @@ function App() {
                 <HomeMetricCard label="Products" value={productCount} detail="active Shopify catalog" />
                 <HomeMetricCard label="Customers" value={customerCount} detail="known Shopify customers" />
                 <HomeMetricCard label="Orders" value={orderCount} detail="synced Shopify orders" />
-                <HomeMetricCard label="Review pending" value={reviewPendingCount} detail="plays needing templates" tone={reviewPendingCount ? "attention" : "good"} />
+                <HomeMetricCard label="Review pending" value={reviewPendingCount} detail={reviewPendingCount ? "plays needing templates" : "run briefing first"} tone={reviewPendingCount ? "attention" : "good"} />
                 <HomeMetricCard label="Campaigns pending" value={campaignsPendingCount} detail="selected but not authorized" tone={campaignsPendingCount ? "attention" : "neutral"} />
                 <HomeMetricCard label="Approved" value={approvedCount} detail="ready for final Klaviyo step" tone={approvedCount ? "good" : "neutral"} />
               </div>
@@ -1225,7 +1207,7 @@ function App() {
                   </div>
                 </HomeModule>
 
-                <HomeModule title="Pending Review" detail="Recommendations waiting for a template decision." action="Open" onAction={() => setActivePage("queue")}>
+                <HomeModule title="Pending Review" detail={reviewPendingCount ? "Recommendations waiting for a template decision." : "Run the engine briefing before review starts."} action="Open" onAction={() => setActivePage("queue")}>
                   {reviewablePlays.length ? (
                     <div className="home-list">
                       {reviewablePlays.slice(0, 4).map((play) => (
@@ -1236,7 +1218,7 @@ function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="empty-panel">Open Briefing to create reviewable recommendations.</div>
+                    <div className="empty-panel">Run Briefing to create reviewable recommendations.</div>
                   )}
                 </HomeModule>
 
@@ -1323,7 +1305,7 @@ function App() {
             <>
               <div className="briefing-titlebar">
                 <div>
-                  <h2>Your briefing slate is ready — {recommendedRows.length || workflowPlays.length} plays for your review</h2>
+                  <h2>{workflowPlays.length ? `Your briefing slate is ready — ${recommendedRows.length || workflowPlays.length} plays for your review` : "Run the engine briefing to create a review slate"}</h2>
                   <p>
                     <strong>{recommendedRows.length}</strong> recommended now · <strong>{experimentRows.length}</strong> experiments · <strong>{consideredRows.length}</strong> considered.
                   </p>
@@ -1348,7 +1330,7 @@ function App() {
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
-                      {!selectableRows.length ? <div className="empty-panel inline">Refresh briefing to load engine recommendations.</div> : null}
+                      {!selectableRows.length ? <div className="empty-panel inline">Refresh briefing to run the engine and load recommendations.</div> : null}
                     </div>
                   </div>
 
@@ -1414,7 +1396,7 @@ function App() {
                         <p>{play.audience_archetype || "Recommended audience"}</p>
                       </button>
                     );
-                  }) : <div className="empty-panel">Open Briefing to add reviewable recommendations.</div>}
+                  }) : <div className="empty-panel">Run Briefing before reviewing templates.</div>}
                 </div>
 
                 <div className="draft-detail">
