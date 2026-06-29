@@ -16,9 +16,9 @@ services:
       - key: TOKEN_ENCRYPTION_SECRET
         generateValue: true
       - key: API_BASE_URL
-        value: https://beaconai-app.onrender.com/api
+        value: https://beaconai-app-kvre.onrender.com/api
       - key: WEB_BASE_URL
-        value: https://beaconai-app.onrender.com
+        value: https://beaconai-app-kvre.onrender.com
       - key: SHOPIFY_CLIENT_ID
         sync: false
       - key: SHOPIFY_CLIENT_SECRET
