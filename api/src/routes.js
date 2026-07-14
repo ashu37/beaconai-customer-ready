@@ -35,6 +35,7 @@ const {
   buildBeaconTemplates,
   buildBrandContext,
 } = require("./services/brandContextService");
+const { getStartupState } = require("./startupState");
 
 const router = express.Router();
 
@@ -52,7 +53,7 @@ async function resolveKlaviyoKey(body = {}) {
 }
 
 router.get("/health", (req, res) => {
-  res.json({ ok: true, service: "beaconai-api" });
+  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
 });
 
 router.post("/connections/shopify/test", async (req, res) => {

@@ -8,6 +8,7 @@ const morgan = require("morgan");
 const { config } = require("./config");
 const { initSchema } = require("./schema");
 const { router } = require("./routes");
+const { getStartupState, markDatabaseFailed, markDatabaseReady } = require("./startupState");
 
 const app = express();
 
@@ -19,7 +20,7 @@ app.use(morgan("dev"));
 app.use("/api", router);
 
 app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "beaconai-api" });
+  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
 });
 
 app.get("/api", (req, res) => {
@@ -45,11 +46,18 @@ app.get("*", (req, res, next) => {
 });
 
 async function start() {
-  await initSchema();
-
   app.listen(config.port, () => {
     console.log(`BeaconAI API running on http://localhost:${config.port}`);
   });
+
+  try {
+    await initSchema();
+    markDatabaseReady();
+    console.log("Database schema is ready.");
+  } catch (error) {
+    markDatabaseFailed(error);
+    console.error("Database schema initialization failed", error);
+  }
 }
 
 start().catch((error) => {
