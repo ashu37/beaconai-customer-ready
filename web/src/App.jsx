@@ -795,6 +795,8 @@ function App() {
   const [activePage, setActivePage] = useState("home");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [shopDomain, setShopDomain] = useState(api.shopDomain);
+  const [shopDomainDraft, setShopDomainDraft] = useState(api.shopDomain);
   const [status, setStatus] = useState({ api: false, shopify: false, klaviyo: false, shopifySource: "none", klaviyoSource: "none" });
   const [sync, setSync] = useState(null);
   const [campaign, setCampaign] = useState(null);
@@ -992,6 +994,24 @@ function App() {
     setActivePage("placeholder");
   }
 
+  async function saveShopDomain(event) {
+    event?.preventDefault();
+    const next = api.setShopDomain(shopDomainDraft);
+    setShopDomain(next);
+    setShopDomainDraft(next);
+    setSync(null);
+    setEngineInput(null);
+    setAtulEngineResult(null);
+    setCampaignPackages([]);
+    setSelectedTemplateByPlay({});
+    if (!next) {
+      setError("Enter a Shopify store domain before connecting.");
+      return;
+    }
+    setError("");
+    await checkConnections();
+  }
+
   function greenlightEnginePlay(play) {
     const playId = play.play_id || play.id;
     setCampaignPackages((prev) => {
@@ -1108,7 +1128,12 @@ function App() {
   }
 
   function startOAuth(provider) {
-    window.location.href = api.oauthStartUrl(provider);
+    try {
+      window.location.href = api.oauthStartUrl(provider);
+    } catch (err) {
+      setError(err.message);
+      setActivePage("onboarding");
+    }
   }
 
   function finishOnboarding() {
@@ -1145,7 +1170,17 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="wordmark" aria-label="beacon">beac<span className="wordmark-dot" />n</div>
-        <div className="store-name">{api.shopDomain}</div>
+        <form className="store-picker" onSubmit={saveShopDomain}>
+          <label htmlFor="shop-domain">Shopify store</label>
+          <input
+            id="shop-domain"
+            value={shopDomainDraft}
+            onChange={(event) => setShopDomainDraft(event.target.value)}
+            placeholder="store.myshopify.com"
+          />
+          <button type="submit">Use store</button>
+        </form>
+        <div className="store-name">{shopDomain || "No store selected"}</div>
         {nav.map(([key, label]) => (
           <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => setActivePage(key)}>
             {label}
