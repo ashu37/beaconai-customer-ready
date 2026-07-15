@@ -860,6 +860,12 @@ function App() {
   const consideredRows = briefingRows.filter((row) => row.lane === "considered");
   const selectableRows = [...recommendedRows, ...experimentRows, ...consideredRows];
   const selectedBriefingRow = selectableRows.find((row) => row.play.play_id === selectedBriefingPlayId) || selectableRows[0] || null;
+  const readyRowsCount = recommendedRows.length + experimentRows.length;
+  const briefingHeading = !workflowPlays.length
+    ? "Run the engine briefing to create a review slate"
+    : readyRowsCount
+      ? `Your briefing slate is ready — ${readyRowsCount} plays for your review`
+      : `No campaign-ready plays yet — ${consideredRows.length} held for more data`;
 
   useEffect(() => {
     checkConnections();
@@ -1340,7 +1346,7 @@ function App() {
             <>
               <div className="briefing-titlebar">
                 <div>
-                  <h2>{workflowPlays.length ? `Your briefing slate is ready — ${recommendedRows.length || workflowPlays.length} plays for your review` : "Run the engine briefing to create a review slate"}</h2>
+                  <h2>{briefingHeading}</h2>
                   <p>
                     <strong>{recommendedRows.length}</strong> recommended now · <strong>{experimentRows.length}</strong> experiments · <strong>{consideredRows.length}</strong> considered.
                   </p>
@@ -1357,7 +1363,7 @@ function App() {
                       </div>
                     </div>
                     <div className="recommendation-row-stack">
-                      {(recommendedRows.length ? recommendedRows : selectableRows).map(({ play }) => (
+                      {recommendedRows.map(({ play }) => (
                         <RecommendationRow
                           key={play.play_id}
                           play={play}
@@ -1366,6 +1372,7 @@ function App() {
                         />
                       ))}
                       {!selectableRows.length ? <div className="empty-panel inline">Refresh briefing to run the engine and load recommendations.</div> : null}
+                      {selectableRows.length && !recommendedRows.length ? <div className="empty-panel inline">No plays are ready for campaign review yet. See Considered for what the engine held.</div> : null}
                     </div>
                   </div>
 
