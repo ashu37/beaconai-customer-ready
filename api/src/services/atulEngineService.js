@@ -85,7 +85,14 @@ function lineItemsForOrder(input, order) {
 }
 
 function orderCreatedAt(order) {
-  return order.shopify_order_created_at || order.created_at;
+  // Prefer processed_at (the transaction/placement date) over created_at.
+  // Rationale: Shopify's Admin API assigns created_at = server-now on any order
+  // created via orderCreate (there is no createdAt input field), so API-imported
+  // / backdated-seed orders all carry created_at = import time and lose their
+  // true history. processed_at is settable and reflects when the order was
+  // actually placed. For organically-created orders the two are the same day,
+  // so real merchants are unaffected; this only rescues imported history.
+  return order.processed_at || order.shopify_order_created_at || order.created_at;
 }
 
 function orderRows(input) {
