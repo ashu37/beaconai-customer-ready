@@ -84,13 +84,17 @@ function lineItemsForOrder(input, order) {
   ];
 }
 
+function orderCreatedAt(order) {
+  return order.shopify_order_created_at || order.created_at;
+}
+
 function orderRows(input) {
   const rows = [];
   for (const order of input.orders || []) {
     for (const item of lineItemsForOrder(input, order)) {
       rows.push({
         "Name": order.name || order.id,
-        "Created at": dateValue(order.created_at),
+        "Created at": dateValue(orderCreatedAt(order)),
         "Lineitem name": item.title || item.raw?.title || item.raw?.name || "Product",
         "Lineitem quantity": item.quantity || item.raw?.quantity || 1,
         "Lineitem price": money(item.price || item.raw?.price),

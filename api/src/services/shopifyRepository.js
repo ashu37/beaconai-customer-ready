@@ -248,7 +248,13 @@ async function getEngineInput(shopDomain) {
   const [shop, orders, orderLineItems, customers, products, productVariants, refunds] =
     await Promise.all([
       query(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
-      query(`SELECT * FROM clean.orders WHERE shop_domain = $1 ORDER BY created_at DESC`, [shopDomain]),
+      query(
+        `SELECT clean.orders.*, clean.orders.created_at AS shopify_order_created_at
+         FROM clean.orders
+         WHERE shop_domain = $1
+         ORDER BY created_at DESC`,
+        [shopDomain]
+      ),
       query(`SELECT * FROM clean.order_line_items WHERE shop_domain = $1`, [shopDomain]),
       query(`SELECT * FROM clean.customers WHERE shop_domain = $1`, [shopDomain]),
       query(`SELECT * FROM clean.products WHERE shop_domain = $1 AND status = 'active'`, [shopDomain]),
