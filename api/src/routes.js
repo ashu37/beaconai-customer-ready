@@ -7,13 +7,14 @@ const {
   getEngineInput,
 } = require("./services/shopifyRepository");
 const { runMockEngine, saveEngineRun } = require("./services/engineService");
-const { narrateAtulRun, runAtulEngine } = require("./services/atulEngineService");
+const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 const {
   testKlaviyo,
   getKlaviyoLists,
   getKlaviyoProfiles,
   getKlaviyoTemplates,
+  campaignHtml,
   createTemplate,
   createCampaignSendPackage,
   sendCampaign,
@@ -312,6 +313,22 @@ router.post("/engine/atul/run", async (req, res) => {
   }
 });
 
+// O1: read-only latest-run rehydration. Never triggers an engine run.
+router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
+  try {
+    const shopDomain = req.params.shopDomain || config.shopify.shopDomain;
+    const latest = await readLatestRun({ shopDomain });
+    if (!latest) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, null);
+    res.json({ ok: true, found: true, presentedRun });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 router.post("/klaviyo/templates/from-engine", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
@@ -367,6 +384,25 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       messages: packageResult.messages,
       assignment: packageResult.assignment,
     });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
+// A2: read-only preview of the exact campaignHtml that would be pushed to
+// Klaviyo as a CODE template. Makes zero Klaviyo API calls and works with
+// Klaviyo disconnected. Must NOT create templates, lists, or campaigns.
+router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const draft = req.body.campaign || req.body;
+    let brandContext = draft.brandContext || req.body.brandContext;
+    if (!brandContext) {
+      const input = await getEngineInput(shopDomain);
+      brandContext = buildBrandContext(input);
+    }
+    const html = campaignHtml({ ...draft, brandContext });
+    res.json({ ok: true, html });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }

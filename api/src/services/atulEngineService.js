@@ -330,6 +330,17 @@ async function runAtulEngine(input, options = {}) {
   };
 }
 
+// O1: read-only latest-run rehydration. MUST NEVER trigger an engine run.
+async function readLatestRun({ shopDomain } = {}, options = {}) {
+  const engineDir = path.resolve(options.engineDir || process.env.BEACONAI_ENGINE_DIR || defaultEngineDir());
+  // Derive storeId candidates the same way runAtulEngine relies on: the engine
+  // stores runs under a sanitized store id derived from the brand/shop domain.
+  const storeIds = [shopDomain].filter(Boolean);
+  const manifests = await listManifestCandidates(engineDir, null, storeIds);
+  if (!manifests.length) return null;
+  return await readEngineRunFromManifest(manifests[0]);
+}
+
 async function narrateAtulRun(result, options = {}) {
   const manifestPath = result?.artifacts?.manifestPath;
   const runId = result?.engineRun?.run_id || result?.manifest?.run_id;
@@ -360,6 +371,7 @@ print(json.dumps(payload))
 
 module.exports = {
   narrateAtulRun,
+  readLatestRun,
   runAtulEngine,
   writeOrdersCsv,
 };
