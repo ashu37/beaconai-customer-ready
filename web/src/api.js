@@ -70,6 +70,7 @@ export const api = {
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   createTemplate: (campaign) => request("/klaviyo/templates/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   createSendPackage: (campaign) => request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
+  previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   sendCampaign: (campaignId) => request("/klaviyo/campaigns/send", { method: "POST", body: JSON.stringify({ shopDomain, campaignId }) }),
   demoRun: (limit = 250) => request("/demo/run", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), limit }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),

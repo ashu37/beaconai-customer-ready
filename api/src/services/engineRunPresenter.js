@@ -417,16 +417,40 @@ function normalizeRejectedCard(card, index, narrationMap) {
   };
 }
 
-// P2-3: pass through a single state-of-store summary sentence if the engine
-// run provides one. Never fabricated — only surfaced when already present.
+// B1: engineRun.state_of_store is a LIST of typed observations, not a string.
+// The engine intentionally emits no prose (Pivot 2); the presenter authors the
+// language. We synthesize a header sentence from the top-moved metrics. Never
+// fabricated numbers — magnitudes come straight from the engine's delta_pct.
+const METRIC_LABELS = {
+  aov: "average order value",
+  repeat_rate_within_window: "repeat purchase rate",
+  orders: "orders",
+  returning_customer_share: "returning-customer share",
+  net_sales: "net sales",
+};
+
 function stateOfStoreSentence(engineRun) {
-  const candidate =
-    engineRun?.state_of_store?.summary ||
-    engineRun?.state_of_store_summary ||
-    engineRun?.store_summary ||
-    (typeof engineRun?.state_of_store === "string" ? engineRun.state_of_store : null);
-  const text = String(candidate || "").trim();
-  return text || null;
+  const observations = engineRun?.state_of_store;
+  if (!Array.isArray(observations)) return null;
+
+  const clauses = observations
+    .filter((obs) =>
+      obs
+      && obs.classification === "moved"
+      && Number.isFinite(obs.delta_pct)
+      && Object.prototype.hasOwnProperty.call(METRIC_LABELS, obs.supporting_metric))
+    .sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct))
+    .slice(0, 2)
+    .map((obs) => {
+      const pct = Math.round(Math.abs(obs.delta_pct) * 100);
+      if (pct === 0) return null;
+      const direction = obs.delta_pct >= 0 ? "up" : "down";
+      return `${METRIC_LABELS[obs.supporting_metric]} ${direction} ${pct}%`;
+    })
+    .filter(Boolean);
+
+  if (!clauses.length) return null;
+  return `Since the prior period: ${clauses.join(" · ")}`;
 }
 
 function presentEngineRun(engineRun, manifest = null, narration = null) {

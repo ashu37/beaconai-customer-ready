@@ -800,6 +800,180 @@ function EditableCampaignDraft({ draft, onChange, onSendToCampaigns }) {
   );
 }
 
+// A3: per-field mapping from a draft field to the play's template_prompt value.
+// "Restore suggested" resets a field to the suggested copy from the presenter's
+// PLAY_DISPLAY (template_prompt) added in the first refactor.
+function suggestedValueForField(play, field) {
+  const prompt = play?.template_prompt || {};
+  switch (field) {
+    case "subject": return prompt.subject ?? "";
+    case "previewText": return prompt.previewText ?? "";
+    case "bodyH2": return prompt.headline ?? "";
+    case "bodyP1": return prompt.body ?? prompt.support ?? "";
+    case "bodyP2": return prompt.support ?? "";
+    case "cta": return prompt.cta ?? "";
+    default: return "";
+  }
+}
+
+function CampaignReviewPane({
+  play,
+  brandContext,
+  beaconTemplates,
+  klaviyoTemplates,
+  selectedTemplate,
+  onChooseTemplate,
+  draft,
+  onChange,
+  onRestoreField,
+}) {
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const debounceRef = useRef(null);
+
+  const refreshPreview = React.useCallback(async (currentDraft) => {
+    if (!currentDraft) return;
+    setPreviewLoading(true);
+    try {
+      const result = await api.previewCampaignHtml({ ...currentDraft, brandContext });
+      setPreviewHtml(result.html || "");
+    } catch (err) {
+      // Leave the last good preview in place on transient failures.
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [brandContext]);
+
+  // Immediate refresh when the play or selected template changes.
+  useEffect(() => {
+    if (draft) refreshPreview(draft);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [play?.id, selectedTemplate?.id]);
+
+  // Debounced refresh (600ms) while the merchant types.
+  useEffect(() => {
+    if (!draft) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => refreshPreview(draft), 600);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta]);
+
+  const handleBlur = () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    refreshPreview(draft);
+  };
+
+  const senderName = brandContext?.brandName || "Your store";
+  const editFields = [
+    { field: "subject", label: "Subject", type: "input" },
+    { field: "previewText", label: "Preview text", type: "input" },
+    { field: "bodyH2", label: "Headline", type: "input" },
+    { field: "bodyP1", label: "Body", type: "textarea" },
+    { field: "bodyP2", label: "Support line (optional)", type: "textarea" },
+    { field: "cta", label: "Button label", type: "input" },
+  ];
+
+  return (
+    <div className="review-pane">
+      <div className="template-picker">
+        <div className="section-kicker">Choose a layout</div>
+        <div className="template-grid">
+          {beaconTemplates.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
+              onClick={() => onChooseTemplate(item.id)}
+            >
+              <span>BeaconAI</span>
+              <strong>{item.name}</strong>
+              <small>{item.previewText}</small>
+            </button>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          className="advanced-toggle"
+          onClick={() => setAdvancedOpen((prev) => !prev)}
+        >
+          Advanced: pair with an existing Klaviyo template
+        </button>
+        {advancedOpen ? (
+          <div className="advanced-panel">
+            <p className="advanced-help">Pairing keeps your Klaviyo template's name on the campaign. The email content below is still what gets sent.</p>
+            <div className="template-grid">
+              {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
+                  onClick={() => onChooseTemplate(item.id)}
+                >
+                  <span>Klaviyo</span>
+                  <strong>{item.name}</strong>
+                  <small>{item.previewText}</small>
+                </button>
+              )) : <div className="empty-panel">No existing Klaviyo templates. Connect Klaviyo and refresh to pair one.</div>}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {draft ? (
+        <div className="review-two-pane">
+          <div className="review-edit-pane">
+            {editFields.map(({ field, label, type }) => (
+              <label key={field} className="review-field">
+                <span className="review-field-head">
+                  {label}
+                  <button type="button" className="restore-link" onClick={() => onRestoreField(field)}>
+                    Restore suggested
+                  </button>
+                </span>
+                {type === "textarea" ? (
+                  <textarea
+                    value={draft[field] || ""}
+                    rows={field === "bodyP1" ? 4 : 3}
+                    onChange={(event) => onChange(field, event.target.value)}
+                    onBlur={handleBlur}
+                  />
+                ) : (
+                  <input
+                    value={draft[field] || ""}
+                    onChange={(event) => onChange(field, event.target.value)}
+                    onBlur={handleBlur}
+                  />
+                )}
+              </label>
+            ))}
+          </div>
+
+          <div className="review-preview-pane">
+            <div className="mock-inbox-row">
+              <span className="inbox-sender">{senderName}</span>
+              <span className="inbox-subject">{draft.subject}</span>
+              <span className="inbox-preview">{draft.previewText}</span>
+            </div>
+            <div className="phone-frame">
+              <iframe
+                title="Email preview"
+                className="phone-frame-iframe"
+                srcDoc={previewHtml}
+              />
+            </div>
+            {previewLoading ? <div className="preview-status">Updating preview…</div> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MonthTwoDeltaPanel({ delta }) {
   return (
     <div className="delta-grid">
@@ -1016,6 +1190,8 @@ function App() {
   );
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
   const reviewPlay = reviewablePlays.find((play) => play.id === reviewPlayId) || reviewablePlays[0];
+  const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
+  const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
   const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id]) : null;
   const finalCampaigns = reviewablePlays
@@ -1504,6 +1680,12 @@ function App() {
     }));
   }
 
+  // A3: reset a single field to the play's suggested template_prompt value.
+  function restoreDraftField(playId, play, field) {
+    const suggested = suggestedValueForField(play, field);
+    updateDraftField(playId, field, suggested);
+  }
+
   function startOAuth(provider) {
     try {
       window.location.href = api.oauthStartUrl(provider);
@@ -1758,33 +1940,29 @@ function App() {
                     </div>
                   ) : null}
 
-                  <div className="template-grid">
-                    {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
-                      <button
-                        key={item.id}
-                        className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
-                        onClick={() => reviewPlay && chooseTemplate(reviewPlay.id, item.id)}
-                        disabled={!reviewPlay}
-                      >
-                        <span>{item.source === "klaviyo" ? "Klaviyo" : "BeaconAI"}</span>
-                        <strong>{item.name}</strong>
-                        <small>{item.previewText}</small>
-                      </button>
-                    )) : <div className="empty-panel">Fetch templates to show existing Klaviyo templates and BeaconAI suggestions.</div>}
-                  </div>
-
-                  {reviewPlay && selectedTemplate ? (
-                    <>
-                      <div className="section-header">
-                        <span className="section-title">Edit campaign draft</span>
-                        <span className="section-meta">template selected</span>
-                      </div>
-                      <EditableCampaignDraft
-                        draft={selectedDraft}
-                        onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
-                        onSendToCampaigns={() => setActivePage("campaigns")}
-                      />
-                    </>
+                  {reviewPlay ? (
+                    beaconTemplates.length ? (
+                      <>
+                        <CampaignReviewPane
+                          play={reviewPlay}
+                          brandContext={brandContext}
+                          beaconTemplates={beaconTemplates}
+                          klaviyoTemplates={klaviyoOnlyTemplates}
+                          selectedTemplate={selectedTemplate}
+                          onChooseTemplate={(templateId) => chooseTemplate(reviewPlay.id, templateId)}
+                          draft={selectedDraft}
+                          onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
+                          onRestoreField={(field) => restoreDraftField(reviewPlay.id, reviewPlay, field)}
+                        />
+                        {selectedTemplate ? (
+                          <div className="managed-note">
+                            This email is managed by BeaconAI — edit the copy here before sending. It will appear in Klaviyo as a code template.
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="empty-panel">Fetch templates to show BeaconAI layouts and existing Klaviyo templates.</div>
+                    )
                   ) : null}
                 </div>
               </div>

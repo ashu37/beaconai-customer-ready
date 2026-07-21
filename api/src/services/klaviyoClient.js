@@ -92,6 +92,14 @@ function campaignHtml(campaign) {
                 <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "Shop now")}</a>
               </td>
             </tr>
+            <tr>
+              <td style="padding:20px 32px;border-top:1px solid #ded7cc;">
+                <p style="margin:0;font-size:12px;line-height:1.5;color:#8a8578;">
+                  You're receiving this because you shopped with ${escapeHtml(brand)}.
+                  <a href="{% unsubscribe %}" style="color:#8a8578;">Unsubscribe</a>
+                </p>
+              </td>
+            </tr>
           </table>
         </td>
       </tr>
@@ -285,6 +293,7 @@ module.exports = {
   getKlaviyoLists,
   getKlaviyoProfiles,
   getKlaviyoTemplates,
+  campaignHtml,
   createTemplate,
   createCampaignSendPackage,
   sendCampaign,

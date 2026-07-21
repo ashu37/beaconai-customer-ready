@@ -14,6 +14,7 @@ const {
   getKlaviyoLists,
   getKlaviyoProfiles,
   getKlaviyoTemplates,
+  campaignHtml,
   createTemplate,
   createCampaignSendPackage,
   sendCampaign,
@@ -383,6 +384,25 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       messages: packageResult.messages,
       assignment: packageResult.assignment,
     });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
+// A2: read-only preview of the exact campaignHtml that would be pushed to
+// Klaviyo as a CODE template. Makes zero Klaviyo API calls and works with
+// Klaviyo disconnected. Must NOT create templates, lists, or campaigns.
+router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const draft = req.body.campaign || req.body;
+    let brandContext = draft.brandContext || req.body.brandContext;
+    if (!brandContext) {
+      const input = await getEngineInput(shopDomain);
+      brandContext = buildBrandContext(input);
+    }
+    const html = campaignHtml({ ...draft, brandContext });
+    res.json({ ok: true, html });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
