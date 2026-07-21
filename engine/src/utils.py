@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 import pandas as pd
@@ -1525,15 +1526,37 @@ def safe_make_dirs(path: str) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
 
+def _json_sanitize_nonfinite(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN / +Inf / -Inf) with None.
+
+    Python's ``json.dump`` defaults to ``allow_nan=True`` and emits the bare
+    tokens ``NaN`` / ``Infinity`` / ``-Infinity`` — which are NOT valid JSON and
+    make downstream ``JSON.parse`` (the Node API's ``readJson``) throw
+    ``Unexpected token 'N' ... is not valid JSON``. Rate/ratio fields legitimately
+    come out NaN on sparse stores (empty denominators), so we map them to JSON
+    ``null`` (which JS parses as ``null``) rather than crash. NumPy float NaN is
+    caught by ``math.isnan`` after the ``float`` cast in the isinstance check.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_sanitize_nonfinite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize_nonfinite(v) for v in obj]
+    return obj
+
+
 def write_json(path: str, payload: Dict[str, Any]) -> None:
     """Write JSON with safe defaults for Pandas/NumPy types.
     - Falls back to str() for objects like pd.Timestamp, Path, etc.
+    - Non-finite floats (NaN/Inf) are converted to null (valid JSON).
     - Keeps indentation for readability.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
+    safe_payload = _json_sanitize_nonfinite(payload)
     with open(p, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, default=str)
+        json.dump(safe_payload, f, indent=2, default=str, allow_nan=False)
 
 # ---------------- Identity helpers (Phase 0 observability) ---------------- #
 def standardize_order_key(df: pd.DataFrame) -> pd.Series:
