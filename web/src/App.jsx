@@ -185,15 +185,18 @@ function normalizeAtulPlay(play, index) {
     id: play.play_id || play.id || `atul-play-${index + 1}`,
     play_id: play.play_id || play.id || `atul-play-${index + 1}`,
     play_name: title,
+    play_one_liner: play.play_one_liner || null,
     role,
     lane: play.lane || role,
     reason_code: play.reason_code || play.null_reason || null,
-    mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Engine recommendation ready for merchant review.",
-    audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Engine audience",
+    reason_display: play.reason_display || null,
+    mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Recommendation ready for your review.",
+    audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Recommended audience",
     audience_size: audienceSize,
     confidence: play.confidence_label || play.confidence || play.model_confidence || "engine",
     evidence: play.evidence || { evidence_source: play.evidence_source || null, evidence_class: play.evidence_class || null },
     evidence_source: play.evidence_source || play.evidence?.evidence_source || null,
+    evidence_line: play.evidence_line || null,
     revenue_range: play.revenue_range || null,
     narration,
     template_prompt: play.template_prompt || null,
@@ -252,13 +255,13 @@ function buildCampaignFromSelection(play, template, edits = {}) {
     templateSource: template.source,
     status: "ready",
     customers: play.audience_size || 0,
-    segment: play.audience_archetype || "Engine audience",
+    segment: play.audience_archetype || "Recommended audience",
     subject: template.subject || prompt.subject || `${play.play_name} campaign`,
-    previewText: template.previewText || prompt.previewText || narration.evidence_summary || "Selected template ready for campaign review.",
+    previewText: template.previewText || prompt.previewText || "Selected template ready for campaign review.",
     bodyH2: template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
-    bodyP1: template.bodyP1 || prompt.body || play.mechanism,
-    bodyP2: prompt.support || narration.what_we_d_send || play.mechanism,
-    cta: template.cta || prompt.cta || "Shop now",
+    bodyP1: template.bodyP1 || prompt.body || prompt.support || "Here's what's new for you.",
+    bodyP2: prompt.support || "You'll pick and edit the exact template before anything is sent.",
+    cta: template.cta || prompt.cta || "Shop the picks",
     sendTime: "Manual review",
     suppression: "Recent purchasers, unsubscribes, suppressed profiles",
   };
@@ -269,28 +272,33 @@ function formatAudience(value) {
   return value?.toLocaleString?.() || "—";
 }
 
+function moneyPrefix(currency) {
+  return currency === "USD" || !currency ? "$" : `${currency} `;
+}
+
+// P0-4: median precedes range wherever both exist; never render "Not sized" as a hero stat.
 function formatRevenueRange(play) {
-  if (!play?.revenue_range) return "Not sized";
-  const { low, high, currency } = play.revenue_range;
-  if (low == null || high == null) return "Not sized";
-  const prefix = currency === "USD" || !currency ? "$" : `${currency} `;
-  return `${prefix}${low?.toLocaleString?.() || low}-${prefix}${high?.toLocaleString?.() || high}`;
+  const parts = revenueRangeParts(play);
+  if (!parts) return null;
+  if (parts.median != null) return `~${parts.labelMedian} typical · ${parts.labelLow}–${parts.labelHigh}`;
+  return `${parts.labelLow}–${parts.labelHigh}`;
 }
 
 function revenueRangeParts(play) {
   const range = play?.revenue_range;
-  if (!range || range.low == null || range.high == null) return null;
-  const prefix = range.currency === "USD" || !range.currency ? "$" : `${range.currency} `;
+  if (!range || range.suppressed || range.low == null || range.high == null) return null;
+  const prefix = moneyPrefix(range.currency);
   const low = Number(range.low) || 0;
   const high = Number(range.high) || 0;
-  const median = range.median ?? Math.round((low + high) / 2);
+  const hasMedian = range.median != null || range.mid != null;
+  const median = hasMedian ? Number(range.median ?? range.mid) : null;
   return {
     low,
     high,
     median,
     labelLow: `${prefix}${low.toLocaleString()}`,
     labelHigh: `${prefix}${high.toLocaleString()}`,
-    labelMedian: `${prefix}${Number(median).toLocaleString()}`,
+    labelMedian: median != null ? `${prefix}${median.toLocaleString()}` : null,
   };
 }
 
@@ -308,11 +316,12 @@ function confidenceTone(value) {
   return "neutral";
 }
 
+const CONFIDENCE_TITLE = "How strongly your store's data supports this play. Improves as more orders sync.";
+
 function RecommendationRow({ play, selected, onSelect }) {
   const confidence = play.confidence || play.confidence_label || play.model_confidence || null;
-  const evidenceSource = play.evidence_source || play.evidence?.evidence_source || null;
   const confidenceLabel = readableMetaLabel(confidence);
-  const evidenceLabel = readableMetaLabel(evidenceSource);
+  const evidenceLine = play.evidence_line || null;
   const lane = classifyPlayLane(play);
   const selectedActionable = selected && lane !== "considered";
   return (
@@ -324,21 +333,21 @@ function RecommendationRow({ play, selected, onSelect }) {
         <span className="recommendation-meta">
           <span>{formatAudience(play.audience_size)} customers</span>
           {confidenceLabel ? (
-            <span className="recommendation-meta-item">
+            <span className="recommendation-meta-item" title={CONFIDENCE_TITLE}>
               <span className={`confidence-dot ${confidenceTone(confidence)}`} />
-              {confidenceLabel}
+              {confidenceLabel} confidence
             </span>
           ) : null}
-          {evidenceLabel && evidenceLabel !== confidenceLabel ? <span>{evidenceLabel}</span> : null}
           {selectedActionable ? <span>✓ Approved</span> : null}
         </span>
+        {evidenceLine ? <span className="recommendation-evidence-line">{evidenceLine}</span> : null}
       </span>
       <span className="recommendation-chevron">›</span>
     </button>
   );
 }
 
-function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
+function RecommendationDetail({ play, onSendToReview, onViewEvidence, showAdvanced = false }) {
   const [activeTab, setActiveTab] = useState("thesis");
 
   if (!play) {
@@ -349,12 +358,19 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
   const narration = play.narration || {};
   const lane = classifyPlayLane(play);
   const revenue = revenueRangeParts(play);
+  const revenueLabel = formatRevenueRange(play);
+  const oneLiner = play.play_one_liner || play.audience_archetype || "";
+  const audienceLabel = formatAudience(play.audience_size);
+  const bannerText = oneLiner
+    ? `${oneLiner} — ${audienceLabel} customers.`
+    : `${audienceLabel} customers in this group.`;
+  const heldReason = play.reason_display || "BeaconAI needs more store data before recommending this.";
   const tabLabels = [
     ["thesis", "Play thesis"],
     ["send", "What we'd send"],
     ["evidence", "Evidence"],
     ["audience", "Audience"],
-    ["sensitivity", "Sensitivity"],
+    ...(showAdvanced ? [["sensitivity", "Sensitivity"]] : []),
   ];
 
   return (
@@ -362,29 +378,32 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
       <div className="recommendation-detail-head">
         <span className={`recommendation-icon large ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
         <div>
-          <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Considered and held" : "Primary recommendation"}</div>
+          <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Not ready yet" : "Primary recommendation"}</div>
           <h2>{play.play_name || play.play_id}</h2>
-          <span className="detail-id-chip">{play.play_id || play.id}</span>
         </div>
         <button className="icon-menu" type="button" aria-label="More actions">...</button>
       </div>
 
+      {play.evidence_line ? <div className="detail-evidence-line">{play.evidence_line}</div> : null}
+
       <div className="recommendation-stat-strip">
         <div>
-          <strong>{formatAudience(play.audience_size)}</strong>
+          <strong>{audienceLabel}</strong>
           <span>Customers</span>
         </div>
-        <div>
-          <strong>{formatRevenueRange(play)}</strong>
-          <span>Est. revenue range</span>
-        </div>
+        {revenueLabel ? (
+          <div>
+            <strong>{revenueLabel}</strong>
+            <span>Est. opportunity</span>
+          </div>
+        ) : null}
         <div>
           <strong>{statusLabel(confidence)}</strong>
-          <span>Confidence</span>
+          <span title={CONFIDENCE_TITLE}>Confidence</span>
         </div>
       </div>
 
-      <div className="recommendation-banner">{narration.play_thesis || play.mechanism || "BeaconAI has prepared this recommendation for review."}</div>
+      <div className="recommendation-banner">{bannerText}</div>
 
       <div className="recommendation-tabs">
         {tabLabels.map(([key, label]) => (
@@ -408,14 +427,14 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
             </div>
             {revenue ? (
               <div className="revenue-range">
-                <div className="section-kicker">Est. revenue range</div>
+                <div className="section-kicker">Est. opportunity</div>
                 <div className="range-track">
                   <span className="range-fill" />
                   <span className="range-marker" style={{ left: "88%" }} />
                 </div>
                 <div className="range-labels">
                   <span>{revenue.labelLow}</span>
-                  <span>median {revenue.labelMedian}</span>
+                  {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
                   <span>{revenue.labelHigh}</span>
                 </div>
               </div>
@@ -431,7 +450,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
             </div>
             <div className="model-row">
               <span>Template step</span>
-              <strong>Choose in Review Queue</strong>
+              <strong>Choose in Campaigns after approving</strong>
             </div>
             <div className="model-row">
               <span>CTA</span>
@@ -454,6 +473,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
               <span>Decision status</span>
               <strong>{play.reason_code ? statusLabel(play.reason_code) : "Ready for review"}</strong>
             </div>
+            <div className="evidence-fineprint">{play.play_id || play.id}</div>
           </>
         ) : null}
 
@@ -486,21 +506,25 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence }) {
             </div>
             <div className="model-row">
               <span>Review note</span>
-              <strong>{play.reason_code ? "Held by engine guardrail" : "Merchant approval required before template work"}</strong>
+              <strong>{play.reason_code ? "Held for now — needs more store data" : "Merchant approval required before template work"}</strong>
             </div>
           </>
         ) : null}
       </div>
 
-      <div className="recommendation-detail-footer">
-        {lane === "considered" ? (
-          <button className="btn" onClick={() => onViewEvidence?.(play)}>Held by engine</button>
-        ) : (
-          <button className="btn primary" onClick={() => onSendToReview(play)}>✓ Approve</button>
-        )}
-        <button className="btn danger" onClick={() => onViewEvidence?.(play)}>Reject</button>
-        <button className="btn" onClick={() => onViewEvidence?.(play)}>Defer</button>
-      </div>
+      {lane === "considered" ? (
+        <div className="recommendation-detail-footer held">
+          <p className="held-reason">Held for now — {heldReason}</p>
+        </div>
+      ) : (
+        <div className="recommendation-approve-block">
+          <p className="approve-note">Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email.</p>
+          <p className="approve-note measurement">We'll track what these customers do for 30 days after send and report it in Results.</p>
+          <div className="recommendation-detail-footer">
+            <button className="btn primary" onClick={() => onSendToReview(play)}>Approve & pick template</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -791,8 +815,96 @@ function MonthTwoDeltaPanel({ delta }) {
   );
 }
 
+function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending }) {
+  const items = [
+    ["Products", products],
+    ["Customers", customers],
+    ["Orders", orders],
+    ["Needs review", reviewPending],
+    ["In pipeline", campaignsPending],
+  ];
+  return (
+    <div className="briefing-stat-strip">
+      {items.map(([label, value]) => (
+        <div key={label} className="briefing-stat">
+          <strong>{value}</strong>
+          <span>{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFinish, onConnectShopify, onSyncShopify, onConnectKlaviyo, onLoadTemplates, onFinish }) {
+  const steps = [
+    { label: "Shopify", done: Boolean(status.shopify && hasStoreSnapshot) },
+    { label: "Klaviyo", done: Boolean(status.klaviyo) },
+    { label: "First campaign", done: Boolean(approvedCount) },
+  ];
+  const doneCount = steps.filter((step) => step.done).length;
+
+  let nextAction = null;
+  if (!status.shopify) nextAction = { label: "Connect Shopify", onClick: onConnectShopify };
+  else if (!hasStoreSnapshot) nextAction = { label: "Sync Shopify", onClick: onSyncShopify };
+  else if (!status.klaviyo) nextAction = { label: "Connect Klaviyo", onClick: onConnectKlaviyo };
+  else if (!approvedCount) nextAction = { label: "Approve a play below", onClick: null };
+
+  return (
+    <div className="onboarding-strip">
+      <span className="onboarding-strip-label">Getting started · {doneCount} of {steps.length}</span>
+      <div className="onboarding-strip-steps">
+        {steps.map((step) => (
+          <span key={step.label} className={`onboarding-chip ${step.done ? "done" : ""}`}>
+            {step.done ? "✓ " : ""}{step.label}
+          </span>
+        ))}
+      </div>
+      {readyToFinish ? (
+        <button className="btn primary" onClick={onFinish}>Finish setup</button>
+      ) : nextAction?.onClick ? (
+        <button className="btn primary" onClick={nextAction.onClick}>{nextAction.label}</button>
+      ) : nextAction ? (
+        <span className="onboarding-strip-hint">{nextAction.label}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function ResultsPage({ campaigns }) {
+  const sent = campaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
+  const tracked = sent.length ? sent : campaigns;
+  if (!tracked.length) {
+    return (
+      <div className="empty-panel">
+        Results appear here after your first campaign goes out. For each campaign, BeaconAI tracks the customers it targeted and reports what they did over the following 30 days.
+      </div>
+    );
+  }
+  return (
+    <div className="results-list">
+      {tracked.map((item) => {
+        const base = item.sentAt || item.approvedAt || item.builtAt;
+        const parsed = base ? new Date(base) : new Date();
+        const reportDate = new Date(parsed.getTime());
+        reportDate.setDate(reportDate.getDate() + 30);
+        const reportLabel = reportDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        const sentLabel = base ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Pending send";
+        return (
+          <div key={item.id} className="results-row">
+            <div>
+              <strong>{item.playTitle}</strong>
+              <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+            </div>
+            <p className="results-status">Measurement in progress — first report {reportLabel}.</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function App() {
-  const [activePage, setActivePage] = useState("home");
+  const [activePage, setActivePage] = useState("briefing");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [shopDomain, setShopDomain] = useState(api.shopDomain);
@@ -819,6 +931,8 @@ function App() {
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
   const [campaignPackages, setCampaignPackages] = useState([]);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
+  const [flashCampaignId, setFlashCampaignId] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const counts = sync?.synced || {};
   const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
@@ -849,6 +963,8 @@ function App() {
   const reviewPendingCount = reviewablePlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
   const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "created").length;
   const approvedCount = finalCampaigns.filter((item) => item.status === "created").length;
+  const sentCampaigns = finalCampaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
+  const readyToSendCampaigns = finalCampaigns.filter((item) => !(item.status === "created" || item.klaviyoSendJobId));
   const productCount = counts.products ?? engineInput?.products?.length ?? placeholderRun?.input_summary?.products ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
@@ -861,11 +977,12 @@ function App() {
   const selectableRows = [...recommendedRows, ...experimentRows, ...consideredRows];
   const selectedBriefingRow = selectableRows.find((row) => row.play.play_id === selectedBriefingPlayId) || selectableRows[0] || null;
   const readyRowsCount = recommendedRows.length + experimentRows.length;
+  const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
   const briefingHeading = !workflowPlays.length
-    ? "Run the engine briefing to create a review slate"
+    ? "Run your briefing to see recommendations"
     : readyRowsCount
-      ? `Your briefing slate is ready — ${readyRowsCount} plays for your review`
-      : `No campaign-ready plays yet — ${consideredRows.length} held for more data`;
+      ? `Your briefing is ready — ${readyRowsCount} plays for your review`
+      : `No campaign-ready plays yet — ${consideredRows.length} need more data`;
 
   useEffect(() => {
     checkConnections();
@@ -893,9 +1010,8 @@ function App() {
     if (onboardingReadyToFinish && !onboardingHidden) {
       localStorage.setItem("beaconai:onboarding-complete", "true");
       setOnboardingHidden(true);
-      if (activePage === "onboarding") setActivePage("home");
     }
-  }, [activePage, onboardingHidden, onboardingReadyToFinish]);
+  }, [onboardingHidden, onboardingReadyToFinish]);
 
   async function runStep(label, fn) {
     setLoading(true);
@@ -962,7 +1078,7 @@ function App() {
   async function runAnalysis() {
     const result = await runStep("Engine run", () => api.runEngine());
     setCampaign(result.campaign);
-    setActivePage("queue");
+    setActivePage("campaigns");
     return result;
   }
 
@@ -985,19 +1101,17 @@ function App() {
     const result = await runStep("Full demo", () => api.demoRun());
     setSync({ synced: result.synced, shopDomain: result.shopDomain });
     setCampaign(result.campaign);
-    setActivePage("queue");
+    setActivePage("campaigns");
   }
 
   async function loadEngineInput() {
     const result = await runStep("Engine input load", () => api.getEngineInput());
     setEngineInput(result.input);
-    setActivePage("ledger");
   }
 
   async function loadPlaceholderEngineRun() {
     const result = await runStep("Placeholder engine load", () => api.getPlaceholderEngineRun());
     setPlaceholderRun(result.engineRun);
-    setActivePage("placeholder");
   }
 
   async function saveShopDomain(event) {
@@ -1030,7 +1144,7 @@ function App() {
           status: "building",
           builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
           customers: play.audience_size || 0,
-          segment: play.audience_archetype || "Engine placeholder audience",
+          segment: play.audience_archetype || "Recommended audience",
           subject: "Placeholder subject from engine play",
           previewText: "Waiting for real engine copy.",
           bodyH2: play.play_name || play.play_id,
@@ -1043,7 +1157,9 @@ function App() {
       ];
     });
     setReviewPlayId(playId);
-    setActivePage("queue");
+    setActivePage("campaigns");
+    setFlashCampaignId(playId);
+    setTimeout(() => setFlashCampaignId((current) => (current === playId ? "" : current)), 2200);
   }
 
   function authorizeCampaignPackage(campaignId) {
@@ -1138,60 +1254,49 @@ function App() {
       window.location.href = api.oauthStartUrl(provider);
     } catch (err) {
       setError(err.message);
-      setActivePage("onboarding");
+      setActivePage("setup");
     }
   }
 
   function finishOnboarding() {
     localStorage.setItem("beaconai:onboarding-complete", "true");
     setOnboardingHidden(true);
-    setActivePage("home");
+    setActivePage("briefing");
   }
 
+  const campaignsBadgeCount = reviewPendingCount + campaignsPendingCount;
+
   const nav = [
-    ["home", "Home"],
-    ...(!onboardingHidden ? [["onboarding", "Onboarding"]] : []),
     ["briefing", "Briefing"],
-    ["queue", "Review Queue"],
     ["campaigns", "Campaigns"],
-    ["setup", "Connections"],
+    ["results", "Results"],
+    ["setup", "Settings"],
   ];
 
   const titleByPage = {
-    home: "Home",
-    onboarding: "Onboarding",
-    briefing: "Monthly Briefing",
-    queue: "Review Queue",
+    briefing: "Briefing",
     campaigns: "Campaigns",
-    setup: "Connections",
+    results: "Results",
+    setup: "Settings",
   };
 
+  // No route dead-ends: retired pages fall back to Briefing.
   useEffect(() => {
-    if (activePage === "onboarding" && onboardingHidden) {
-      setActivePage("home");
+    const validPages = new Set(["briefing", "campaigns", "results", "setup"]);
+    if (!validPages.has(activePage)) {
+      setActivePage("briefing");
     }
-  }, [activePage, onboardingHidden]);
+  }, [activePage]);
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="wordmark" aria-label="beacon">beac<span className="wordmark-dot" />n</div>
-        <form className="store-picker" onSubmit={saveShopDomain}>
-          <label htmlFor="shop-domain">Shopify store</label>
-          <input
-            id="shop-domain"
-            value={shopDomainDraft}
-            onChange={(event) => setShopDomainDraft(event.target.value)}
-            placeholder="store.myshopify.com"
-          />
-          <button type="submit">Use store</button>
-        </form>
         <div className="store-name">{shopDomain || "No store selected"}</div>
         {nav.map(([key, label]) => (
           <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => setActivePage(key)}>
             {label}
-            {key === "queue" && reviewPendingCount ? <span className="badge">{reviewPendingCount}</span> : null}
-            {key === "campaigns" && finalCampaigns.length ? <span className="badge">{finalCampaigns.length}</span> : null}
+            {key === "campaigns" && campaignsBadgeCount ? <span className="badge">{campaignsBadgeCount}</span> : null}
           </button>
         ))}
       </aside>
@@ -1200,7 +1305,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{titleByPage[activePage]}</h1>
-            <p>BeaconAI operator dashboard</p>
+            <p>{shopDomain ? `Marketing copilot for ${shopDomain}` : "Your marketing copilot"}</p>
           </div>
           <div className="status-row">
             <StatusPill label="API" ok={status.api} />
@@ -1213,142 +1318,34 @@ function App() {
           {error ? <div className="error-box">{error}</div> : null}
           {loading ? <div className="loading-box">Working...</div> : null}
 
-          {activePage === "home" && (
-            <>
-              <div className="home-hero">
-                <div>
-                  <div className="eyebrow">Command home</div>
-                  <h2>BeaconAI campaign operations at a glance.</h2>
-                  <p>
-                    Connect accounts, watch synced store volume, and move recommendations from review to approved campaigns.
-                  </p>
-                </div>
-                <div className="home-hero-actions">
-                  <button className="btn primary" onClick={syncShopify}>Sync Shopify</button>
-                  {!onboardingHidden ? <button className="btn" onClick={() => setActivePage("onboarding")}>Continue onboarding</button> : null}
-                  <button className="btn" onClick={() => setActivePage("briefing")}>Open Briefing</button>
-                  <button className="btn" onClick={() => setActivePage("queue")}>Review Queue</button>
-                </div>
-              </div>
-
-              <div className="home-metric-grid">
-                <HomeMetricCard label="Products" value={productCount} detail="active Shopify catalog" />
-                <HomeMetricCard label="Customers" value={customerCount} detail="known Shopify customers" />
-                <HomeMetricCard label="Orders" value={orderCount} detail="synced Shopify orders" />
-                <HomeMetricCard label="Review pending" value={reviewPendingCount} detail={reviewPendingCount ? "plays needing templates" : "run briefing first"} tone={reviewPendingCount ? "attention" : "good"} />
-                <HomeMetricCard label="Campaigns pending" value={campaignsPendingCount} detail="selected but not authorized" tone={campaignsPendingCount ? "attention" : "neutral"} />
-                <HomeMetricCard label="Approved" value={approvedCount} detail="ready for final Klaviyo step" tone={approvedCount ? "good" : "neutral"} />
-              </div>
-
-              <div className="home-grid">
-                <HomeModule title="Connect Accounts" detail="Current integration health for the demo store." action="Refresh" onAction={checkConnections}>
-                  <div className="connection-list">
-                    <ConnectionCard label="Shopify" connected={status.shopify} detail={status.shopify ? `Connected via ${status.shopifySource}. Store data can refresh in BeaconAI.` : "Connect Shopify once with OAuth to load products, customers, and orders."} onAction={status.shopify ? syncShopify : () => startOAuth("shopify")} />
-                    <ConnectionCard label="Klaviyo" connected={status.klaviyo} detail={status.klaviyo ? `Connected via ${status.klaviyoSource}. Templates can refresh for campaign review.` : "Connect Klaviyo once with OAuth to fetch existing templates."} onAction={status.klaviyo ? loadKlaviyoTemplates : () => startOAuth("klaviyo")} />
-                  </div>
-                </HomeModule>
-
-                <HomeModule title="Pending Review" detail={reviewPendingCount ? "Recommendations waiting for a template decision." : "Run the engine briefing before review starts."} action="Open" onAction={() => setActivePage("queue")}>
-                  {reviewablePlays.length ? (
-                    <div className="home-list">
-                      {reviewablePlays.slice(0, 4).map((play) => (
-                        <button key={play.id} className="home-list-row" onClick={() => { setReviewPlayId(play.id); setActivePage("queue"); }}>
-                          <span>{selectedTemplateByPlay[play.id] ? "Template selected" : "Needs template"}</span>
-                          <strong>{play.play_name || play.play_id}</strong>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-panel">Run Briefing to create reviewable recommendations.</div>
-                  )}
-                </HomeModule>
-
-                <HomeModule title="Campaign Pipeline" detail="Selected templates and final approval status." action="Open" onAction={() => setActivePage("campaigns")}>
-                  {finalCampaigns.length ? (
-                    <div className="home-list">
-                      {finalCampaigns.slice(0, 4).map((item) => (
-                        <button key={item.id} className="home-list-row" onClick={() => setActivePage("campaigns")}>
-                          <span>{statusLabel(item.status)}</span>
-                          <strong>{item.playTitle}</strong>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-panel">Select a template in Review Queue to assemble a campaign.</div>
-                  )}
-                </HomeModule>
-              </div>
-            </>
-          )}
-
-          {activePage === "onboarding" && (
-            <>
-              <div className="onboarding-hero">
-                <div>
-                  <div className="eyebrow">Onboarding</div>
-                  <h2>Connect your store and review your first campaign.</h2>
-                  <p>
-                    This appears for first-time setup only. Once the required accounts are connected, onboarding can be completed and hidden.
-                  </p>
-                </div>
-              </div>
-
-              <div className="onboarding-layout simple">
-                <div className="onboarding-steps">
-                  <OnboardingStep
-                    number="1"
-                    title="Connect Shopify"
-                    detail="Let BeaconAI read products, customers, and orders from the store."
-                    done={status.shopify && hasStoreSnapshot}
-                    action={status.shopify ? "Refresh Shopify" : "Connect Shopify"}
-                    onAction={status.shopify ? syncShopify : () => startOAuth("shopify")}
-                  />
-                  <OnboardingStep
-                    number="2"
-                    title="Connect Klaviyo"
-                    detail="Let BeaconAI find existing templates and prepare campaign drafts."
-                    done={status.klaviyo}
-                    action={status.klaviyo ? "Fetch templates" : "Connect Klaviyo"}
-                    onAction={status.klaviyo ? loadKlaviyoTemplates : () => startOAuth("klaviyo")}
-                  />
-                  <OnboardingStep
-                    number="3"
-                    title="Review first campaign"
-                    detail="BeaconAI prepares recommendations. Review the template choice and approve the campaign."
-                    done={Boolean(approvedCount)}
-                    action="Open Briefing"
-                    onAction={() => setActivePage("briefing")}
-                    secondaryAction="Review Queue"
-                    onSecondaryAction={() => setActivePage("queue")}
-                  />
-
-                  <div className="setup-next-row">
-                    <div>
-                      <div className="section-kicker">After setup</div>
-                      <h3>Your daily workflow</h3>
-                      <p>Use Briefing to understand recommendations, Review Queue to choose templates, and Campaigns to approve final packages.</p>
-                    </div>
-                    <div className="setup-next-actions">
-                      <button className="btn primary" onClick={finishOnboarding} disabled={!onboardingReadyToFinish}>
-                        {onboardingReadyToFinish ? "Finish onboarding" : "Connect accounts first"}
-                      </button>
-                      <button className="btn" onClick={() => setActivePage("briefing")}>Briefing</button>
-                      <button className="btn" onClick={() => setActivePage("queue")}>Review Queue</button>
-                      <button className="btn" onClick={() => setActivePage("campaigns")}>Campaigns</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-
           {activePage === "briefing" && (
             <>
+              {!onboardingHidden ? (
+                <OnboardingBanner
+                  status={status}
+                  hasStoreSnapshot={hasStoreSnapshot}
+                  approvedCount={approvedCount}
+                  readyToFinish={onboardingReadyToFinish}
+                  onConnectShopify={() => startOAuth("shopify")}
+                  onSyncShopify={syncShopify}
+                  onConnectKlaviyo={() => startOAuth("klaviyo")}
+                  onLoadTemplates={loadKlaviyoTemplates}
+                  onFinish={finishOnboarding}
+                />
+              ) : null}
+              <BriefingStatStrip
+                products={productCount}
+                customers={customerCount}
+                orders={orderCount}
+                reviewPending={reviewPendingCount}
+                campaignsPending={campaignsPendingCount}
+              />
+              {stateOfStore ? <div className="state-of-store">{stateOfStore}</div> : null}
               <div className="briefing-titlebar">
                 <div>
                   <h2>{briefingHeading}</h2>
                   <p>
-                    <strong>{recommendedRows.length}</strong> recommended now · <strong>{experimentRows.length}</strong> experiments · <strong>{consideredRows.length}</strong> considered.
+                    <strong>{recommendedRows.length}</strong> recommended now{experimentRows.length ? <> · <strong>{experimentRows.length}</strong> experiments</> : null} · <strong>{consideredRows.length}</strong> not ready yet.
                   </p>
                 </div>
                 <button className="btn" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh briefing</button>
@@ -1371,8 +1368,8 @@ function App() {
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
-                      {!selectableRows.length ? <div className="empty-panel inline">Refresh briefing to run the engine and load recommendations.</div> : null}
-                      {selectableRows.length && !recommendedRows.length ? <div className="empty-panel inline">No plays are ready for campaign review yet. See Considered for what the engine held.</div> : null}
+                      {!selectableRows.length ? <div className="empty-panel inline">Refresh your briefing to load recommendations.</div> : null}
+                      {selectableRows.length && !recommendedRows.length ? <div className="empty-panel inline">Nothing is ready for campaign review yet. See Not ready yet below for what needs more data.</div> : null}
                     </div>
                   </div>
 
@@ -1397,7 +1394,7 @@ function App() {
 
                   <div className="lane-box compact-lane">
                     <div className="lane-head">
-                      <span>Considered (not selected)</span>
+                      <span>Not ready yet</span>
                       <strong>{consideredRows.length}</strong>
                     </div>
                     {consideredRows.length ? (
@@ -1419,26 +1416,32 @@ function App() {
                   play={selectedBriefingRow?.play}
                   onSendToReview={greenlightEnginePlay}
                   onViewEvidence={setSelectedEvidence}
+                  showAdvanced={showAdvanced}
                 />
               </div>
             </>
           )}
 
-          {activePage === "queue" && (
+          {activePage === "campaigns" && (
             <>
+              <div className="campaign-section">
+                <div className="section-header">
+                  <span className="section-title">Needs review</span>
+                  <span className="section-meta">{reviewPendingCount} awaiting a template</span>
+                </div>
               <div className="queue-layout">
                 <div className="draft-list">
                   <div className="section-kicker">Recommendations</div>
                   {reviewablePlays.length ? reviewablePlays.map((play) => {
                     const chosen = klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]);
                     return (
-                      <button key={play.id} className={`draft-card ${reviewPlay?.id === play.id ? "selected" : ""}`} onClick={() => setReviewPlayId(play.id)}>
+                      <button key={play.id} className={`draft-card ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`} onClick={() => setReviewPlayId(play.id)}>
                         <div className="draft-state"><span className="dot" /> {chosen ? "Template selected" : "Needs template"}</div>
                         <h3>{play.play_name || play.play_id}</h3>
                         <p>{play.audience_archetype || "Recommended audience"}</p>
                       </button>
                     );
-                  }) : <div className="empty-panel">Run Briefing before reviewing templates.</div>}
+                  }) : <div className="empty-panel">Approve a play in Briefing before reviewing templates.</div>}
                 </div>
 
                 <div className="draft-detail">
@@ -1498,7 +1501,53 @@ function App() {
                   ) : null}
                 </div>
               </div>
+              </div>
+
+              <div className="campaign-section">
+                <div className="section-header">
+                  <span className="section-title">Ready to send</span>
+                  <span className="section-meta">{readyToSendCampaigns.length} in the pipeline</span>
+                </div>
+                {readyToSendCampaigns.length ? (
+                  <CampaignPackages
+                    campaigns={readyToSendCampaigns}
+                    onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
+                    onSendCampaign={sendKlaviyoCampaign}
+                    publishingId={publishingCampaignId}
+                    sendingId={sendingCampaignId}
+                    audiencePreviews={audiencePreviewsByCampaign}
+                    onPreviewAudience={previewCampaignAudience}
+                    previewingId={previewingCampaignId}
+                  />
+                ) : (
+                  <div className="empty-panel">Pick a template above to assemble a campaign package.</div>
+                )}
+              </div>
+
+              <div className="campaign-section">
+                <div className="section-header">
+                  <span className="section-title">Sent</span>
+                  <span className="section-meta">{sentCampaigns.length} sent</span>
+                </div>
+                {sentCampaigns.length ? (
+                  <div className="campaign-list">
+                    {sentCampaigns.map((item) => (
+                      <div key={item.id} className="campaign-item">
+                        <span className="campaign-status created">Sent</span>
+                        <strong>{item.playTitle}</strong>
+                        <small>{formatAudience(item.customers)} customers</small>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-panel">Campaigns you send will appear here.</div>
+                )}
+              </div>
             </>
+          )}
+
+          {activePage === "results" && (
+            <ResultsPage campaigns={finalCampaigns} />
           )}
 
           {activePage === "ledger" && (
@@ -1534,33 +1583,6 @@ function App() {
                   <CohortRetentionChart curves={dashboardRun.cohort_retention?.curves || []} />
                 </div>
               </div>
-            </>
-          )}
-
-          {activePage === "campaigns" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Final campaign approval</div>
-                <h2>Approved recommendation and selected template, together.</h2>
-                <p>
-                  This page is the final package view before Klaviyo creation: recommendation, chosen template,
-                  audience, copy preview, suppression, and approval status.
-                </p>
-              </div>
-              {finalCampaigns.length ? (
-                <CampaignPackages
-                  campaigns={finalCampaigns}
-                  onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
-                  onSendCampaign={sendKlaviyoCampaign}
-                  publishingId={publishingCampaignId}
-                  sendingId={sendingCampaignId}
-                  audiencePreviews={audiencePreviewsByCampaign}
-                  onPreviewAudience={previewCampaignAudience}
-                  previewingId={previewingCampaignId}
-                />
-              ) : (
-                <div className="empty-panel">Select a template in Review Queue to assemble the final campaign package.</div>
-              )}
             </>
           )}
 
@@ -1644,6 +1666,20 @@ function App() {
                 <p>
                   Use this page after onboarding to refresh or reconnect Shopify and Klaviyo.
                 </p>
+              </div>
+
+              <div className="integration-card settings-store-card">
+                <h3>Shopify store</h3>
+                <p>Choose which store BeaconAI is working with.</p>
+                <form className="settings-store-form" onSubmit={saveShopDomain}>
+                  <input
+                    id="shop-domain"
+                    value={shopDomainDraft}
+                    onChange={(event) => setShopDomainDraft(event.target.value)}
+                    placeholder="store.myshopify.com"
+                  />
+                  <button className="btn primary" type="submit">Use store</button>
+                </form>
               </div>
 
               <div className="setup-grid">
