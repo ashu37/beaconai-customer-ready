@@ -7,7 +7,7 @@ const {
   getEngineInput,
 } = require("./services/shopifyRepository");
 const { runMockEngine, saveEngineRun } = require("./services/engineService");
-const { narrateAtulRun, runAtulEngine } = require("./services/atulEngineService");
+const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 const {
   testKlaviyo,
@@ -309,6 +309,22 @@ router.post("/engine/atul/run", async (req, res) => {
       stdout: error.stdout,
       stderr: error.stderr,
     });
+  }
+});
+
+// O1: read-only latest-run rehydration. Never triggers an engine run.
+router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
+  try {
+    const shopDomain = req.params.shopDomain || config.shopify.shopDomain;
+    const latest = await readLatestRun({ shopDomain });
+    if (!latest) {
+      res.json({ ok: true, found: false });
+      return;
+    }
+    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, null);
+    res.json({ ok: true, found: true, presentedRun });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 

@@ -65,6 +65,7 @@ export const api = {
   syncShopify: (limit = 250) => request("/sync/shopify", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), limit }) }),
   runEngine: () => request("/engine/run", { method: "POST", body: JSON.stringify({ shopDomain }) }),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
+  getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),
   getKlaviyoTemplates: () => request(`/klaviyo/templates?shopDomain=${encodeURIComponent(shopDomain)}`),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   createTemplate: (campaign) => request("/klaviyo/templates/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),

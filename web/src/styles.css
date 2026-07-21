@@ -353,3 +353,27 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
   .onboarding-hero h2, .home-hero h2, .hero-card h2 { font-size: 34px; }
   .play-meta-row, .model-stats { grid-template-columns: 1fr; }
 }
+
+/* O2: first-time store gate */
+.store-gate { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 24px; }
+.store-gate-inner { width: 100%; max-width: 460px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.store-gate .wordmark { color: var(--ink-strong); margin-bottom: 12px; }
+.store-gate h1 { font-family: var(--font-display); font-size: 30px; margin: 0; color: var(--ink-strong); }
+.store-gate-sub { color: var(--muted); margin: 0 0 12px; font-size: 15px; line-height: 1.5; }
+.store-gate-form { display: flex; gap: 10px; width: 100%; }
+.store-gate-form input { flex: 1; border: 1px solid var(--rule-2); border-radius: 3px; padding: 12px 14px; font-size: 14px; }
+.store-gate-error { color: var(--warn); font-size: 13px; margin-top: 4px; }
+
+/* O3: first-run staged pipeline */
+.first-run-panel { min-height: 320px; display: flex; align-items: center; justify-content: center; padding: 48px 24px; }
+.first-run-inner { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 480px; }
+.first-run-inner h2 { font-family: var(--font-display); font-size: 24px; margin: 0; color: var(--ink-strong); }
+.first-run-sub { color: var(--muted); margin: 0; line-height: 1.5; }
+.first-run-stats { font-family: var(--font-mono); font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 12px 16px; }
+.first-run-error { color: var(--warn); margin: 0; }
+.first-run-spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--rule); border-top-color: var(--accent); animation: first-run-spin 0.9s linear infinite; }
+@keyframes first-run-spin { to { transform: rotate(360deg); } }
+
+/* O3: sparse-store interstitial */
+.sparse-interstitial { display: flex; align-items: center; gap: 16px; background: var(--surface-2); border: 1px solid rgba(240,138,36,.28); border-radius: 4px; padding: 14px 16px; margin-bottom: 16px; }
+.sparse-interstitial p { margin: 0; flex: 1; line-height: 1.5; color: var(--ink); }

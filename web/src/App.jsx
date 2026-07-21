@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { baseEngineRun } from "./engineMock";
@@ -903,6 +903,68 @@ function ResultsPage({ campaigns }) {
   );
 }
 
+function StoreGate({ draft, onDraftChange, onSubmit, error }) {
+  return (
+    <div className="store-gate">
+      <div className="store-gate-inner">
+        <div className="wordmark" aria-label="beacon">beac<span className="wordmark-dot" />n</div>
+        <h1>Let's look at your store.</h1>
+        <p className="store-gate-sub">Connect your Shopify store and BeaconAI will find your next revenue opportunities.</p>
+        <form className="store-gate-form" onSubmit={onSubmit}>
+          <input
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            placeholder="your-store.myshopify.com"
+            autoFocus
+          />
+          <button className="btn primary" type="submit">Connect Shopify</button>
+        </form>
+        {error ? <div className="store-gate-error">{error}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
+  const stageCopy = {
+    syncing: { title: "Syncing your store…", sub: "Pulling products, customers, and orders from Shopify." },
+    synced: { title: "Store synced.", sub: null },
+    analyzing: {
+      title: `Analyzing ${orders} orders for opportunities…`,
+      sub: "BeaconAI is sizing audiences and checking the evidence. This can take a minute.",
+    },
+  };
+
+  if (error) {
+    return (
+      <div className="first-run-panel">
+        <div className="first-run-inner">
+          <p className="first-run-error">{error.message}</p>
+          <button className="btn primary" onClick={onRetry}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+
+  const copy = stageCopy[stage] || stageCopy.syncing;
+  const showStats = stage === "synced" && counts;
+
+  return (
+    <div className="first-run-panel">
+      <div className="first-run-inner">
+        {stage !== "synced" ? <div className="first-run-spinner" aria-hidden="true" /> : null}
+        <h2>{copy.title}</h2>
+        {copy.sub ? <p className="first-run-sub">{copy.sub}</p> : null}
+        {showStats ? (
+          <div className="first-run-stats">
+            {counts.products} products · {counts.customers} customers · {counts.orders} orders
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [activePage, setActivePage] = useState("briefing");
   const [loading, setLoading] = useState(false);
@@ -933,8 +995,20 @@ function App() {
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [flashCampaignId, setFlashCampaignId] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [shopDomainError, setShopDomainError] = useState("");
+  const [latestRunChecked, setLatestRunChecked] = useState(false);
+  const [latestRunFound, setLatestRunFound] = useState(false);
+  const [rehydrating, setRehydrating] = useState(Boolean(api.shopDomain));
+  const [firstRunStage, setFirstRunStage] = useState(null); // null | syncing | synced | analyzing | done
+  const [firstRunError, setFirstRunError] = useState(null); // { phase: "sync"|"engine", message }
+  const [sparseInterstitialDismissed, setSparseInterstitialDismissed] = useState(false);
+  const [restoredApprovedPlayIds, setRestoredApprovedPlayIds] = useState([]);
+  const firstRunStartedRef = useRef(false);
+  const pipelineHydratedRef = useRef(false);
 
   const counts = sync?.synced || {};
+  const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
+  const pipelineStorageKey = shopDomain && currentRunId ? `beaconai:${shopDomain}:${currentRunId}:pipeline` : null;
   const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
@@ -969,6 +1043,14 @@ function App() {
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
   const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
+  // O3: first-run detection — Shopify connected, no snapshot, no prior run.
+  const isFirstRun =
+    Boolean(shopDomain) &&
+    status.shopify &&
+    !hasStoreSnapshot &&
+    latestRunChecked &&
+    !latestRunFound;
+  const firstRunActive = isFirstRun && ((firstRunStage && firstRunStage !== "done") || Boolean(firstRunError));
   const onboardingReadyToFinish = status.shopify && status.klaviyo;
   const briefingRows = workflowPlays.map((play) => ({ play, lane: classifyPlayLane(play) }));
   const recommendedRows = briefingRows.filter((row) => row.lane === "recommended");
@@ -977,6 +1059,14 @@ function App() {
   const selectableRows = [...recommendedRows, ...experimentRows, ...consideredRows];
   const selectedBriefingRow = selectableRows.find((row) => row.play.play_id === selectedBriefingPlayId) || selectableRows[0] || null;
   const readyRowsCount = recommendedRows.length + experimentRows.length;
+  // O3: sparse-store framing after a first run completes with 0 recs but held plays.
+  const showSparseInterstitial =
+    isFirstRun &&
+    firstRunStage === "done" &&
+    !sparseInterstitialDismissed &&
+    recommendedRows.length === 0 &&
+    experimentRows.length === 0 &&
+    consideredRows.length > 0;
   const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
   const briefingHeading = !workflowPlays.length
     ? "Run your briefing to see recommendations"
@@ -988,6 +1078,7 @@ function App() {
     checkConnections();
     preloadStoreSnapshot();
     loadBrandContext();
+    loadLatestRun();
   }, []);
 
   useEffect(() => {
@@ -1005,6 +1096,81 @@ function App() {
     const stillPresent = selectableRows.some((row) => row.play.play_id === selectedBriefingPlayId);
     if (!stillPresent) setSelectedBriefingPlayId(selectableRows[0].play.play_id);
   }, [selectableRows, selectedBriefingPlayId]);
+
+  // O4: rehydrate pipeline state after O1's latest-run load resolves.
+  // Stored key embeds the run_id, so a stale run's state is never read (discarded).
+  useEffect(() => {
+    if (!pipelineStorageKey || pipelineHydratedRef.current) return;
+    pipelineHydratedRef.current = true;
+    try {
+      const raw = localStorage.getItem(pipelineStorageKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved.run_id && saved.run_id !== currentRunId) return; // stale → discard
+      if (Array.isArray(saved.authorizedPackageIds)) setAuthorizedPackageIds(saved.authorizedPackageIds);
+      if (saved.selectedTemplateByPlay) setSelectedTemplateByPlay(saved.selectedTemplateByPlay);
+      if (saved.draftEditsByPlay) setDraftEditsByPlay(saved.draftEditsByPlay);
+      if (Array.isArray(saved.approvedPlayIds)) setRestoredApprovedPlayIds(saved.approvedPlayIds);
+    } catch (_) {
+      // Corrupt stored state is non-fatal; the merchant can re-approve.
+    }
+  }, [pipelineStorageKey, currentRunId]);
+
+  // O4: once workflow plays are loaded, rebuild campaign packages for restored approved ids.
+  useEffect(() => {
+    if (!restoredApprovedPlayIds.length || !workflowPlays.length) return;
+    setCampaignPackages((prev) => {
+      const existing = new Set(prev.map((item) => item.id));
+      const additions = restoredApprovedPlayIds
+        .filter((id) => !existing.has(id))
+        .map((id) => workflowPlays.find((play) => (play.play_id || play.id) === id))
+        .filter(Boolean)
+        .map((play) => ({
+          id: play.play_id || play.id,
+          playTitle: play.play_name || play.play_id,
+          status: "building",
+          customers: play.audience_size || 0,
+          segment: play.audience_archetype || "Recommended audience",
+          subject: "Placeholder subject from engine play",
+          previewText: "Waiting for real engine copy.",
+          bodyH2: play.play_name || play.play_id,
+          bodyP1: play.mechanism,
+          bodyP2: "Replace this package with Atul engine output when available.",
+          cta: "Review package",
+          sendTime: "Manual review",
+          suppression: "Recent purchasers, unsubscribes",
+        }));
+      if (!additions.length) return prev;
+      return [...prev, ...additions];
+    });
+    setRestoredApprovedPlayIds([]);
+  }, [restoredApprovedPlayIds, workflowPlays]);
+
+  // O4: persist minimal pipeline state. TODO(auth): move to DB.
+  useEffect(() => {
+    if (!pipelineStorageKey) return;
+    const approvedPlayIds = campaignPackages.map((item) => item.id);
+    const payload = {
+      run_id: currentRunId,
+      approvedPlayIds,
+      selectedTemplateByPlay,
+      draftEditsByPlay,
+      authorizedPackageIds,
+    };
+    try {
+      localStorage.setItem(pipelineStorageKey, JSON.stringify(payload));
+    } catch (_) {
+      // Storage may be unavailable (private mode); persistence is best-effort.
+    }
+  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, authorizedPackageIds]);
+
+  // O3: auto-start the first-run pipeline once per session.
+  useEffect(() => {
+    if (isFirstRun && !firstRunStartedRef.current) {
+      firstRunStartedRef.current = true;
+      runFirstRunPipeline("sync");
+    }
+  }, [isFirstRun]);
 
   useEffect(() => {
     if (onboardingReadyToFinish && !onboardingHidden) {
@@ -1082,11 +1248,41 @@ function App() {
     return result;
   }
 
-  async function runAtulEngine(useFixture = false) {
-    const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
+  // Shared result-handling path for both a fresh engine run and O1 rehydration.
+  function applyEngineResult(result) {
     setAtulEngineResult(result);
     setActivePage("briefing");
+  }
+
+  async function runAtulEngine(useFixture = false) {
+    const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
+    applyEngineResult(result);
     return result;
+  }
+
+  // O1: read-only rehydration of the latest run on mount. Never triggers an engine run.
+  async function loadLatestRun() {
+    if (!api.shopDomain) {
+      setLatestRunChecked(true);
+      setRehydrating(false);
+      return;
+    }
+    setRehydrating(true);
+    try {
+      const result = await api.getLatestEngineRun();
+      if (result.found) {
+        applyEngineResult({ presentedRun: result.presentedRun });
+        setLatestRunFound(true);
+      } else {
+        setLatestRunFound(false);
+      }
+    } catch (_) {
+      // Rehydration is best-effort; the merchant can still run the briefing.
+      setLatestRunFound(false);
+    } finally {
+      setLatestRunChecked(true);
+      setRehydrating(false);
+    }
   }
 
   async function loadKlaviyoTemplates() {
@@ -1130,6 +1326,65 @@ function App() {
     }
     setError("");
     await checkConnections();
+  }
+
+  // O3: staged first-run pipeline — sync → auto engine run → first briefing.
+  async function runFirstRunPipeline(fromStage = "sync") {
+    setFirstRunError(null);
+
+    let syncCounts = counts;
+    if (fromStage === "sync") {
+      setFirstRunStage("syncing");
+      try {
+        const result = await api.syncShopify();
+        setSync(result);
+        syncCounts = result.synced || {};
+        await preloadStoreSnapshot();
+      } catch (err) {
+        setFirstRunError({ phase: "sync", message: "Shopify sync hit a problem. Retry, or check Settings → connections." });
+        return;
+      }
+      setFirstRunStage("synced");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    setFirstRunStage("analyzing");
+    try {
+      await runAtulEngine(false);
+    } catch (err) {
+      setFirstRunError({ phase: "engine", message: "Analysis hit a problem. Your store data is synced — retry the analysis." });
+      return;
+    }
+    setFirstRunStage("done");
+  }
+
+  function retryFirstRun() {
+    if (firstRunError?.phase === "engine") {
+      runFirstRunPipeline("engine");
+    } else {
+      runFirstRunPipeline("sync");
+    }
+  }
+
+  // O2: first-time store gate submit. Validate, save domain, then start OAuth.
+  async function submitStoreGate(event) {
+    event?.preventDefault();
+    const raw = String(shopDomainDraft || "").trim().toLowerCase();
+    const bare = raw.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    const valid = bare.length > 0 && (bare.includes(".myshopify.com") || !bare.includes("."));
+    if (!valid) {
+      setShopDomainError("Enter your Shopify store address, like acme.myshopify.com.");
+      return;
+    }
+    setShopDomainError("");
+    const next = api.setShopDomain(bare);
+    setShopDomain(next);
+    setShopDomainDraft(next);
+    if (!next) {
+      setShopDomainError("Enter your Shopify store address, like acme.myshopify.com.");
+      return;
+    }
+    startOAuth("shopify");
   }
 
   function greenlightEnginePlay(play) {
@@ -1288,6 +1543,18 @@ function App() {
     }
   }, [activePage]);
 
+  // O2: no store domain → full-page gate, nothing else reachable.
+  if (!shopDomain) {
+    return (
+      <StoreGate
+        draft={shopDomainDraft}
+        onDraftChange={setShopDomainDraft}
+        onSubmit={submitStoreGate}
+        error={shopDomainError}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -1318,8 +1585,28 @@ function App() {
           {error ? <div className="error-box">{error}</div> : null}
           {loading ? <div className="loading-box">Working...</div> : null}
 
-          {activePage === "briefing" && (
+          {activePage === "briefing" && firstRunActive ? (
+            <FirstRunProgress
+              stage={firstRunStage}
+              counts={counts}
+              orders={orderCount}
+              error={firstRunError}
+              onRetry={retryFirstRun}
+            />
+          ) : null}
+
+          {activePage === "briefing" && !firstRunActive && rehydrating ? (
+            <div className="loading-box">Loading your briefing...</div>
+          ) : null}
+
+          {activePage === "briefing" && !firstRunActive && !rehydrating && (
             <>
+              {showSparseInterstitial ? (
+                <div className="sparse-interstitial">
+                  <p>Your store has {orderCount} orders. BeaconAI holds recommendations until the data can back them — here's what's tracking toward unlock.</p>
+                  <button className="btn small" onClick={() => setSparseInterstitialDismissed(true)}>Dismiss</button>
+                </div>
+              ) : null}
               {!onboardingHidden ? (
                 <OnboardingBanner
                   status={status}
