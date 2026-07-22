@@ -1139,6 +1139,38 @@ function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
   );
 }
 
+// A moving progress indicator for the manual briefing refresh, so a run that
+// takes a while never looks frozen the way the static "Working..." box did.
+// Reuses the first-run spinner; cycles reassuring copy on a timer.
+function BriefingWorking() {
+  const messages = [
+    "Reading your latest store snapshot…",
+    "Sizing audiences…",
+    "Checking the evidence behind each play…",
+    "Estimating revenue opportunity…",
+    "Writing your briefing…",
+  ];
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    // Advance but hold on the last message — the run may outlast the list.
+    const id = setInterval(() => {
+      setIndex((i) => Math.min(i + 1, messages.length - 1));
+    }, 2200);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="briefing-working" role="status" aria-live="polite">
+      <div className="first-run-spinner" aria-hidden="true" />
+      <div className="briefing-working-text">
+        <span>{messages[index]}</span>
+        <div className="briefing-working-bar" aria-hidden="true">
+          <div className="briefing-working-bar-fill" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [activePage, setActivePage] = useState("briefing");
   const [loading, setLoading] = useState(false);
@@ -1183,6 +1215,9 @@ function App() {
   const counts = sync?.synced || {};
   const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
   const pipelineStorageKey = shopDomain && currentRunId ? `beaconai:${shopDomain}:${currentRunId}:pipeline` : null;
+  // O3 fix: persist first-run completion per shop so a page refresh does not
+  // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
+  const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
   const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
@@ -1340,13 +1375,21 @@ function App() {
     }
   }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, authorizedPackageIds]);
 
-  // O3: auto-start the first-run pipeline once per session.
+  // O3: auto-start the first-run pipeline once per shop. The localStorage guard
+  // prevents a page refresh from re-running a full sync — without it, every
+  // refresh re-entered first-run and any hiccup showed "sync hit a problem".
   useEffect(() => {
-    if (isFirstRun && !firstRunStartedRef.current) {
-      firstRunStartedRef.current = true;
-      runFirstRunPipeline("sync");
+    if (!isFirstRun || firstRunStartedRef.current) return;
+    let alreadyDone = false;
+    try {
+      alreadyDone = firstRunDoneKey && localStorage.getItem(firstRunDoneKey) === "true";
+    } catch (_) {
+      // Storage unavailable (private mode) — fall through and let the run proceed.
     }
-  }, [isFirstRun]);
+    if (alreadyDone) return;
+    firstRunStartedRef.current = true;
+    runFirstRunPipeline("sync");
+  }, [isFirstRun, firstRunDoneKey]);
 
   useEffect(() => {
     if (onboardingReadyToFinish && !onboardingHidden) {
@@ -1532,6 +1575,13 @@ function App() {
       return;
     }
     setFirstRunStage("done");
+    // Persist completion so a refresh reads the snapshot instead of re-syncing.
+    try {
+      if (firstRunDoneKey) localStorage.setItem(firstRunDoneKey, "true");
+    } catch (_) {
+      // Best-effort; if storage is unavailable the derived isFirstRun guard
+      // (snapshot present) still prevents a re-run in the common case.
+    }
   }
 
   function retryFirstRun() {
@@ -1765,7 +1815,7 @@ function App() {
 
         <section className="page">
           {error ? <div className="error-box">{error}</div> : null}
-          {loading ? <div className="loading-box">Working...</div> : null}
+          {loading ? <BriefingWorking /> : null}
 
           {activePage === "briefing" && firstRunActive ? (
             <FirstRunProgress
