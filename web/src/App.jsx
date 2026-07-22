@@ -1344,12 +1344,20 @@ function App() {
     [atulEngineResult, campaignPackages, campaign]
   );
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
-  const reviewPlay = reviewablePlays.find((play) => play.id === reviewPlayId) || reviewablePlays[0];
+  // Only plays the merchant explicitly approved in Briefing (greenlightEnginePlay
+  // pushes them into campaignPackages) appear on the Campaigns page. reviewablePlays
+  // is the full universe; the campaigns view is the approved subset.
+  const approvedPlayIdSet = useMemo(() => new Set(campaignPackages.map((item) => item.id)), [campaignPackages]);
+  const approvedPlays = useMemo(
+    () => reviewablePlays.filter((play) => approvedPlayIdSet.has(play.play_id || play.id)),
+    [reviewablePlays, approvedPlayIdSet]
+  );
+  const reviewPlay = approvedPlays.find((play) => play.id === reviewPlayId) || approvedPlays[0];
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
   const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id]) : null;
-  const finalCampaigns = reviewablePlays
+  const finalCampaigns = approvedPlays
     .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id]))
     .map((item) => {
       if (!item) return item;
@@ -1367,8 +1375,8 @@ function App() {
       };
     })
     .filter(Boolean);
-  const reviewPendingCount = reviewablePlays.filter((play) => !approvedForSend.includes(play.id)).length;
-  const campaignsPendingCount = reviewPendingCount;
+  // Counts reflect only approved campaigns: those still needing review sign-off.
+  const reviewPendingCount = approvedPlays.filter((play) => !approvedForSend.includes(play.id)).length;
   const sentCampaigns = finalCampaigns.filter((item) => item.klaviyoSendJobId);
   const readyToSendCampaigns = finalCampaigns.filter((item) => (item.status === "approved" || item.status === "created") && !item.klaviyoSendJobId);
   const approvedCount = readyToSendCampaigns.length;
@@ -1384,7 +1392,7 @@ function App() {
     if (approvedForSend.includes(play.id)) return "ready";
     return "review";
   };
-  const campaignItems = reviewablePlays.map((play) => ({
+  const campaignItems = approvedPlays.map((play) => ({
     play,
     campaign: finalCampaignById.get(play.id) || null,
     group: campaignGroupFor(play),
@@ -1438,15 +1446,16 @@ function App() {
     loadLatestRun();
   }, []);
 
+  // Keep the selected campaign valid against the APPROVED set (the campaigns view).
   useEffect(() => {
-    if (reviewPlayId && !reviewablePlays.some((play) => play.id === reviewPlayId)) {
+    if (reviewPlayId && !approvedPlays.some((play) => play.id === reviewPlayId)) {
       setReviewPlayId("");
       return;
     }
-    if (!reviewPlayId && reviewablePlays[0]) {
-      setReviewPlayId(reviewablePlays[0].id);
+    if (!reviewPlayId && approvedPlays[0]) {
+      setReviewPlayId(approvedPlays[0].id);
     }
-  }, [reviewPlayId, reviewablePlays]);
+  }, [reviewPlayId, approvedPlays]);
 
   useEffect(() => {
     if (!selectableRows.length) return;
@@ -1552,14 +1561,14 @@ function App() {
   // instead of requiring a manual Refresh the empty page never surfaced.
   const templatesRequestedRef = useRef(false);
   useEffect(() => {
-    if (!reviewablePlays.length || klaviyoTemplates.length || templatesRequestedRef.current) return;
+    if (!approvedPlays.length || klaviyoTemplates.length || templatesRequestedRef.current) return;
     templatesRequestedRef.current = true;
     loadKlaviyoTemplates().catch(() => {
       // Allow a later retry (e.g. after connecting Klaviyo) if this load failed.
       templatesRequestedRef.current = false;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewablePlays.length, klaviyoTemplates.length]);
+  }, [approvedPlays.length, klaviyoTemplates.length]);
 
   // C3: auto-apply the mapped starting template when a reviewable play has none.
   // Only fires once BeaconAI templates have loaded and the play is untouched.
@@ -1963,7 +1972,9 @@ function App() {
     setActivePage("briefing");
   }
 
-  const campaignsBadgeCount = reviewPendingCount + campaignsPendingCount;
+  // Campaigns needing merchant action: approved in Briefing but not yet sent
+  // (in review + ready to send). Was double-counting reviewPendingCount twice.
+  const campaignsBadgeCount = approvedPlays.length - sentCampaigns.length;
 
   const nav = [
     ["briefing", "Briefing"],
@@ -2069,7 +2080,7 @@ function App() {
                 customers={customerCount}
                 orders={orderCount}
                 reviewPending={reviewPendingCount}
-                campaignsPending={campaignsPendingCount}
+                campaignsPending={readyToSendCampaigns.length}
               />
               {stateOfStore ? <div className="state-of-store">{stateOfStore}</div> : null}
               <div className="briefing-titlebar">
@@ -2154,7 +2165,7 @@ function App() {
           )}
 
           {activePage === "campaigns" && (
-            reviewablePlays.length ? (
+            approvedPlays.length ? (
               <div className="workspace">
                 {/* C1: left rail — every approved play in one grouped list. */}
                 <aside className="workspace-rail">
