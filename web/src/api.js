@@ -62,7 +62,8 @@ export const api = {
   brandContext: () => request(`/brand/context?shopDomain=${encodeURIComponent(shopDomain)}`),
   testShopify: () => request("/connections/shopify/test", { method: "POST", body: JSON.stringify({ shopDomain, limit: 1 }) }),
   testKlaviyo: () => request("/connections/klaviyo/test", { method: "POST", body: JSON.stringify({}) }),
-  syncShopify: (limit = 250) => request("/sync/shopify", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), limit }) }),
+  // No limit by default → backend paginates the whole store. Pass a number to bound the sync.
+  syncShopify: (limit) => request("/sync/shopify", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), ...(limit != null ? { limit } : {}) }) }),
   runEngine: () => request("/engine/run", { method: "POST", body: JSON.stringify({ shopDomain }) }),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
   getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),

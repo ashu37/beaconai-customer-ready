@@ -397,6 +397,19 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .first-run-spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--rule); border-top-color: var(--accent); animation: first-run-spin 0.9s linear infinite; }
 @keyframes first-run-spin { to { transform: rotate(360deg); } }
 
+/* Briefing refresh working indicator — spinner + cycling copy + indeterminate bar */
+.briefing-working { display: flex; align-items: center; gap: 14px; background: var(--accent-soft); border: 1px solid rgba(240,138,36,.28); border-radius: 4px; padding: 14px 16px; margin-bottom: 16px; }
+.briefing-working .first-run-spinner { width: 22px; height: 22px; border-width: 2px; flex: none; }
+.briefing-working-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; }
+.briefing-working-text > span { color: #9a4d00; font-size: 14px; }
+.briefing-working-bar { position: relative; height: 3px; border-radius: 2px; background: rgba(240,138,36,.2); overflow: hidden; }
+.briefing-working-bar-fill { position: absolute; top: 0; left: 0; height: 100%; width: 40%; border-radius: 2px; background: var(--accent); animation: briefing-working-slide 1.4s ease-in-out infinite; }
+@keyframes briefing-working-slide { 0% { left: -40%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) {
+  .briefing-working .first-run-spinner { animation: none; }
+  .briefing-working-bar-fill { animation: none; width: 100%; left: 0; opacity: 0.5; }
+}
+
 /* O3: sparse-store interstitial */
 .sparse-interstitial { display: flex; align-items: center; gap: 16px; background: var(--surface-2); border: 1px solid rgba(240,138,36,.28); border-radius: 4px; padding: 14px 16px; margin-bottom: 16px; }
 .sparse-interstitial p { margin: 0; flex: 1; line-height: 1.5; color: var(--ink); }

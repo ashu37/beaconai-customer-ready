@@ -16,9 +16,13 @@ function createShopifyClient(shopDomain, accessToken) {
   });
 }
 
+// Returns Infinity when no explicit finite limit is given, so the caller
+// paginates the resource to completion (bounded only by Shopify's pages).
+// A blank/null/"all" limit means "fetch everything" — not the legacy 250 cap.
 function normalizeShopifyLimit(limit) {
+  if (limit == null || limit === "" || limit === "all") return Infinity;
   const parsed = Number.parseInt(limit, 10);
-  if (!Number.isFinite(parsed)) return 250;
+  if (!Number.isFinite(parsed)) return Infinity;
   return Math.max(parsed, 1);
 }
 
@@ -42,7 +46,7 @@ async function fetchPaginatedResource(client, resource, params, totalLimit) {
   return items.slice(0, totalLimit);
 }
 
-async function fetchShopifyData({ shopDomain, accessToken, limit = 250, productStatus = "active" }) {
+async function fetchShopifyData({ shopDomain, accessToken, limit, productStatus = "active" }) {
   const client = createShopifyClient(shopDomain, accessToken);
   const totalLimit = normalizeShopifyLimit(limit);
   const productStatusParam = productStatus ? `&status=${encodeURIComponent(productStatus)}` : "";

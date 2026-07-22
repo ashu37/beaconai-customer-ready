@@ -212,7 +212,9 @@ router.get("/klaviyo/templates", async (req, res) => {
 router.post("/sync/shopify", async (req, res) => {
   try {
     const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
-    const limit = req.body.limit || 1000;
+    // No default cap: undefined limit paginates every resource to completion.
+    // A caller may still pass an explicit numeric limit to bound the sync.
+    const limit = req.body.limit;
 
     const data = await fetchShopifyData({ shopDomain, accessToken, limit });
 
