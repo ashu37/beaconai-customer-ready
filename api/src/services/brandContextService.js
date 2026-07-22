@@ -165,9 +165,21 @@ function buildBrandContext(input = {}) {
     averageOrderValue > 75 ? "Complete your set" : "See what is new",
   ];
 
+  // C4c: reject seed/test/brand-name tokens from surfacing as "brand words".
+  const shopDomain = input.shop?.shop_domain || shopRaw.domain || null;
+  const subdomain = String(shopDomain || "").split(".")[0].toLowerCase();
+  const STOP_TOKENS = ["seed", "sample", "test", "demo", "fixture"];
+  const isStopToken = (name) => {
+    const token = String(name || "").toLowerCase();
+    if (!token) return true;
+    if (token.includes("beacon")) return true;
+    if (subdomain && token.includes(subdomain)) return true;
+    return STOP_TOKENS.some((stop) => token.includes(stop));
+  };
+
   return {
     brandName: shopRaw.name || shopRaw.shop_owner || input.shop?.shop_domain || "your store",
-    shopDomain: input.shop?.shop_domain || shopRaw.domain || null,
+    shopDomain,
     category,
     tone,
     currency: input.shop?.currency || shopRaw.currency || "USD",
@@ -176,13 +188,13 @@ function buildBrandContext(input = {}) {
     priceRange,
     averageOrderValue: Math.round(averageOrderValue),
     productLanguage: {
-      keywords: keywords.filter((item) => !item.name.includes("beaconai")),
-      tags: topTags.filter((item) => !item.name.includes("beaconai")),
+      keywords: keywords.filter((item) => !isStopToken(item.name)),
+      tags: topTags.filter((item) => !isStopToken(item.name)),
       productTypes: topProductTypes.filter((item) => !item.name.toLowerCase().includes("gift")),
       bestSellers: topProducts,
     },
     messaging: {
-      useWords: keywords.filter((item) => !item.name.includes("beaconai")).slice(0, 8).map((item) => item.name),
+      useWords: keywords.filter((item) => !isStopToken(item.name)).slice(0, 8).map((item) => item.name),
       avoidWords: ["cheap", "blast", "spam", "last chance unless a real deadline exists"],
       ctaStyle,
       openingAngle: `A ${tone[0]} ${categoryNoun} message using the store's own product language.`,
@@ -229,33 +241,35 @@ function buildBeaconTemplates(brandContext) {
     {
       id: "beacon-winback-clean",
       source: "beacon",
-      name: "BeaconAI winback offer",
+      name: "Winback",
       subject: bestSeller ? `Still thinking about ${bestSeller}?` : `A fresh reason to come back to ${brand}`,
-      previewText: `A returning-customer message shaped by ${brand}'s Shopify catalog and order history.`,
+      previewText: "It's been a while — come see what's new.",
       bodyH2: bestSeller ? `${bestSeller} is a good place to restart.` : "Your next favorite is ready.",
-      bodyP1: `Bring previous buyers back with copy that reflects ${category} purchase behavior, best sellers, and the store's own product vocabulary.`,
+      bodyP1: bestSeller
+        ? `Your favorites are still here — including ${bestSeller} — and a few new arrivals you haven't met yet.`
+        : "Your favorites are still here, plus a few new arrivals you haven't met yet.",
       cta: cta[0],
       brandContext,
     },
     {
       id: "beacon-second-purchase",
       source: "beacon",
-      name: "BeaconAI second purchase journey",
+      name: "Second purchase",
       subject: "Make the most of your first order",
-      previewText: `A first-to-second purchase message using ${brand}'s product and routine language.`,
+      previewText: "A few picks that pair well with your first order.",
       bodyH2: bestSeller ? `Pair your first pick with ${bestSeller}.` : "Here is what pairs well with your first pick.",
-      bodyP1: "Guide newer customers toward a natural next purchase using products, categories, and buying patterns from Shopify.",
+      bodyP1: "Great first pick. Here's what other customers added next — chosen to go with what you already have.",
       cta: cta[1],
       brandContext,
     },
     {
       id: "beacon-lifecycle-soft-nudge",
       source: "beacon",
-      name: "BeaconAI lifecycle nudge",
+      name: "Gentle nudge",
       subject: "Picked for where you are now",
-      previewText: `A measured lifecycle template using ${brand}'s current catalog signals.`,
+      previewText: "A few things picked for you.",
       bodyH2: "A small nudge, matched to your timing.",
-      bodyP1: "Use a softer message when the recommendation is emerging, while still grounding the copy in real product language and customer timing.",
+      bodyP1: "No rush — just a few picks we think fit what you've been shopping for.",
       cta: cta[2],
       brandContext,
     },

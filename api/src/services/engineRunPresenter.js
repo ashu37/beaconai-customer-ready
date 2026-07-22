@@ -1,3 +1,12 @@
+// C4b: belt-and-braces tautology guard. The narration service's templated
+// fallback sentence ("This play targets the <play_id> opportunity...") can slip
+// through even without used_fallback set; reject any guarded narration carrying it.
+const TAUTOLOGY_THESIS = /^This play targets the .* opportunity/i;
+
+function isTautologyNarration(narration) {
+  return Boolean(narration && TAUTOLOGY_THESIS.test(String(narration.play_thesis || "")));
+}
+
 function titleizeId(value) {
   return String(value || "recommendation")
     .replace(/[_-]+/g, " ")
@@ -341,7 +350,9 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
   // If the narration service itself fell back, its text is the templated
   // "This play targets the <play_id> opportunity..." sentence — prefer our
   // merchant-language narration instead of surfacing that tautology.
-  const guardedNarration = rawGuardedNarration && !rawGuardedNarration.used_fallback
+  const guardedNarration = rawGuardedNarration
+    && !rawGuardedNarration.used_fallback
+    && !isTautologyNarration(rawGuardedNarration)
     ? rawGuardedNarration
     : null;
   const fallbackNarration = narrationForCard(card, role);
@@ -392,7 +403,9 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
 
 function normalizeRejectedCard(card, index, narrationMap) {
   const id = card.play_id || `considered-${index + 1}`;
-  const guardedNarration = narrationFor(narrationMap, id, "considered");
+  const rawGuardedNarration = narrationFor(narrationMap, id, "considered");
+  // C4b: reject the templated tautology sentence here too.
+  const guardedNarration = isTautologyNarration(rawGuardedNarration) ? null : rawGuardedNarration;
   return {
     id,
     play_id: id,

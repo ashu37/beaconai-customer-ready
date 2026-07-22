@@ -4,6 +4,21 @@ import { api } from "./api";
 import { baseEngineRun } from "./engineMock";
 import "./styles.css";
 
+// C3: play → starting-copy template. Merchants who never touch template choice
+// still get play-appropriate copy. Anything unmapped falls back to the soft nudge.
+const PLAY_TEMPLATE_MAP = {
+  winback_dormant_cohort: "beacon-winback-clean",
+  winback_21_45: "beacon-winback-clean",
+  at_risk_repeat_buyer_rescue: "beacon-winback-clean",
+  cohort_journey_first_to_second: "beacon-second-purchase",
+};
+const DEFAULT_STARTING_TEMPLATE = "beacon-lifecycle-soft-nudge";
+
+function templateForPlay(play) {
+  const key = play?.play_id || play?.id;
+  return PLAY_TEMPLATE_MAP[key] || DEFAULT_STARTING_TEMPLATE;
+}
+
 function StatCard({ label, value, detail }) {
   return (
     <div className="stat-card">
@@ -626,27 +641,25 @@ function CohortRetentionChart({ curves }) {
   );
 }
 
-function CampaignPackages({ campaigns, onCreateInKlaviyo, onSendCampaign, publishingId, sendingId, audiencePreviews, onPreviewAudience, previewingId }) {
-  const [selectedId, setSelectedId] = useState(campaigns[0]?.id || "");
-  const selected = campaigns.find((item) => item.id === selectedId) || campaigns[0];
+// C2: Send step — detail for a single selected campaign (no internal list; the
+// master-detail left rail owns selection now).
+function CampaignSendPanel({ campaign, onCreateInKlaviyo, onSendCampaign, publishingId, sendingId, audiencePreviews, onPreviewAudience, previewingId }) {
+  const selected = campaign;
   const preview = audiencePreviews[selected?.id] || selected?.klaviyoAudience || null;
 
   if (!selected) {
-    return <div className="empty-panel">No campaign packages are ready yet.</div>;
+    return <div className="empty-panel">No campaign package is ready yet.</div>;
   }
 
   return (
-    <div className="campaign-layout">
-      <div className="campaign-list">
-        {campaigns.map((item) => (
-          <button key={item.id} className={`campaign-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => setSelectedId(item.id)}>
-            <span className={`campaign-status ${item.status}`}>{item.status}</span>
-            <strong>{item.playTitle}</strong>
-            <small>{item.customers} customers</small>
-          </button>
-        ))}
-      </div>
+    <div className="campaign-send">
       <div className="campaign-detail-panel">
+        <div className="blast-radius">
+          Sends to {selected.customers} matched customers through your Klaviyo account.
+        </div>
+        <div className="managed-note">
+          This email is managed by BeaconAI — edit the copy here before sending. It will appear in Klaviyo as a code template.
+        </div>
         <div className="pkg-origin">
           <span>From play</span>
           <strong>{selected.playTitle}</strong>
@@ -826,6 +839,9 @@ function CampaignReviewPane({
   draft,
   onChange,
   onRestoreField,
+  onRefreshBrandContext,
+  onRefreshTemplates,
+  klaviyoFailed,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -867,6 +883,8 @@ function CampaignReviewPane({
     refreshPreview(draft);
   };
 
+  const [changeOpen, setChangeOpen] = useState(false);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const senderName = brandContext?.brandName || "Your store";
   const editFields = [
     { field: "subject", label: "Subject", type: "input" },
@@ -876,50 +894,53 @@ function CampaignReviewPane({
     { field: "bodyP2", label: "Support line (optional)", type: "textarea" },
     { field: "cta", label: "Button label", type: "input" },
   ];
+  const startingName = selectedTemplate?.name || "—";
 
   return (
     <div className="review-pane">
-      <div className="template-picker">
-        <div className="section-kicker">Choose a layout</div>
-        <div className="template-grid">
-          {beaconTemplates.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
-              onClick={() => onChooseTemplate(item.id)}
-            >
-              <span>BeaconAI</span>
-              <strong>{item.name}</strong>
-              <small>{item.previewText}</small>
-            </button>
-          ))}
-        </div>
-
-        <button
-          type="button"
-          className="advanced-toggle"
-          onClick={() => setAdvancedOpen((prev) => !prev)}
-        >
-          Advanced: pair with an existing Klaviyo template
-        </button>
-        {advancedOpen ? (
-          <div className="advanced-panel">
-            <p className="advanced-help">Pairing keeps your Klaviyo template's name on the campaign. The email content below is still what gets sent.</p>
-            <div className="template-grid">
-              {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
-                  onClick={() => onChooseTemplate(item.id)}
-                >
-                  <span>Klaviyo</span>
-                  <strong>{item.name}</strong>
-                  <small>{item.previewText}</small>
-                </button>
-              )) : <div className="empty-panel">No existing Klaviyo templates. Connect Klaviyo and refresh to pair one.</div>}
+      {/* C4d: brand voice collapsed to a single line, expandable inline. */}
+      {brandContext ? (
+        <div className="voice-chip">
+          <button type="button" className="voice-chip-line" onClick={() => setVoiceOpen((p) => !p)}>
+            Voice: {brandContext.brandName} · {brandContext.category}
+            <span className="voice-chip-toggle">{voiceOpen ? "Hide" : "Details"}</span>
+          </button>
+          {voiceOpen ? (
+            <div className="voice-chip-body">
+              <p>
+                Using {brandContext.productLanguage?.bestSellers?.[0]?.title || "top products"}
+                {brandContext.productLanguage?.productTypes?.[0]?.name ? `, ${brandContext.productLanguage.productTypes[0].name}` : ""}
+                {" "}and store words like {(brandContext.messaging?.useWords || []).slice(0, 5).join(", ") || "catalog language"}.
+              </p>
+              <button type="button" className="btn small" onClick={onRefreshBrandContext}>Refresh</button>
             </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {klaviyoFailed ? (
+        <div className="notice-line">Couldn't reach Klaviyo for your existing templates — using BeaconAI starting copy.</div>
+      ) : null}
+
+      {/* C3: auto-selected starting copy, one line + inline change. */}
+      <div className="starting-copy">
+        <span className="starting-copy-line">
+          Starting copy: <strong>{startingName}</strong>
+          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
+        </span>
+        {changeOpen ? (
+          <div className="starting-copy-options">
+            {beaconTemplates.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`radio-card ${selectedTemplate?.id === item.id ? "selected" : ""}`}
+                onClick={() => { onChooseTemplate(item.id); setChangeOpen(false); }}
+              >
+                <strong>{item.name}</strong>
+                <small>{item.previewText}</small>
+              </button>
+            ))}
           </div>
         ) : null}
       </div>
@@ -951,6 +972,35 @@ function CampaignReviewPane({
                 )}
               </label>
             ))}
+
+            {/* C3: Advanced Klaviyo pairing moves to the bottom of the Copy step. */}
+            <button
+              type="button"
+              className="advanced-toggle"
+              onClick={() => setAdvancedOpen((prev) => !prev)}
+            >
+              Advanced: pair with an existing Klaviyo template
+            </button>
+            {advancedOpen ? (
+              <div className="advanced-panel">
+                <p className="advanced-help">Pairing keeps your Klaviyo template's name on the campaign. The email content below is still what gets sent.</p>
+                <button type="button" className="btn small" onClick={onRefreshTemplates}>Refresh templates</button>
+                <div className="template-grid">
+                  {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
+                      onClick={() => onChooseTemplate(item.id)}
+                    >
+                      <span>Klaviyo</span>
+                      <strong>{item.name}</strong>
+                      <small>{item.previewText}</small>
+                    </button>
+                  )) : <div className="empty-panel">No existing Klaviyo templates. Connect Klaviyo and refresh to pair one.</div>}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="review-preview-pane">
@@ -1185,7 +1235,8 @@ function App() {
   const [placeholderRun, setPlaceholderRun] = useState(null);
   const [atulEngineResult, setAtulEngineResult] = useState(null);
   const [klaviyoTemplates, setKlaviyoTemplates] = useState([]);
-  const [templateSource, setTemplateSource] = useState("");
+  // C3: true only when Klaviyo is connected but its template fetch failed/fell back.
+  const [klaviyoTemplatesFailed, setKlaviyoTemplatesFailed] = useState(false);
   const [selectedTemplateByPlay, setSelectedTemplateByPlay] = useState({});
   const [draftEditsByPlay, setDraftEditsByPlay] = useState({});
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
@@ -1195,6 +1246,9 @@ function App() {
   const [audiencePreviewsByCampaign, setAudiencePreviewsByCampaign] = useState({});
   const [previewingCampaignId, setPreviewingCampaignId] = useState("");
   const [reviewPlayId, setReviewPlayId] = useState("");
+  // C2: which stepper step (copy | audience | send) the workspace shows.
+  const [workspaceStep, setWorkspaceStep] = useState("copy");
+  const rightPaneRef = useRef(null);
   const [selectedBriefingPlayId, setSelectedBriefingPlayId] = useState("");
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
   const [campaignPackages, setCampaignPackages] = useState([]);
@@ -1250,6 +1304,22 @@ function App() {
   const approvedCount = finalCampaigns.filter((item) => item.status === "created").length;
   const sentCampaigns = finalCampaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
   const readyToSendCampaigns = finalCampaigns.filter((item) => !(item.status === "created" || item.klaviyoSendJobId));
+
+  // C1: unified master-detail item list. Every campaign belongs to exactly one
+  // group; grouping is derived from status so nothing renders twice.
+  const campaignGroupFor = (item) => {
+    if (item.status === "created" || item.klaviyoSendJobId) return "sent";
+    if (selectedTemplateByPlay[item.id]) return "ready";
+    return "review";
+  };
+  const campaignItems = finalCampaigns.map((item) => ({ item, group: campaignGroupFor(item) }));
+  const campaignGroups = [
+    { key: "review", label: "Needs review", rows: campaignItems.filter((c) => c.group === "review") },
+    { key: "ready", label: "Ready to send", rows: campaignItems.filter((c) => c.group === "ready") },
+    { key: "sent", label: "Sent", rows: campaignItems.filter((c) => c.group === "sent") },
+  ].filter((g) => g.rows.length);
+  const selectedCampaign = finalCampaigns.find((item) => item.id === reviewPlay?.id) || null;
+  const selectedCampaignGroup = selectedCampaign ? campaignGroupFor(selectedCampaign) : null;
   const productCount = counts.products ?? engineInput?.products?.length ?? placeholderRun?.input_summary?.products ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
@@ -1398,6 +1468,26 @@ function App() {
     }
   }, [onboardingHidden, onboardingReadyToFinish]);
 
+  // C3: auto-apply the mapped starting template when a reviewable play has none.
+  // Only fires once BeaconAI templates have loaded and the play is untouched.
+  useEffect(() => {
+    if (!reviewPlay || selectedTemplateByPlay[reviewPlay.id]) return;
+    const wantedId = templateForPlay(reviewPlay);
+    const match = beaconTemplates.find((item) => item.id === wantedId) || beaconTemplates[0];
+    if (match) chooseTemplate(reviewPlay.id, match.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewPlay?.id, beaconTemplates.length, selectedTemplateByPlay]);
+
+  // C1: reset the right pane to the top whenever the selected item changes, so
+  // switching items never leaves the merchant scrolled past their own work.
+  // C2: also default the stepper — created campaigns open on Send, others on Copy.
+  useEffect(() => {
+    if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
+    const created = selectedCampaign && (selectedCampaign.status === "created" || selectedCampaign.klaviyoSendJobId);
+    setWorkspaceStep(created ? "send" : "copy");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewPlayId]);
+
   async function runStep(label, fn) {
     setLoading(true);
     setError("");
@@ -1507,7 +1597,9 @@ function App() {
   async function loadKlaviyoTemplates() {
     const result = await runStep("Klaviyo templates load", () => api.getKlaviyoTemplates());
     setKlaviyoTemplates(result.templates || []);
-    setTemplateSource(result.source || "");
+    // Only flag a failure when connected to Klaviyo but its own templates didn't load.
+    const hasKlaviyoTemplates = (result.templates || []).some((item) => item.source === "klaviyo");
+    setKlaviyoTemplatesFailed(Boolean(status.klaviyo) && result.source !== "klaviyo" && !hasKlaviyoTemplates);
     if (result.brandContext) setBrandContext(result.brandContext);
     return result;
   }
@@ -1942,123 +2034,142 @@ function App() {
           )}
 
           {activePage === "campaigns" && (
-            <>
-              <div className="campaign-section">
-                <div className="section-header">
-                  <span className="section-title">Needs review</span>
-                  <span className="section-meta">{reviewPendingCount} awaiting a template</span>
-                </div>
-              <div className="queue-layout">
-                <div className="draft-list">
-                  <div className="section-kicker">Recommendations</div>
-                  {reviewablePlays.length ? reviewablePlays.map((play) => {
-                    const chosen = klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]);
+            finalCampaigns.length ? (
+              <div className="workspace">
+                {/* C1: left rail — every campaign in one grouped list. */}
+                <aside className="workspace-rail">
+                  {campaignGroups.map((group) => (
+                    <div key={group.key} className="rail-group">
+                      <div className="rail-group-head">{group.label}</div>
+                      {group.rows.map(({ item, group: g }) => (
+                        <button
+                          key={item.id}
+                          className={`rail-row ${reviewPlay?.id === item.id ? "selected" : ""} ${flashCampaignId === item.id ? "flash" : ""}`}
+                          onClick={() => setReviewPlayId(item.id)}
+                        >
+                          <span className={`rail-dot ${g}`} />
+                          <span className="rail-row-body">
+                            <strong>{item.playTitle}</strong>
+                            <small>{formatAudience(item.customers)} customers</small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                </aside>
+
+                {/* C2: right pane — single stepper workspace for the selected item. */}
+                <section className="workspace-pane" ref={rightPaneRef}>
+                  {reviewPlay && selectedCampaign ? (() => {
+                    const hasTemplate = Boolean(selectedTemplateByPlay[reviewPlay.id]);
+                    const created = selectedCampaignGroup === "sent";
+                    const steps = [
+                      { key: "copy", label: "Copy", enabled: true },
+                      { key: "audience", label: "Audience", enabled: hasTemplate },
+                      { key: "send", label: "Send", enabled: hasTemplate },
+                    ];
+                    const preview = audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null;
                     return (
-                      <button key={play.id} className={`draft-card ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`} onClick={() => setReviewPlayId(play.id)}>
-                        <div className="draft-state"><span className="dot" /> {chosen ? "Template selected" : "Needs template"}</div>
-                        <h3>{play.play_name || play.play_id}</h3>
-                        <p>{play.audience_archetype || "Recommended audience"}</p>
-                      </button>
-                    );
-                  }) : <div className="empty-panel">Approve a play in Briefing before reviewing templates.</div>}
-                </div>
+                      <div className="workspace-card">
+                        <div className="workspace-head">
+                          <h3>{reviewPlay.play_name || reviewPlay.play_id}</h3>
+                          {reviewPlay.play_one_liner ? <p className="workspace-oneliner">{reviewPlay.play_one_liner}</p> : null}
+                          <span className="workspace-audience">{formatAudience(reviewPlay.audience_size)} customers</span>
+                        </div>
 
-                <div className="draft-detail">
-                  <div className="template-detail-head">
-                    <div>
-                      <div className="section-kicker">Selected play</div>
-                      <h3>{reviewPlay?.play_name || "No play selected"}</h3>
-                      <p>{reviewPlay?.mechanism || "Choose a play to see template options."}</p>
-                    </div>
-                    <button className="btn" onClick={loadKlaviyoTemplates}>Refresh templates</button>
-                  </div>
+                        <div className="stepper">
+                          {steps.map((step) => (
+                            <button
+                              key={step.key}
+                              type="button"
+                              className={`step ${workspaceStep === step.key ? "active" : ""}`}
+                              disabled={!step.enabled}
+                              onClick={() => step.enabled && setWorkspaceStep(step.key)}
+                            >
+                              {step.label}
+                            </button>
+                          ))}
+                        </div>
 
-                  {templateSource ? <div className="success-box">Templates loaded from {templateSource}.</div> : null}
+                        {workspaceStep === "copy" ? (
+                          beaconTemplates.length ? (
+                            <CampaignReviewPane
+                              play={reviewPlay}
+                              brandContext={brandContext}
+                              beaconTemplates={beaconTemplates}
+                              klaviyoTemplates={klaviyoOnlyTemplates}
+                              selectedTemplate={selectedTemplate}
+                              onChooseTemplate={(templateId) => chooseTemplate(reviewPlay.id, templateId)}
+                              draft={selectedDraft}
+                              onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
+                              onRestoreField={(field) => restoreDraftField(reviewPlay.id, reviewPlay, field)}
+                              onRefreshBrandContext={loadBrandContext}
+                              onRefreshTemplates={loadKlaviyoTemplates}
+                              klaviyoFailed={klaviyoTemplatesFailed}
+                            />
+                          ) : (
+                            <div className="empty-panel">Loading starting copy…</div>
+                          )
+                        ) : null}
 
-                  {brandContext ? (
-                    <div className="brand-context-box">
-                      <div>
-                        <span className="section-kicker">Brand voice from Shopify</span>
-                        <h4>{brandContext.brandName} · {brandContext.category}</h4>
-                        <p>
-                          Using {brandContext.productLanguage?.bestSellers?.[0]?.title || "top products"},
-                          {brandContext.productLanguage?.productTypes?.[0]?.name ? ` ${brandContext.productLanguage.productTypes[0].name},` : ""}
-                          {" "}and store words like {(brandContext.messaging?.useWords || []).slice(0, 5).join(", ") || "catalog language"}.
-                        </p>
-                      </div>
-                      <button className="btn small" onClick={loadBrandContext}>Refresh</button>
-                    </div>
-                  ) : null}
-
-                  {reviewPlay ? (
-                    beaconTemplates.length ? (
-                      <>
-                        <CampaignReviewPane
-                          play={reviewPlay}
-                          brandContext={brandContext}
-                          beaconTemplates={beaconTemplates}
-                          klaviyoTemplates={klaviyoOnlyTemplates}
-                          selectedTemplate={selectedTemplate}
-                          onChooseTemplate={(templateId) => chooseTemplate(reviewPlay.id, templateId)}
-                          draft={selectedDraft}
-                          onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
-                          onRestoreField={(field) => restoreDraftField(reviewPlay.id, reviewPlay, field)}
-                        />
-                        {selectedTemplate ? (
-                          <div className="managed-note">
-                            This email is managed by BeaconAI — edit the copy here before sending. It will appear in Klaviyo as a code template.
+                        {workspaceStep === "audience" ? (
+                          <div className="audience-step">
+                            <div className="segment-spec">
+                              <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
+                              <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
+                            </div>
+                            <div className="recipient-preview">
+                              <div className="recipient-preview-head">
+                                <div>
+                                  <span className="section-meta">Recipient preview</span>
+                                  <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
+                                </div>
+                                <button className="btn" onClick={() => previewCampaignAudience(selectedCampaign)} disabled={previewingCampaignId === selectedCampaign.id}>
+                                  {previewingCampaignId === selectedCampaign.id ? "Loading..." : "Show emails"}
+                                </button>
+                              </div>
+                              {preview?.recipients?.length ? (
+                                <div className="recipient-list">
+                                  {preview.recipients.slice(0, 25).map((recipient) => (
+                                    <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
+                                      <strong>{recipient.email}</strong>
+                                      <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
+                                    </div>
+                                  ))}
+                                  {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
+                                </div>
+                              ) : preview ? (
+                                <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
+                              ) : null}
+                            </div>
+                            <div className="step-nav">
+                              <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Continue to Send</button>
+                            </div>
                           </div>
                         ) : null}
-                      </>
-                    ) : (
-                      <div className="empty-panel">Fetch templates to show BeaconAI layouts and existing Klaviyo templates.</div>
-                    )
-                  ) : null}
-                </div>
-              </div>
-              </div>
 
-              <div className="campaign-section">
-                <div className="section-header">
-                  <span className="section-title">Ready to send</span>
-                  <span className="section-meta">{readyToSendCampaigns.length} in the pipeline</span>
-                </div>
-                {readyToSendCampaigns.length ? (
-                  <CampaignPackages
-                    campaigns={readyToSendCampaigns}
-                    onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
-                    onSendCampaign={sendKlaviyoCampaign}
-                    publishingId={publishingCampaignId}
-                    sendingId={sendingCampaignId}
-                    audiencePreviews={audiencePreviewsByCampaign}
-                    onPreviewAudience={previewCampaignAudience}
-                    previewingId={previewingCampaignId}
-                  />
-                ) : (
-                  <div className="empty-panel">Pick a template above to assemble a campaign package.</div>
-                )}
-              </div>
-
-              <div className="campaign-section">
-                <div className="section-header">
-                  <span className="section-title">Sent</span>
-                  <span className="section-meta">{sentCampaigns.length} sent</span>
-                </div>
-                {sentCampaigns.length ? (
-                  <div className="campaign-list">
-                    {sentCampaigns.map((item) => (
-                      <div key={item.id} className="campaign-item">
-                        <span className="campaign-status created">Sent</span>
-                        <strong>{item.playTitle}</strong>
-                        <small>{formatAudience(item.customers)} customers</small>
+                        {workspaceStep === "send" ? (
+                          <CampaignSendPanel
+                            campaign={selectedCampaign}
+                            onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
+                            onSendCampaign={sendKlaviyoCampaign}
+                            publishingId={publishingCampaignId}
+                            sendingId={sendingCampaignId}
+                            audiencePreviews={audiencePreviewsByCampaign}
+                            onPreviewAudience={previewCampaignAudience}
+                            previewingId={previewingCampaignId}
+                          />
+                        ) : null}
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-panel">Campaigns you send will appear here.</div>
-                )}
+                    );
+                  })() : (
+                    <div className="empty-panel">Select a campaign from the left to start.</div>
+                  )}
+                </section>
               </div>
-            </>
+            ) : (
+              <div className="empty-panel">Approve a play in Briefing to start your first campaign.</div>
+            )
           )}
 
           {activePage === "results" && (
