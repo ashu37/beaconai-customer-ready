@@ -289,6 +289,25 @@ function formatAudience(value) {
   return value?.toLocaleString?.() || "—";
 }
 
+// "Last updated" for the briefing: a compact relative label + the exact
+// date/time (used as a tooltip). Returns null for an unparseable/missing date.
+function formatUpdatedAt(iso) {
+  if (!iso) return null;
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return null;
+  const diffMs = Date.now() - then.getTime();
+  const min = Math.round(diffMs / 60000);
+  let relative;
+  if (min < 1) relative = "just now";
+  else if (min < 60) relative = `${min}m ago`;
+  else if (min < 1440) relative = `${Math.round(min / 60)}h ago`;
+  else relative = `${Math.round(min / 1440)}d ago`;
+  const absolute = then.toLocaleString("en-US", {
+    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+  });
+  return { relative, absolute };
+}
+
 function moneyPrefix(currency) {
   return currency === "USD" || !currency ? "$" : `${currency} `;
 }
@@ -335,7 +354,7 @@ function confidenceTone(value) {
 
 const CONFIDENCE_TITLE = "How strongly your store's data supports this play. Improves as more orders sync.";
 
-function RecommendationRow({ play, selected, onSelect }) {
+function RecommendationRow({ play, selected, approved = false, onSelect }) {
   const confidence = play.confidence || play.confidence_label || play.model_confidence || null;
   const confidenceLabel = readableMetaLabel(confidence);
   const evidenceLine = play.evidence_line || null;
@@ -355,7 +374,7 @@ function RecommendationRow({ play, selected, onSelect }) {
               {confidenceLabel} confidence
             </span>
           ) : null}
-          {selectedActionable ? <span>✓ Approved</span> : null}
+          {approved ? <span className="approved-pill">✓ Approved</span> : null}
         </span>
         {evidenceLine ? <span className="recommendation-evidence-line">{evidenceLine}</span> : null}
       </span>
@@ -364,7 +383,7 @@ function RecommendationRow({ play, selected, onSelect }) {
   );
 }
 
-function RecommendationDetail({ play, onSendToReview, onViewEvidence, showAdvanced = false }) {
+function RecommendationDetail({ play, onSendToReview, onViewEvidence, approved = false, showAdvanced = false }) {
   const [activeTab, setActiveTab] = useState("thesis");
 
   if (!play) {
@@ -535,10 +554,19 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, showAdvanc
         </div>
       ) : (
         <div className="recommendation-approve-block">
-          <p className="approve-note">Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email.</p>
+          <p className="approve-note">
+            {approved
+              ? "Approved — it's in your campaign pipeline. Review the copy and pick a template in Campaigns."
+              : "Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email."}
+          </p>
           <p className="approve-note measurement">We'll track what these customers do for 30 days after send and report it in Results.</p>
           <div className="recommendation-detail-footer">
-            <button className="btn primary" onClick={() => onSendToReview(play)}>Approve & pick template</button>
+            <button
+              className={`btn ${approved ? "approved" : "primary"}`}
+              onClick={() => onSendToReview(play)}
+            >
+              {approved ? "✓ Approved" : "Approve & pick template"}
+            </button>
           </div>
         </div>
       )}
@@ -1320,10 +1348,16 @@ function App() {
   const [campaignPackages, setCampaignPackages] = useState([]);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [flashCampaignId, setFlashCampaignId] = useState("");
+  // Transient confirmation toast: { message, actionLabel?, onAction? }.
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [shopDomainError, setShopDomainError] = useState("");
   const [latestRunChecked, setLatestRunChecked] = useState(false);
   const [latestRunFound, setLatestRunFound] = useState(false);
+  // True when the latest-run fetch FAILED (vs a definitive "no run yet"). An error
+  // must never be read as first-run — that would trigger a full re-sync on refresh.
+  const [latestRunErrored, setLatestRunErrored] = useState(false);
   const [rehydrating, setRehydrating] = useState(Boolean(api.shopDomain));
   const [firstRunStage, setFirstRunStage] = useState(null); // null | syncing | synced | analyzing | done
   const [firstRunError, setFirstRunError] = useState(null); // { phase: "sync"|"engine", message }
@@ -1408,13 +1442,18 @@ function App() {
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
   const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
-  // O3: first-run detection — Shopify connected, no snapshot, no prior run.
+  // O3: first-run detection — Shopify connected, no snapshot, and the latest-run
+  // check DEFINITIVELY returned no run. Never true while rehydrating, on a fetch
+  // error, or once a run exists — so a refresh can't be mistaken for first-run.
   const isFirstRun =
     Boolean(shopDomain) &&
     status.shopify &&
     !hasStoreSnapshot &&
     latestRunChecked &&
-    !latestRunFound;
+    !rehydrating &&
+    !latestRunErrored &&
+    !latestRunFound &&
+    !atulEngineResult;
   const firstRunActive = isFirstRun && ((firstRunStage && firstRunStage !== "done") || Boolean(firstRunError));
   const onboardingReadyToFinish = status.shopify && status.klaviyo;
   const briefingRows = workflowPlays.map((play) => ({ play, lane: classifyPlayLane(play) }));
@@ -1433,6 +1472,7 @@ function App() {
     experimentRows.length === 0 &&
     consideredRows.length > 0;
   const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
+  const briefingUpdatedAt = formatUpdatedAt(atulEngineResult?.presentedRun?.generated_at);
   const briefingHeading = !workflowPlays.length
     ? "Run your briefing to see recommendations"
     : readyRowsCount
@@ -1444,6 +1484,11 @@ function App() {
     preloadStoreSnapshot();
     loadBrandContext();
     loadLatestRun();
+  }, []);
+
+  // Clear any pending toast timer on unmount.
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   // Keep the selected campaign valid against the APPROVED set (the campaigns view).
@@ -1696,6 +1741,7 @@ function App() {
     setRehydrating(true);
     try {
       const result = await api.getLatestEngineRun();
+      setLatestRunErrored(false);
       if (result.found) {
         applyEngineResult({ presentedRun: result.presentedRun });
         setLatestRunFound(true);
@@ -1703,7 +1749,9 @@ function App() {
         setLatestRunFound(false);
       }
     } catch (_) {
-      // Rehydration is best-effort; the merchant can still run the briefing.
+      // Fetch failed — this is NOT "no run yet". Flag the error so first-run
+      // detection holds instead of kicking off a full sync on a transient blip.
+      setLatestRunErrored(true);
       setLatestRunFound(false);
     } finally {
       setLatestRunChecked(true);
@@ -1822,34 +1870,48 @@ function App() {
     startOAuth("shopify");
   }
 
+  function showToast(next) {
+    setToast(next);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 6000);
+  }
+
+  // Approve toggles a play into (or out of) Campaigns. Stays on the briefing —
+  // the merchant can approve several, then review copy in Campaigns via the toast link.
   function greenlightEnginePlay(play) {
     const playId = play.play_id || play.id;
-    setCampaignPackages((prev) => {
-      if (prev.some((item) => item.id === playId)) return prev;
-      return [
-        ...prev,
-        {
-          id: playId,
-          playTitle: play.play_name || playId,
-          status: "building",
-          builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          customers: play.audience_size || 0,
-          segment: play.audience_archetype || "Recommended audience",
-          subject: "Placeholder subject from engine play",
-          previewText: "Waiting for real engine copy.",
-          bodyH2: play.play_name || play.play_id,
-          bodyP1: play.mechanism,
-          bodyP2: "Replace this package with Atul engine output when available.",
-          cta: "Review package",
-          sendTime: "Manual review",
-          suppression: "Recent purchasers, unsubscribes",
-        },
-      ];
+    const alreadyApproved = campaignPackages.some((item) => item.id === playId);
+
+    if (alreadyApproved) {
+      setCampaignPackages((prev) => prev.filter((item) => item.id !== playId));
+      showToast({ message: "Removed from Campaigns." });
+      return;
+    }
+
+    setCampaignPackages((prev) => [
+      ...prev,
+      {
+        id: playId,
+        playTitle: play.play_name || playId,
+        status: "building",
+        builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        customers: play.audience_size || 0,
+        segment: play.audience_archetype || "Recommended audience",
+        subject: "Placeholder subject from engine play",
+        previewText: "Waiting for real engine copy.",
+        bodyH2: play.play_name || play.play_id,
+        bodyP1: play.mechanism,
+        bodyP2: "Replace this package with Atul engine output when available.",
+        cta: "Review package",
+        sendTime: "Manual review",
+        suppression: "Recent purchasers, unsubscribes",
+      },
+    ]);
+    showToast({
+      message: "Approved. Review the copy and pick a template in Campaigns.",
+      actionLabel: "Go to Campaigns →",
+      onAction: () => { setReviewPlayId(playId); setActivePage("campaigns"); setToast(null); },
     });
-    setReviewPlayId(playId);
-    setActivePage("campaigns");
-    setFlashCampaignId(playId);
-    setTimeout(() => setFlashCampaignId((current) => (current === playId ? "" : current)), 2200);
   }
 
   function authorizeCampaignPackage(campaignId) {
@@ -2037,6 +2099,16 @@ function App() {
         </header>
 
         <section className="page">
+          {toast ? (
+            <div className="toast" role="status" aria-live="polite">
+              <span className="toast-check" aria-hidden="true">✓</span>
+              <span className="toast-message">{toast.message}</span>
+              {toast.actionLabel && toast.onAction ? (
+                <button type="button" className="toast-action" onClick={toast.onAction}>{toast.actionLabel}</button>
+              ) : null}
+              <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => setToast(null)}>×</button>
+            </div>
+          ) : null}
           {error ? <div className="error-box">{error}</div> : null}
           {loading && activePage === "briefing" ? <BriefingWorking /> : null}
 
@@ -2090,7 +2162,14 @@ function App() {
                     <strong>{recommendedRows.length}</strong> recommended now{experimentRows.length ? <> · <strong>{experimentRows.length}</strong> experiments</> : null} · <strong>{consideredRows.length}</strong> not ready yet.
                   </p>
                 </div>
-                <button className="btn" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh briefing</button>
+                <div className="briefing-refresh">
+                  {briefingUpdatedAt ? (
+                    <span className="briefing-updated" title={`Last updated ${briefingUpdatedAt.absolute}`}>
+                      Updated {briefingUpdatedAt.relative}
+                    </span>
+                  ) : null}
+                  <button className="btn" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh briefing</button>
+                </div>
               </div>
               <div className="briefing-workbench">
                 <div className="recommendation-list">
@@ -2107,6 +2186,7 @@ function App() {
                           key={play.play_id}
                           play={play}
                           selected={selectedBriefingRow?.play.play_id === play.play_id}
+                          approved={approvedPlayIdSet.has(play.play_id || play.id)}
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
@@ -2127,6 +2207,7 @@ function App() {
                             key={play.play_id}
                             play={play}
                             selected={selectedBriefingRow?.play.play_id === play.play_id}
+                            approved={approvedPlayIdSet.has(play.play_id || play.id)}
                             onSelect={setSelectedBriefingPlayId}
                           />
                         ))}
@@ -2158,6 +2239,7 @@ function App() {
                   play={selectedBriefingRow?.play}
                   onSendToReview={greenlightEnginePlay}
                   onViewEvidence={setSelectedEvidence}
+                  approved={selectedBriefingRow ? approvedPlayIdSet.has(selectedBriefingRow.play.play_id || selectedBriefingRow.play.id) : false}
                   showAdvanced={showAdvanced}
                 />
               </div>
