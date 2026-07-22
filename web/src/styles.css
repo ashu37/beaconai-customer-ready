@@ -309,12 +309,37 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .review-field input, .review-field textarea { width: 100%; border: 1px solid var(--rule); border-radius: 5px; padding: 11px 12px; color: var(--ink-strong); background: #fbfaf7; font: inherit; font-weight: 400; resize: vertical; }
 .review-field input:focus, .review-field textarea:focus { outline: 2px solid rgba(224, 164, 55, .28); border-color: var(--accent); background: #ffffff; }
 .review-preview-pane { display: grid; gap: 14px; justify-items: center; position: sticky; top: 16px; align-self: start; }
-.mock-inbox-row { width: 100%; display: grid; gap: 3px; padding: 12px 14px; background: #ffffff; border: 1px solid var(--rule); border-radius: 8px; }
-.inbox-sender { font-size: 13px; font-weight: 700; color: var(--ink-strong); }
-.inbox-subject { font-size: 13px; font-weight: 700; color: var(--ink); }
-.inbox-preview { font-size: 12px; color: var(--muted); }
-.phone-frame { width: 375px; max-width: 100%; height: 640px; border: 12px solid #1c1c1c; border-radius: 34px; overflow: hidden; background: #1c1c1c; box-shadow: 0 8px 28px rgba(16,16,16,.22); }
-.phone-frame-iframe { width: 375px; height: 616px; border: 0; background: #ffffff; display: block; }
+
+/* Inbox / Email toggle on the phone */
+.preview-toggle { display: inline-flex; border: 1px solid var(--rule); border-radius: 999px; padding: 3px; background: #ffffff; }
+.preview-toggle-btn { border: 0; background: none; color: var(--muted); font-size: 12px; font-weight: 600; padding: 5px 16px; border-radius: 999px; cursor: pointer; }
+.preview-toggle-btn.active { background: var(--accent); color: #101010; }
+
+/* Phone frame — true 375×730 mobile viewport */
+.phone-frame { width: 375px; max-width: 100%; height: 730px; border: 12px solid #1c1c1c; border-radius: 40px; overflow: hidden; background: #1c1c1c; box-shadow: 0 8px 28px rgba(16,16,16,.22); display: flex; flex-direction: column; }
+.phone-frame-iframe { width: 100%; flex: 1; border: 0; background: #ffffff; display: block; }
+
+/* Inbox mode — iOS-Mail-style list */
+.phone-inbox { width: 100%; height: 100%; background: #ffffff; overflow-y: auto; }
+.phone-inbox-title { font-size: 22px; font-weight: 800; color: var(--ink-strong); padding: 16px 16px 10px; }
+.inbox-mail-row { display: flex; gap: 10px; padding: 12px 14px; border-top: 1px solid #eee7dc; }
+.inbox-mail-row.unread { background: #fffaf2; }
+.inbox-mail-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); margin-top: 6px; flex: none; }
+.inbox-mail-dot.placeholder { background: transparent; }
+.inbox-mail-main { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.inbox-mail-toprow { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.inbox-mail-sender { font-size: 15px; font-weight: 700; color: var(--ink-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-mail-sender.muted { font-weight: 600; color: var(--ink); }
+.inbox-mail-time { font-size: 12px; color: var(--muted); flex: none; }
+.inbox-mail-subject { font-size: 14px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-mail-subject.muted { font-weight: 500; color: var(--ink); }
+.inbox-mail-preview { font-size: 13px; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Email mode — mail-client header bar above the rendered body */
+.phone-email { width: 100%; height: 100%; display: flex; flex-direction: column; background: #ffffff; }
+.phone-email-header { padding: 12px 14px; border-bottom: 1px solid #eee7dc; background: #fbfaf7; flex: none; }
+.phone-email-sender { font-size: 13px; font-weight: 700; color: var(--ink-strong); }
+.phone-email-subject { font-size: 14px; color: var(--ink); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-status { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
 .managed-note { margin-top: 18px; padding: 14px 16px; border-radius: 5px; background: var(--accent-soft); color: #9a4d00; border: 1px solid rgba(240,138,36,.28); font-size: 13px; line-height: 1.5; }
 
@@ -362,7 +387,7 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .blast-radius { background: var(--surface-2); border: 1px solid rgba(240,138,36,.28); border-left: 2px solid var(--accent); border-radius: 5px; padding: 12px 14px; margin-bottom: 14px; color: var(--ink); font-size: 13px; }
 .campaign-send .campaign-detail-panel { padding: 0; border: 0; }
 .audience-step { display: grid; gap: 4px; }
-.step-nav { margin-top: 18px; }
+.step-nav { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
 .notice-line { font-size: 13px; color: var(--muted); background: #fbfaf7; border: 1px solid var(--rule); border-radius: 5px; padding: 10px 13px; margin-bottom: 14px; }
 @media (max-width: 1024px) {
   .workspace { grid-template-columns: 1fr; }

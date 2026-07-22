@@ -264,11 +264,13 @@ function buildCampaignFromSelection(play, template, edits = {}) {
   const prompt = play.template_prompt || {};
   const narration = play.narration || {};
   const draft = {
-    id: `${play.id}::${template.id}`,
+    // Key by play id (1:1 with its selected template). A composite id broke every
+    // downstream lookup (grouping, audience preview, klaviyo assets) that keys by play.id.
+    id: play.id,
     playTitle: play.play_name || play.play_id,
     templateName: template.name,
     templateSource: template.source,
-    status: "ready",
+    status: "draft",
     customers: play.audience_size || 0,
     segment: play.audience_archetype || "Recommended audience",
     subject: template.subject || prompt.subject || `${play.play_name} campaign`,
@@ -280,7 +282,7 @@ function buildCampaignFromSelection(play, template, edits = {}) {
     sendTime: "Manual review",
     suppression: "Recent purchasers, unsubscribes, suppressed profiles",
   };
-  return { ...draft, ...edits, id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName, templateSource: draft.templateSource };
+  return { ...draft, ...edits, id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName, templateSource: draft.templateSource, status: draft.status };
 }
 
 function formatAudience(value) {
@@ -846,6 +848,8 @@ function CampaignReviewPane({
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
+  const [previewMode, setPreviewMode] = useState("inbox");
   const debounceRef = useRef(null);
 
   const refreshPreview = React.useCallback(async (currentDraft) => {
@@ -1004,17 +1008,75 @@ function CampaignReviewPane({
           </div>
 
           <div className="review-preview-pane">
-            <div className="mock-inbox-row">
-              <span className="inbox-sender">{senderName}</span>
-              <span className="inbox-subject">{draft.subject}</span>
-              <span className="inbox-preview">{draft.previewText}</span>
+            <div className="preview-toggle" role="tablist" aria-label="Preview mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode === "inbox"}
+                className={`preview-toggle-btn ${previewMode === "inbox" ? "active" : ""}`}
+                onClick={() => setPreviewMode("inbox")}
+              >
+                Inbox
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode === "email"}
+                className={`preview-toggle-btn ${previewMode === "email" ? "active" : ""}`}
+                onClick={() => setPreviewMode("email")}
+              >
+                Email
+              </button>
             </div>
+
             <div className="phone-frame">
-              <iframe
-                title="Email preview"
-                className="phone-frame-iframe"
-                srcDoc={previewHtml}
-              />
+              {previewMode === "inbox" ? (
+                <div className="phone-inbox">
+                  <div className="phone-inbox-title">{senderName}</div>
+                  {/* The merchant's email as the top row — the open/no-open decision. */}
+                  <div className="inbox-mail-row unread">
+                    <span className="inbox-mail-dot" aria-hidden="true" />
+                    <div className="inbox-mail-main">
+                      <div className="inbox-mail-toprow">
+                        <span className="inbox-mail-sender">{senderName}</span>
+                        <span className="inbox-mail-time">now</span>
+                      </div>
+                      <div className="inbox-mail-subject">{draft.subject || "(no subject)"}</div>
+                      <div className="inbox-mail-preview">{draft.previewText || "(no preview text)"}</div>
+                    </div>
+                  </div>
+                  {/* Dummy rows for realism — make the merchant's row read as one of many. */}
+                  {[
+                    { sender: "Orders", subject: "Your receipt", preview: "Thanks for your purchase — here's your order summary.", time: "9:41 AM" },
+                    { sender: "Community", subject: "This week's picks", preview: "Fresh arrivals and a few things we think you'll like.", time: "Yesterday" },
+                  ].map((row) => (
+                    <div key={row.sender} className="inbox-mail-row">
+                      <span className="inbox-mail-dot placeholder" aria-hidden="true" />
+                      <div className="inbox-mail-main">
+                        <div className="inbox-mail-toprow">
+                          <span className="inbox-mail-sender muted">{row.sender}</span>
+                          <span className="inbox-mail-time">{row.time}</span>
+                        </div>
+                        <div className="inbox-mail-subject muted">{row.subject}</div>
+                        <div className="inbox-mail-preview">{row.preview}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="phone-email">
+                  {/* Mail-client header bar — where the subject appears above the body. */}
+                  <div className="phone-email-header">
+                    <div className="phone-email-sender">{senderName}</div>
+                    <div className="phone-email-subject">{draft.subject || "(no subject)"}</div>
+                  </div>
+                  <iframe
+                    title="Email preview"
+                    className="phone-frame-iframe"
+                    srcDoc={previewHtml}
+                  />
+                </div>
+              )}
             </div>
             {previewLoading ? <div className="preview-status">Updating preview…</div> : null}
           </div>
@@ -1239,6 +1301,10 @@ function App() {
   const [klaviyoTemplatesFailed, setKlaviyoTemplatesFailed] = useState(false);
   const [selectedTemplateByPlay, setSelectedTemplateByPlay] = useState({});
   const [draftEditsByPlay, setDraftEditsByPlay] = useState({});
+  // Explicit merchant sign-off (end of stepper) that moves a campaign from
+  // "Needs review" to "Ready to send". Distinct from a template being selected,
+  // which auto-happens on view and only means "has a draft".
+  const [approvedForSend, setApprovedForSend] = useState([]);
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
   const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
   const [publishingCampaignId, setPublishingCampaignId] = useState("");
@@ -1288,9 +1354,11 @@ function App() {
     .map((item) => {
       if (!item) return item;
       const asset = klaviyoAssetsByCampaign[item.id];
+      // draft (in review) → approved (merchant signed off) → created (deployed to Klaviyo).
+      const status = asset ? "created" : approvedForSend.includes(item.id) ? "approved" : "draft";
       return {
         ...item,
-        status: asset ? "created" : authorizedPackageIds.includes(item.id) ? "authorized" : item.status,
+        status,
         klaviyoTemplateId: asset?.templateId || null,
         klaviyoListId: asset?.listId || null,
         klaviyoCampaignId: asset?.campaignId || null,
@@ -1299,20 +1367,21 @@ function App() {
       };
     })
     .filter(Boolean);
-  const reviewPendingCount = reviewablePlays.filter((play) => !selectedTemplateByPlay[play.id]).length;
-  const campaignsPendingCount = finalCampaigns.filter((item) => item.status !== "created").length;
-  const approvedCount = finalCampaigns.filter((item) => item.status === "created").length;
-  const sentCampaigns = finalCampaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
-  const readyToSendCampaigns = finalCampaigns.filter((item) => !(item.status === "created" || item.klaviyoSendJobId));
+  const reviewPendingCount = reviewablePlays.filter((play) => !approvedForSend.includes(play.id)).length;
+  const campaignsPendingCount = reviewPendingCount;
+  const sentCampaigns = finalCampaigns.filter((item) => item.klaviyoSendJobId);
+  const readyToSendCampaigns = finalCampaigns.filter((item) => (item.status === "approved" || item.status === "created") && !item.klaviyoSendJobId);
+  const approvedCount = readyToSendCampaigns.length;
 
-  // C1: unified master-detail item list, keyed off approved/reviewable PLAYS so a
-  // play appears the moment it's approved — even before a template resolves. The
-  // matching finalCampaign (if any) carries send-state; grouping derives from it.
+  // C1: unified master-detail item list, keyed off reviewable PLAYS so a play
+  // appears the moment it's approved in Briefing. Grouping is driven by the
+  // explicit approvedForSend sign-off — NOT by template selection (which
+  // auto-happens on view and only means "has a draft").
   const finalCampaignById = new Map(finalCampaigns.map((item) => [item.id, item]));
   const campaignGroupFor = (play) => {
     const campaign = finalCampaignById.get(play.id);
-    if (campaign && (campaign.status === "created" || campaign.klaviyoSendJobId)) return "sent";
-    if (selectedTemplateByPlay[play.id]) return "ready";
+    if (campaign && campaign.klaviyoSendJobId) return "sent";
+    if (approvedForSend.includes(play.id)) return "ready";
     return "review";
   };
   const campaignItems = reviewablePlays.map((play) => ({
@@ -1396,6 +1465,7 @@ function App() {
       const saved = JSON.parse(raw);
       if (saved.run_id && saved.run_id !== currentRunId) return; // stale → discard
       if (Array.isArray(saved.authorizedPackageIds)) setAuthorizedPackageIds(saved.authorizedPackageIds);
+      if (Array.isArray(saved.approvedForSend)) setApprovedForSend(saved.approvedForSend);
       if (saved.selectedTemplateByPlay) setSelectedTemplateByPlay(saved.selectedTemplateByPlay);
       if (saved.draftEditsByPlay) setDraftEditsByPlay(saved.draftEditsByPlay);
       if (Array.isArray(saved.approvedPlayIds)) setRestoredApprovedPlayIds(saved.approvedPlayIds);
@@ -1444,13 +1514,14 @@ function App() {
       selectedTemplateByPlay,
       draftEditsByPlay,
       authorizedPackageIds,
+      approvedForSend,
     };
     try {
       localStorage.setItem(pipelineStorageKey, JSON.stringify(payload));
     } catch (_) {
       // Storage may be unavailable (private mode); persistence is best-effort.
     }
-  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, authorizedPackageIds]);
+  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, authorizedPackageIds, approvedForSend]);
 
   // O3: auto-start the first-run pipeline once per shop. The localStorage guard
   // prevents a page refresh from re-running a full sync — without it, every
@@ -1502,13 +1573,28 @@ function App() {
 
   // C1: reset the right pane to the top whenever the selected item changes, so
   // switching items never leaves the merchant scrolled past their own work.
-  // C2: also default the stepper — created campaigns open on Send, others on Copy.
+  // C2: default the stepper — approved campaigns open on Send, others on Copy.
   useEffect(() => {
     if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
-    const created = selectedCampaign && (selectedCampaign.status === "created" || selectedCampaign.klaviyoSendJobId);
-    setWorkspaceStep(created ? "send" : "copy");
+    setWorkspaceStep(reviewPlayId && approvedForSend.includes(reviewPlayId) ? "send" : "copy");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewPlayId]);
+
+  // Auto-load the recipient preview when the merchant lands on the Audience step,
+  // so the list isn't blank until they hunt for a "Show emails" button.
+  const audienceRequestedRef = useRef("");
+  useEffect(() => {
+    if (workspaceStep !== "audience" || !reviewPlayId) return;
+    const draft = finalCampaignById.get(reviewPlayId);
+    if (!draft) return;
+    if (audiencePreviewsByCampaign[reviewPlayId]) return; // already loaded
+    if (audienceRequestedRef.current === reviewPlayId) return; // in-flight/attempted
+    audienceRequestedRef.current = reviewPlayId;
+    previewCampaignAudience(draft).catch(() => {
+      audienceRequestedRef.current = ""; // allow retry via the button
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceStep, reviewPlayId]);
 
   async function runStep(label, fn) {
     setLoading(true);
@@ -1834,6 +1920,18 @@ function App() {
     setDraftEditsByPlay((prev) => ({ ...prev, [playId]: {} }));
   }
 
+  // Explicit sign-off: move a reviewed campaign to "Ready to send".
+  function approveForSend(playId) {
+    setApprovedForSend((prev) => (prev.includes(playId) ? prev : [...prev, playId]));
+    setWorkspaceStep("send");
+  }
+
+  // Send it back to review (edits or a mistaken approval).
+  function unapproveForSend(playId) {
+    setApprovedForSend((prev) => prev.filter((id) => id !== playId));
+    setWorkspaceStep("copy");
+  }
+
   function updateDraftField(playId, field, value) {
     setDraftEditsByPlay((prev) => ({
       ...prev,
@@ -2084,11 +2182,14 @@ function App() {
                 <section className="workspace-pane" ref={rightPaneRef}>
                   {reviewPlay ? (() => {
                     const hasTemplate = Boolean(selectedTemplateByPlay[reviewPlay.id]);
-                    const created = selectedCampaignGroup === "sent";
+                    const isApproved = approvedForSend.includes(reviewPlay.id);
+                    const isSent = selectedCampaignGroup === "sent";
+                    // Send unlocks only after explicit approval — this is the gate
+                    // that separates "reviewing" from "ready to send".
                     const steps = [
                       { key: "copy", label: "Copy", enabled: true },
                       { key: "audience", label: "Audience", enabled: hasTemplate },
-                      { key: "send", label: "Send", enabled: hasTemplate },
+                      { key: "send", label: "Send", enabled: isApproved },
                     ];
                     const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
                     return (
@@ -2134,6 +2235,12 @@ function App() {
                           )
                         ) : null}
 
+                        {workspaceStep === "copy" && hasTemplate ? (
+                          <div className="step-nav">
+                            <button className="btn primary" onClick={() => setWorkspaceStep("audience")}>Review audience →</button>
+                          </div>
+                        ) : null}
+
                         {workspaceStep === "audience" && selectedCampaign ? (
                           <div className="audience-step">
                             <div className="segment-spec">
@@ -2165,22 +2272,36 @@ function App() {
                               ) : null}
                             </div>
                             <div className="step-nav">
-                              <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Continue to Send</button>
+                              {isApproved ? (
+                                <>
+                                  <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Go to Send →</button>
+                                  <button className="btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
+                                </>
+                              ) : (
+                                <button className="btn primary" onClick={() => approveForSend(reviewPlay.id)}>Approve for send</button>
+                              )}
                             </div>
                           </div>
                         ) : null}
 
                         {workspaceStep === "send" && selectedCampaign ? (
-                          <CampaignSendPanel
-                            campaign={selectedCampaign}
-                            onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
-                            onSendCampaign={sendKlaviyoCampaign}
-                            publishingId={publishingCampaignId}
-                            sendingId={sendingCampaignId}
-                            audiencePreviews={audiencePreviewsByCampaign}
-                            onPreviewAudience={previewCampaignAudience}
-                            previewingId={previewingCampaignId}
-                          />
+                          <>
+                            <CampaignSendPanel
+                              campaign={selectedCampaign}
+                              onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
+                              onSendCampaign={sendKlaviyoCampaign}
+                              publishingId={publishingCampaignId}
+                              sendingId={sendingCampaignId}
+                              audiencePreviews={audiencePreviewsByCampaign}
+                              onPreviewAudience={previewCampaignAudience}
+                              previewingId={previewingCampaignId}
+                            />
+                            {!isSent ? (
+                              <div className="step-nav">
+                                <button className="btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
+                              </div>
+                            ) : null}
+                          </>
                         ) : null}
                       </div>
                     );

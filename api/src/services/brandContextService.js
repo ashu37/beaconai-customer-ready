@@ -242,12 +242,12 @@ function buildBeaconTemplates(brandContext) {
       id: "beacon-winback-clean",
       source: "beacon",
       name: "Winback",
+      // Bestseller appears at most twice per email: here in subject + headline.
+      // Keep the body product-neutral so the same name isn't echoed a third time.
       subject: bestSeller ? `Still thinking about ${bestSeller}?` : `A fresh reason to come back to ${brand}`,
       previewText: "It's been a while — come see what's new.",
       bodyH2: bestSeller ? `${bestSeller} is a good place to restart.` : "Your next favorite is ready.",
-      bodyP1: bestSeller
-        ? `Your favorites are still here — including ${bestSeller} — and a few new arrivals you haven't met yet.`
-        : "Your favorites are still here, plus a few new arrivals you haven't met yet.",
+      bodyP1: "Your favorites are still here, plus a few new arrivals you haven't met yet.",
       cta: cta[0],
       brandContext,
     },

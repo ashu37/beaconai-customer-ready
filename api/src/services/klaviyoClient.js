@@ -73,27 +73,38 @@ function campaignHtml(campaign) {
   if (campaign.email?.html) return campaign.email.html;
   const brand = campaign.brandContext?.brandName || "BeaconAI";
   const bestSeller = campaign.brandContext?.productLanguage?.bestSellers?.[0]?.title;
-  const supportCopy = campaign.bodyP2 || (bestSeller ? `A customer favorite from the current catalog: ${bestSeller}.` : "");
+  const headline = campaign.bodyH2 || campaign.subject || campaign.playTitle;
+  const body = campaign.bodyP1 || campaign.previewText;
+  // Support paragraph: never re-introduce the bestseller if the headline or body
+  // already names it — the copy shouldn't repeat the product across every slot.
+  const namesBestSeller = (text) => Boolean(bestSeller) && String(text || "").includes(bestSeller);
+  const bestSellerAlreadyShown = namesBestSeller(campaign.subject) || namesBestSeller(headline) || namesBestSeller(body);
+  const supportCopy = campaign.bodyP2
+    || (bestSeller && !bestSellerAlreadyShown ? `A customer favorite from the current catalog: ${bestSeller}.` : "");
 
   return `
 <!doctype html>
 <html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head>
   <body style="margin:0;padding:0;background:#f7f5f0;font-family:Arial,sans-serif;color:#151515;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f5f0;padding:24px;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f7f5f0;padding:16px 0;">
       <tr>
         <td align="center">
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border:1px solid #ded7cc;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #ded7cc;">
             <tr>
-              <td style="padding:32px;">
+              <td style="padding:24px 20px;">
                 <p style="margin:0 0 12px;color:#f08a24;font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;">${escapeHtml(brand)}</p>
-                <h1 style="margin:0 0 16px;font-size:30px;line-height:1.15;color:#111111;">${escapeHtml(campaign.bodyH2 || campaign.subject || campaign.playTitle)}</h1>
-                <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(campaign.bodyP1 || campaign.previewText)}</p>
+                <h1 style="margin:0 0 16px;font-size:24px;line-height:1.2;color:#111111;">${escapeHtml(headline)}</h1>
+                <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(body)}</p>
                 ${supportCopy ? `<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(supportCopy)}</p>` : ""}
                 <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "Shop now")}</a>
               </td>
             </tr>
             <tr>
-              <td style="padding:20px 32px;border-top:1px solid #ded7cc;">
+              <td style="padding:20px;border-top:1px solid #ded7cc;">
                 <p style="margin:0;font-size:12px;line-height:1.5;color:#8a8578;">
                   You're receiving this because you shopped with ${escapeHtml(brand)}.
                   <a href="{% unsubscribe %}" style="color:#8a8578;">Unsubscribe</a>
