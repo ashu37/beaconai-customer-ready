@@ -1305,21 +1305,28 @@ function App() {
   const sentCampaigns = finalCampaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
   const readyToSendCampaigns = finalCampaigns.filter((item) => !(item.status === "created" || item.klaviyoSendJobId));
 
-  // C1: unified master-detail item list. Every campaign belongs to exactly one
-  // group; grouping is derived from status so nothing renders twice.
-  const campaignGroupFor = (item) => {
-    if (item.status === "created" || item.klaviyoSendJobId) return "sent";
-    if (selectedTemplateByPlay[item.id]) return "ready";
+  // C1: unified master-detail item list, keyed off approved/reviewable PLAYS so a
+  // play appears the moment it's approved — even before a template resolves. The
+  // matching finalCampaign (if any) carries send-state; grouping derives from it.
+  const finalCampaignById = new Map(finalCampaigns.map((item) => [item.id, item]));
+  const campaignGroupFor = (play) => {
+    const campaign = finalCampaignById.get(play.id);
+    if (campaign && (campaign.status === "created" || campaign.klaviyoSendJobId)) return "sent";
+    if (selectedTemplateByPlay[play.id]) return "ready";
     return "review";
   };
-  const campaignItems = finalCampaigns.map((item) => ({ item, group: campaignGroupFor(item) }));
+  const campaignItems = reviewablePlays.map((play) => ({
+    play,
+    campaign: finalCampaignById.get(play.id) || null,
+    group: campaignGroupFor(play),
+  }));
   const campaignGroups = [
     { key: "review", label: "Needs review", rows: campaignItems.filter((c) => c.group === "review") },
     { key: "ready", label: "Ready to send", rows: campaignItems.filter((c) => c.group === "ready") },
     { key: "sent", label: "Sent", rows: campaignItems.filter((c) => c.group === "sent") },
   ].filter((g) => g.rows.length);
-  const selectedCampaign = finalCampaigns.find((item) => item.id === reviewPlay?.id) || null;
-  const selectedCampaignGroup = selectedCampaign ? campaignGroupFor(selectedCampaign) : null;
+  const selectedCampaign = finalCampaignById.get(reviewPlay?.id) || null;
+  const selectedCampaignGroup = reviewPlay ? campaignGroupFor(reviewPlay) : null;
   const productCount = counts.products ?? engineInput?.products?.length ?? placeholderRun?.input_summary?.products ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
@@ -1467,6 +1474,21 @@ function App() {
       setOnboardingHidden(true);
     }
   }, [onboardingHidden, onboardingReadyToFinish]);
+
+  // C1 fix: auto-load starting-copy templates once reviewable plays exist. The
+  // template endpoint returns BeaconAI templates even without Klaviyo, so this
+  // unblocks the whole campaigns workspace (auto-select → draft → preview)
+  // instead of requiring a manual Refresh the empty page never surfaced.
+  const templatesRequestedRef = useRef(false);
+  useEffect(() => {
+    if (!reviewablePlays.length || klaviyoTemplates.length || templatesRequestedRef.current) return;
+    templatesRequestedRef.current = true;
+    loadKlaviyoTemplates().catch(() => {
+      // Allow a later retry (e.g. after connecting Klaviyo) if this load failed.
+      templatesRequestedRef.current = false;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewablePlays.length, klaviyoTemplates.length]);
 
   // C3: auto-apply the mapped starting template when a reviewable play has none.
   // Only fires once BeaconAI templates have loaded and the play is untouched.
@@ -1907,7 +1929,7 @@ function App() {
 
         <section className="page">
           {error ? <div className="error-box">{error}</div> : null}
-          {loading ? <BriefingWorking /> : null}
+          {loading && activePage === "briefing" ? <BriefingWorking /> : null}
 
           {activePage === "briefing" && firstRunActive ? (
             <FirstRunProgress
@@ -2034,23 +2056,23 @@ function App() {
           )}
 
           {activePage === "campaigns" && (
-            finalCampaigns.length ? (
+            reviewablePlays.length ? (
               <div className="workspace">
-                {/* C1: left rail — every campaign in one grouped list. */}
+                {/* C1: left rail — every approved play in one grouped list. */}
                 <aside className="workspace-rail">
                   {campaignGroups.map((group) => (
                     <div key={group.key} className="rail-group">
                       <div className="rail-group-head">{group.label}</div>
-                      {group.rows.map(({ item, group: g }) => (
+                      {group.rows.map(({ play, group: g }) => (
                         <button
-                          key={item.id}
-                          className={`rail-row ${reviewPlay?.id === item.id ? "selected" : ""} ${flashCampaignId === item.id ? "flash" : ""}`}
-                          onClick={() => setReviewPlayId(item.id)}
+                          key={play.id}
+                          className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`}
+                          onClick={() => setReviewPlayId(play.id)}
                         >
                           <span className={`rail-dot ${g}`} />
                           <span className="rail-row-body">
-                            <strong>{item.playTitle}</strong>
-                            <small>{formatAudience(item.customers)} customers</small>
+                            <strong>{play.play_name || play.play_id}</strong>
+                            <small>{formatAudience(play.audience_size)} customers</small>
                           </span>
                         </button>
                       ))}
@@ -2058,9 +2080,9 @@ function App() {
                   ))}
                 </aside>
 
-                {/* C2: right pane — single stepper workspace for the selected item. */}
+                {/* C2: right pane — single stepper workspace for the selected play. */}
                 <section className="workspace-pane" ref={rightPaneRef}>
-                  {reviewPlay && selectedCampaign ? (() => {
+                  {reviewPlay ? (() => {
                     const hasTemplate = Boolean(selectedTemplateByPlay[reviewPlay.id]);
                     const created = selectedCampaignGroup === "sent";
                     const steps = [
@@ -2068,7 +2090,7 @@ function App() {
                       { key: "audience", label: "Audience", enabled: hasTemplate },
                       { key: "send", label: "Send", enabled: hasTemplate },
                     ];
-                    const preview = audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null;
+                    const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
                     return (
                       <div className="workspace-card">
                         <div className="workspace-head">
@@ -2112,7 +2134,7 @@ function App() {
                           )
                         ) : null}
 
-                        {workspaceStep === "audience" ? (
+                        {workspaceStep === "audience" && selectedCampaign ? (
                           <div className="audience-step">
                             <div className="segment-spec">
                               <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
@@ -2148,7 +2170,7 @@ function App() {
                           </div>
                         ) : null}
 
-                        {workspaceStep === "send" ? (
+                        {workspaceStep === "send" && selectedCampaign ? (
                           <CampaignSendPanel
                             campaign={selectedCampaign}
                             onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
