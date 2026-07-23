@@ -465,19 +465,21 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
   const lane = classifyPlayLane(play);
   const revenue = revenueRangeParts(play);
   const revenueLabel = formatRevenueRange(play);
-  const oneLiner = play.play_one_liner || play.audience_archetype || "";
   const audienceLabel = formatAudience(play.audience_size);
-  const bannerText = oneLiner
-    ? `${oneLiner} — ${audienceLabel} customers.`
-    : `${audienceLabel} customers in this group.`;
   const heldReason = play.reason_display || "BeaconAI needs more store data before recommending this.";
+  // D1: confidence as a 3-segment meter. Measured/High → 3, Emerging → 2, else 1.
+  const confidenceLc = String(confidence).toLowerCase();
+  const confidenceSegments = /measured|high/.test(confidenceLc) ? 3 : /emerging/.test(confidenceLc) ? 2 : 1;
   const tabLabels = [
     ["thesis", "Play thesis"],
     ["send", "What we'd send"],
-    ["evidence", "Evidence"],
-    ["audience", "Audience"],
+    ["evidence", "Evidence & audience"],
     ...(showAdvanced ? [["sensitivity", "Sensitivity"]] : []),
   ];
+  // D1: never render the raw enum for signal source.
+  const signalSource = (play.evidence_source || play.evidence?.evidence_source) === "STORE_MEASURED"
+    ? "Measured from your store's orders"
+    : "Modeled from similar stores";
 
   return (
     <div className="recommendation-detail">
@@ -503,12 +505,15 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
           </div>
         ) : null}
         <div>
-          <strong>{statusLabel(confidence)}</strong>
+          <div className="confidence-meter" title={CONFIDENCE_TITLE}>
+            {[1, 2, 3].map((seg) => (
+              <span key={seg} className={`confidence-seg ${seg <= confidenceSegments ? "filled" : ""}`} />
+            ))}
+            <strong className="confidence-meter-label">{statusLabel(confidence)}</strong>
+          </div>
           <span title={CONFIDENCE_TITLE}>Confidence</span>
         </div>
       </div>
-
-      <div className="recommendation-banner">{bannerText}</div>
 
       <div className="recommendation-tabs">
         {tabLabels.map(([key, label]) => (
@@ -530,20 +535,28 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <div className="section-kicker">Play thesis</div>
               <p>{narration.play_thesis || play.mechanism || "Recommendation ready for merchant review."}</p>
             </div>
-            {revenue ? (
-              <div className="revenue-range">
-                <div className="section-kicker">Est. opportunity</div>
-                <div className="range-track">
-                  <span className="range-fill" />
-                  <span className="range-marker" style={{ left: "88%" }} />
+            {revenue ? (() => {
+              // D1: marker position derived from data, not hardcoded. Clamp 4–96%.
+              const span = revenue.high - revenue.low;
+              const raw = revenue.median != null && span > 0
+                ? ((revenue.median - revenue.low) / span) * 100
+                : 50;
+              const markerLeft = Math.min(96, Math.max(4, raw));
+              return (
+                <div className="revenue-range">
+                  <div className="section-kicker">Est. opportunity</div>
+                  <div className="range-track">
+                    <span className="range-fill" />
+                    <span className="range-marker" style={{ left: `${markerLeft}%` }} />
+                  </div>
+                  <div className="range-labels">
+                    <span>{revenue.labelLow}</span>
+                    {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
+                    <span>{revenue.labelHigh}</span>
+                  </div>
                 </div>
-                <div className="range-labels">
-                  <span>{revenue.labelLow}</span>
-                  {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
-                  <span>{revenue.labelHigh}</span>
-                </div>
-              </div>
-            ) : null}
+              );
+            })() : null}
           </>
         ) : null}
 
@@ -572,18 +585,8 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
             </div>
             <div className="model-row">
               <span>Signal source</span>
-              <strong>{play.evidence_source || play.evidence?.evidence_source || "Engine output"}</strong>
+              <strong>{signalSource}</strong>
             </div>
-            <div className="model-row">
-              <span>Decision status</span>
-              <strong>{play.reason_code ? statusLabel(play.reason_code) : "Ready for review"}</strong>
-            </div>
-            <div className="evidence-fineprint">{play.play_id || play.id}</div>
-          </>
-        ) : null}
-
-        {activeTab === "audience" ? (
-          <>
             <div className="model-row">
               <span>Audience</span>
               <strong>{play.audience_archetype || "Recommended audience"}</strong>
@@ -596,6 +599,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <span>Suppression</span>
               <strong>Recent purchasers, unsubscribes</strong>
             </div>
+            <div className="evidence-fineprint">{play.play_id || play.id}</div>
           </>
         ) : null}
 
@@ -1173,23 +1177,43 @@ function MonthTwoDeltaPanel({ delta }) {
   );
 }
 
-function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending }) {
+function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending, ordersSeries, customersSeries }) {
+  // D1: metric tiles — micro label above a 22px value. Accent when actionable > 0.
   const items = [
-    ["Products", products],
-    ["Customers", customers],
-    ["Orders", orders],
-    ["Needs review", reviewPending],
-    ["In pipeline", campaignsPending],
+    { label: "Products", value: products },
+    { label: "Customers", value: customers, series: customersSeries, seriesTone: "muted" },
+    { label: "Orders", value: orders, series: ordersSeries, seriesTone: "accent" },
+    { label: "Needs review", value: reviewPending, accentWhenPositive: true },
+    { label: "In pipeline", value: campaignsPending, accentWhenPositive: true },
   ];
   return (
     <div className="briefing-stat-strip">
-      {items.map(([label, value]) => (
-        <div key={label} className="briefing-stat">
-          <strong>{value}</strong>
-          <span>{label}</span>
+      {items.map(({ label, value, accentWhenPositive, series, seriesTone }) => (
+        <div key={label} className="briefing-stat metric-tile">
+          <span className="metric-tile-label">{label}</span>
+          <strong className={accentWhenPositive && Number(value) > 0 ? "metric-tile-value accent" : "metric-tile-value"}>{value}</strong>
+          {series && series.length > 1 ? <Sparkline points={series} tone={seriesTone} /> : null}
         </div>
       ))}
     </div>
+  );
+}
+
+// D6b: tiny inline sparkline (110×26, no axes). Points are numbers.
+function Sparkline({ points, tone = "accent" }) {
+  const w = 110, h = 26, pad = 2;
+  const max = Math.max(...points), min = Math.min(...points);
+  const span = max - min || 1;
+  const step = (w - pad * 2) / (points.length - 1);
+  const coords = points.map((p, i) => {
+    const x = pad + i * step;
+    const y = h - pad - ((p - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg className={`sparkline ${tone}`} width={w} height={h} viewBox={`0 0 ${w} ${h}`} fill="none" aria-hidden="true">
+      <polyline points={coords} stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -1518,6 +1542,7 @@ function App() {
     experimentRows.length === 0 &&
     consideredRows.length > 0;
   const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
+  const stateOfStoreObservations = atulEngineResult?.presentedRun?.state_of_store_observations || null;
   const briefingUpdatedAt = formatUpdatedAt(atulEngineResult?.presentedRun?.generated_at);
   const briefingHeading = !workflowPlays.length
     ? "Run your briefing to see recommendations"
@@ -2226,7 +2251,18 @@ function App() {
                 reviewPending={reviewPendingCount}
                 campaignsPending={readyToSendCampaigns.length}
               />
-              {stateOfStore ? <div className="state-of-store">{stateOfStore}</div> : null}
+              {stateOfStoreObservations && stateOfStoreObservations.length ? (
+                <div className="delta-row">
+                  {stateOfStoreObservations.map((obs, i) => (
+                    <span key={i} className={`delta ${obs.direction}`}>
+                      <span className="delta-tri" aria-hidden="true">{obs.direction === "down" ? "▼" : obs.direction === "up" ? "▲" : "—"}</span>
+                      {obs.label} {obs.pct}%
+                    </span>
+                  ))}
+                </div>
+              ) : stateOfStore ? (
+                <div className="state-of-store-banner"><Icon name="watch" size={16} /><span>{stateOfStore}</span></div>
+              ) : null}
               <div className="briefing-titlebar">
                 <div>
                   <h2>{briefingHeading}</h2>
