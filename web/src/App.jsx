@@ -761,7 +761,7 @@ function CampaignSendPanel({ campaign, onEditStep }) {
   return (
     <div className="send-confirm">
       <p className="send-statement">
-        Send “{selected.subject}” to {selected.customers} matched customers through your Klaviyo account.
+        Send “{selected.subject}” to {formatAudience(selected.customers)} matched customers through your Klaviyo account.
       </p>
 
       <div className="send-summary">
@@ -792,90 +792,11 @@ function CampaignSendPanel({ campaign, onEditStep }) {
       </div>
 
       {selected.klaviyoTemplateId ? (
-        <div className="success-box">
-          Created Klaviyo campaign <strong>{selected.klaviyoCampaignId || selected.klaviyoTemplateId}</strong>
-          {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
-          {selected.klaviyoSendJobId ? ` Send job: ${selected.klaviyoSendJobId}.` : ""}
+        <div className="success-box" title={`Template ${selected.klaviyoTemplateId}${selected.klaviyoCampaignId ? ` · Campaign ${selected.klaviyoCampaignId}` : ""}${selected.klaviyoSendJobId ? ` · Send job ${selected.klaviyoSendJobId}` : ""}`}>
+          Created in Klaviyo — “{selected.templateName || "your campaign"}” is waiting as a draft.
+          {selected.klaviyoAudience ? ` List matched ${formatAudience(selected.klaviyoAudience.count)} recipients.` : ""}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function EditableCampaignDraft({ draft, onChange, onSendToCampaigns }) {
-  if (!draft) return null;
-
-  const update = (field) => (event) => onChange(field, event.target.value);
-
-  return (
-    <div className="draft-editor">
-      <div className="draft-editor-form">
-        <label>
-          <span>Subject line</span>
-          <input value={draft.subject} onChange={update("subject")} />
-        </label>
-        <label>
-          <span>Preview text</span>
-          <input value={draft.previewText} onChange={update("previewText")} />
-        </label>
-        <label>
-          <span>Headline</span>
-          <input value={draft.bodyH2} onChange={update("bodyH2")} />
-        </label>
-        <label>
-          <span>Main message</span>
-          <textarea value={draft.bodyP1} onChange={update("bodyP1")} rows={4} />
-        </label>
-        <label>
-          <span>Support copy</span>
-          <textarea value={draft.bodyP2} onChange={update("bodyP2")} rows={3} />
-        </label>
-        <div className="draft-editor-row">
-          <label>
-            <span>CTA</span>
-            <input value={draft.cta} onChange={update("cta")} />
-          </label>
-          <label>
-            <span>Send timing</span>
-            <input value={draft.sendTime} onChange={update("sendTime")} />
-          </label>
-        </div>
-        <label>
-          <span>Suppression</span>
-          <input value={draft.suppression} onChange={update("suppression")} />
-        </label>
-      </div>
-
-      <div className="campaign-detail-panel draft-preview-panel">
-        <div className="pkg-origin">
-          <span>Template</span>
-          <strong>{draft.templateName} · {draft.templateSource}</strong>
-        </div>
-        <div className="email-preview">
-          <div className="email-topline">
-            <span>Subject</span>
-            <strong>{draft.subject}</strong>
-          </div>
-          <div className="email-topline">
-            <span>Preview</span>
-            <strong>{draft.previewText}</strong>
-          </div>
-          <div className="email-body">
-            <h1>{draft.bodyH2}</h1>
-            <p>{draft.bodyP1}</p>
-            <p>{draft.bodyP2}</p>
-            <p><strong>{draft.cta}</strong></p>
-          </div>
-        </div>
-        <div className="segment-spec">
-          <div><span>Audience</span><strong>{draft.segment}</strong></div>
-          <div><span>Send</span><strong>{draft.sendTime}</strong></div>
-          <div><span>Suppression</span><strong>{draft.suppression}</strong></div>
-        </div>
-        <div className="action-row">
-          <button className="btn primary" onClick={onSendToCampaigns}>Send to Campaigns</button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -2371,7 +2292,7 @@ function App() {
                           className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`}
                           onClick={() => setReviewPlayId(play.id)}
                         >
-                          <span className={`rail-dot ${g}`} />
+                          <span className={`rail-icon ${g}`}><Icon name={iconForPlay(play)} size={16} /></span>
                           <span className="rail-row-body">
                             <strong>{play.play_name || play.play_id}</strong>
                             <small>{formatAudience(play.audience_size)} customers</small>
@@ -2473,7 +2394,7 @@ function App() {
                                     {preview.recipients.slice(0, 25).map((recipient) => (
                                       <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
                                         <strong>{recipient.email}</strong>
-                                        <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
+                                        <span>{recipient.orderCount} orders · ${Number(recipient.totalRevenue || 0).toLocaleString()}</span>
                                       </div>
                                     ))}
                                     {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
