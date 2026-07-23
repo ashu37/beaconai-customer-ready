@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { baseEngineRun } from "./engineMock";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -85,75 +84,6 @@ function iconForPlay(play, lane) {
   return PLAY_ICON_MAP[key] || "play";
 }
 
-function StatCard({ label, value, detail }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {detail ? <div className="stat-detail">{detail}</div> : null}
-    </div>
-  );
-}
-
-function HomeMetricCard({ label, value, detail, tone = "neutral" }) {
-  return (
-    <div className={`home-metric-card ${tone}`}>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {detail ? <div className="stat-detail">{detail}</div> : null}
-    </div>
-  );
-}
-
-function HomeModule({ title, detail, action, onAction, children }) {
-  return (
-    <div className="home-module">
-      <div className="home-module-head">
-        <div>
-          <h3>{title}</h3>
-          {detail ? <p>{detail}</p> : null}
-        </div>
-        {action ? <button className="btn" onClick={onAction}>{action}</button> : null}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function ConnectionCard({ label, connected, detail, onAction }) {
-  return (
-    <div className={`connection-card ${connected ? "connected" : ""}`}>
-      <div>
-        <span className="connection-dot" />
-        <strong>{label}</strong>
-        <p>{detail}</p>
-      </div>
-      <button className="btn" onClick={onAction}>{connected ? "Refresh" : "Connect"}</button>
-    </div>
-  );
-}
-
-function OnboardingStep({ number, title, detail, done, action, onAction, secondaryAction, onSecondaryAction }) {
-  return (
-    <div className={`onboarding-step ${done ? "done" : ""}`}>
-      <div className="onboarding-step-num">{done ? "✓" : number}</div>
-      <div className="onboarding-step-body">
-        <div className="onboarding-step-head">
-          <div>
-            <h3>{title}</h3>
-            <p>{detail}</p>
-          </div>
-          <span className={`onboarding-status ${done ? "done" : ""}`}>{done ? "Complete" : "Next"}</span>
-        </div>
-        <div className="action-row">
-          {action ? <button className="btn primary" onClick={onAction}>{action}</button> : null}
-          {secondaryAction ? <button className="btn" onClick={onSecondaryAction}>{secondaryAction}</button> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // P-D1: compact connection chip. Connected → a green dot with a title-attr label.
 // Not connected + actionable → a clickable chip that starts OAuth.
 function StatusChip({ label, ok, onConnect }) {
@@ -166,23 +96,6 @@ function StatusChip({ label, ok, onConnect }) {
   return <span className="status-chip pending">{label}: Pending</span>;
 }
 
-function EmailPreview({ campaign }) {
-  if (!campaign) return <div className="empty-panel">Run analysis to generate a campaign preview.</div>;
-  return (
-    <div className="email-preview">
-      <div className="email-topline">
-        <span>Subject</span>
-        <strong>{campaign.email?.subject}</strong>
-      </div>
-      <div className="email-body" dangerouslySetInnerHTML={{ __html: campaign.email?.html || "" }} />
-      <div className="sms-box">
-        <div className="section-kicker">SMS copy</div>
-        {campaign.sms}
-      </div>
-    </div>
-  );
-}
-
 function JsonBlock({ title, value }) {
   return (
     <details className="json-block">
@@ -192,23 +105,10 @@ function JsonBlock({ title, value }) {
   );
 }
 
-function PlaceholderPlay({ play }) {
-  return (
-    <div className="placeholder-play">
-      <div className="play-num">{play.play_id}</div>
-      <h3>{play.play_name || play.play_id}</h3>
-      <p>{play.mechanism}</p>
-      <div className="evidence-row">
-        {play.audience_archetype ? <span>{play.audience_archetype}</span> : null}
-        {play.audience_size ? <span>Audience: {play.audience_size}</span> : null}
-        {play.evidence?.evidence_class ? <span>Evidence: {play.evidence.evidence_class}</span> : null}
-      </div>
-    </div>
-  );
-}
-
 function statusLabel(value) {
-  return String(value || "pending").replaceAll("_", " ");
+  return String(value || "pending")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function readableMetaLabel(value) {
@@ -218,43 +118,6 @@ function readableMetaLabel(value) {
   if (["engine", "review", "pending", "placeholder"].includes(normalized)) return null;
   if (normalized === "store observed") return "Observed in store data";
   return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function buildDashboardRun(placeholderRun, counts) {
-  const productCount = placeholderRun?.input_summary?.products ?? counts.products ?? 0;
-  const customerCount = placeholderRun?.input_summary?.customers ?? counts.customers ?? 0;
-  const orderCount = placeholderRun?.input_summary?.orders ?? counts.orders ?? 0;
-  const total = Math.max(productCount + customerCount + orderCount, 1);
-
-  if (!placeholderRun) {
-    return {
-      ...baseEngineRun,
-      audience_segments: baseEngineRun.audience_segments.map((segment) => {
-        const value = segment.label === "Known customers" ? customerCount : segment.label === "Purchased orders" ? orderCount : segment.label === "Catalog products" ? productCount : Math.max(customerCount - orderCount, 0);
-        return { ...segment, n: value, pct: Math.round((value / total) * 100) };
-      }),
-    };
-  }
-
-  return {
-    ...baseEngineRun,
-    ...placeholderRun,
-    slate: {
-      ...baseEngineRun.slate,
-      ...placeholderRun.slate,
-    },
-    predictive_models: {
-      ...baseEngineRun.predictive_models,
-      ...placeholderRun.predictive_models,
-    },
-    audience_segments: (placeholderRun.audience_segments || baseEngineRun.audience_segments).map((segment) => ({
-      ...segment,
-      pct: Math.round(((segment.n || 0) / total) * 100),
-      color_role: segment.color_role || "loyal",
-    })),
-    cohort_retention: baseEngineRun.cohort_retention,
-    month_2_delta: baseEngineRun.month_2_delta,
-  };
 }
 
 function titleizeId(value) {
@@ -278,7 +141,7 @@ function normalizeAtulPlay(play, index) {
     mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Recommendation ready for your review.",
     audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Recommended audience",
     audience_size: audienceSize,
-    confidence: play.confidence_label || play.confidence || play.model_confidence || "engine",
+    confidence: play.confidence_label || play.confidence || play.model_confidence || "Review",
     evidence: play.evidence || { evidence_source: play.evidence_source || null, evidence_class: play.evidence_class || null },
     evidence_source: play.evidence_source || play.evidence?.evidence_source || null,
     evidence_line: play.evidence_line || null,
@@ -650,103 +513,6 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
   );
 }
 
-function EnginePlayCard({ play, onGreenlight, onViewEvidence }) {
-  const gates = play.gate_status || {};
-  return (
-    <div className={`engine-play-card ${play.role === "recommended_experiment" ? "experiment" : ""}`}>
-      <div className="play-role-badge">{play.reason_code ? "Considered - held" : "Recommendation"}</div>
-      <h3>{play.play_name || play.play_id}</h3>
-      <div className="play-archetype">{play.audience_archetype || "ENGINE_PLACEHOLDER"}</div>
-      <p>{play.mechanism}</p>
-      <div className="evidence-class-row">
-        <span className="evidence-class">{play.evidence?.evidence_class || play.reason_code || "placeholder"}</span>
-        <span className="evidence-class-desc">
-          {play.evidence?.p_value ? `p = ${play.evidence.p_value}` : "Awaiting real engine evidence"}
-        </span>
-      </div>
-      <div className="gates-row">
-        <span className={`gate-pill ${gates.cohort_pvalue ? "pass" : ""}`}>Cohort p-value</span>
-        <span className={`gate-pill ${gates.prior_validation ? "pass" : ""}`}>Prior validation</span>
-        <span className={`gate-pill ${gates.ml_fit ? "pass" : ""}`}>ML fit</span>
-      </div>
-      <div className="play-meta-row">
-        <div>
-          <span className="play-meta-label">Audience</span>
-          <strong>{play.audience_size?.toLocaleString?.() || "—"}</strong>
-        </div>
-        <div>
-          <span className="play-meta-label">Revenue</span>
-          <strong>{play.revenue_range ? `$${play.revenue_range.low}-$${play.revenue_range.high}` : "—"}</strong>
-        </div>
-        <div>
-          <span className="play-meta-label">Model</span>
-          <strong>{play.model || "placeholder"}</strong>
-        </div>
-      </div>
-      <div className="play-cta-row">
-        <button className="btn primary" onClick={() => onGreenlight?.(play)}>Greenlight play</button>
-        <button className="btn" onClick={() => onViewEvidence?.(play)}>View evidence</button>
-      </div>
-    </div>
-  );
-}
-
-function ModelCardPanel({ model }) {
-  return (
-    <div className="model-card">
-      <div className="model-card-head">
-        <div>
-          <h3>{model.display_name}</h3>
-          <span>{model.name || model.handoff_status || "placeholder"}</span>
-        </div>
-        <strong>{model.fit_status}</strong>
-      </div>
-      <div className="model-stats">
-        <span>Observed <strong>{model.n_observed?.toLocaleString?.() || "—"}</strong></span>
-        <span>Window <strong>{model.training_window_days ? `${model.training_window_days}d` : "—"}</strong></span>
-        <span>MAPE <strong>{model.holdout_mape ? `${(model.holdout_mape * 100).toFixed(1)}%` : "—"}</strong></span>
-      </div>
-      {(model.fit_warnings || []).map((warning) => <div className="model-warning" key={warning}>{warning}</div>)}
-    </div>
-  );
-}
-
-function SegmentBars({ segments }) {
-  const max = Math.max(...segments.map((segment) => segment.n || 0), 1);
-  return (
-    <div className="chart-panel">
-      {segments.map((segment) => (
-        <div className="segment-row" key={segment.label}>
-          <div className="segment-meta">
-            <span>{segment.label}</span>
-            <strong>{segment.n?.toLocaleString?.() || 0}</strong>
-          </div>
-          <div className="segment-track">
-            <div className={`segment-fill ${segment.color_role || "loyal"}`} style={{ width: `${Math.max(((segment.n || 0) / max) * 100, 4)}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CohortRetentionChart({ curves }) {
-  return (
-    <div className="chart-panel cohort-panel">
-      {curves.map((curve) => (
-        <div className="cohort-row" key={curve.cohort_label}>
-          <div className="cohort-label">{curve.cohort_label}</div>
-          <div className="cohort-points">
-            {curve.points.map((point) => (
-              <span key={point.month} style={{ height: `${Math.max(point.p50 * 100, 10)}%` }} title={`M${point.month}: ${(point.p50 * 100).toFixed(0)}%`} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // C2: Send step — detail for a single selected campaign (no internal list; the
 // master-detail left rail owns selection now).
 // P-B: Send is a confirmation, not a workspace. Statement + three summary rows
@@ -1083,21 +849,6 @@ function CampaignReviewPane({
   );
 }
 
-function MonthTwoDeltaPanel({ delta }) {
-  return (
-    <div className="delta-grid">
-      <StatCard label="Previous p50 LTV" value={`$${delta.ltv_evolution.prev_p50}`} detail="placeholder" />
-      <StatCard label="Current p50 LTV" value={`$${delta.ltv_evolution.curr_p50}`} detail="placeholder" />
-      <StatCard label="Delta" value={`${delta.ltv_evolution.delta_pct >= 0 ? "+" : ""}${delta.ltv_evolution.delta_pct}%`} detail="month over month" />
-      <div className="placeholder-panel">
-        <div className="section-kicker">Audience movement</div>
-        <div className="model-row"><span>Grew</span><strong>{delta.audiences_grew.join(", ")}</strong></div>
-        <div className="model-row"><span>Shrank</span><strong>{delta.audiences_shrank.join(", ")}</strong></div>
-      </div>
-    </div>
-  );
-}
-
 function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending, ordersSeries, customersSeries }) {
   // D1: metric tiles — micro label above a 22px value. Accent when actionable > 0.
   const items = [
@@ -1410,7 +1161,6 @@ function App() {
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
-  const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
     [atulEngineResult, campaignPackages, campaign]
@@ -1830,16 +1580,6 @@ function App() {
     setSync({ synced: result.synced, shopDomain: result.shopDomain });
     setCampaign(result.campaign);
     setActivePage("campaigns");
-  }
-
-  async function loadEngineInput() {
-    const result = await runStep("Engine input load", () => api.getEngineInput());
-    setEngineInput(result.input);
-  }
-
-  async function loadPlaceholderEngineRun() {
-    const result = await runStep("Placeholder engine load", () => api.getPlaceholderEngineRun());
-    setPlaceholderRun(result.engineRun);
   }
 
   async function saveShopDomain(event) {
@@ -2514,114 +2254,6 @@ function App() {
 
           {activePage === "results" && (
             <ResultsPage campaigns={finalCampaigns} />
-          )}
-
-          {activePage === "ledger" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Engine handoff</div>
-                <h2>Normalized data Atul’s Python engine can consume.</h2>
-                <p>Tables: shop, orders, order_line_items, customers, products, product_variants, refunds.</p>
-                <button className="btn primary" onClick={loadEngineInput}>Refresh engine input</button>
-              </div>
-              <JsonBlock title="Engine input JSON" value={engineInput || "Click Refresh engine input"} />
-            </>
-          )}
-
-          {activePage === "intelligence" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Statistical intelligence</div>
-                <h2>Placeholder model cards and audience views.</h2>
-                <p>These panels mirror the richer `beaconai-frontend-app` direction while waiting for the real engine output.</p>
-                <button className="btn primary" onClick={loadPlaceholderEngineRun}>Load live placeholder counts</button>
-              </div>
-              <div className="model-grid">
-                {Object.entries(dashboardRun.predictive_models || {}).map(([key, model]) => <ModelCardPanel key={key} model={model} />)}
-              </div>
-              <div className="placeholder-grid">
-                <div>
-                  <div className="section-kicker">RFM-style segments</div>
-                  <SegmentBars segments={dashboardRun.audience_segments || []} />
-                </div>
-                <div>
-                  <div className="section-kicker">Cohort retention</div>
-                  <CohortRetentionChart curves={dashboardRun.cohort_retention?.curves || []} />
-                </div>
-              </div>
-            </>
-          )}
-
-          {activePage === "considered" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Considered and held</div>
-                <h2>Plays BeaconAI would hold until stronger evidence exists.</h2>
-                <p>Reason codes explain why a recommendation is not ready for campaign review yet.</p>
-              </div>
-              {(dashboardRun.slate?.considered || []).map((play) => <EnginePlayCard key={play.play_id} play={play} onViewEvidence={setSelectedEvidence} />)}
-              {dashboardRun.month_2_delta ? <MonthTwoDeltaPanel delta={dashboardRun.month_2_delta} /> : <div className="empty-panel">No month-over-month comparison yet.</div>}
-            </>
-          )}
-
-          {activePage === "placeholder" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Engine placeholder</div>
-                <h2>Temporary richer engine run until Atul’s engine is wired in.</h2>
-                <p>
-                  This mirrors the direction of the polished `beaconai-frontend-app` dashboard: slate, evidence,
-                  model cards, audience segments, and a stable handoff contract.
-                </p>
-                <button className="btn primary" onClick={loadPlaceholderEngineRun}>Refresh placeholder</button>
-              </div>
-
-              {placeholderRun ? (
-                <>
-                  <div className="stats-grid">
-                    <StatCard label="Products" value={placeholderRun.input_summary?.products ?? "—"} detail="input summary" />
-                    <StatCard label="Customers" value={placeholderRun.input_summary?.customers ?? "—"} detail="input summary" />
-                    <StatCard label="Orders" value={placeholderRun.input_summary?.orders ?? "—"} detail="input summary" />
-                    <StatCard label="Contract" value={placeholderRun.contract_version || "—"} detail="engine run shape" />
-                  </div>
-
-                  <div className="placeholder-grid">
-                    <div>
-                      <div className="section-kicker">Recommendations</div>
-                      {[
-                        ...(placeholderRun.slate?.recommended_now || []),
-                        ...(placeholderRun.slate?.recommended_experiment || []),
-                      ].map((play) => <PlaceholderPlay key={play.play_id} play={play} />)}
-                    </div>
-                  </div>
-
-                  <div className="placeholder-grid">
-                    <div className="placeholder-panel">
-                      <div className="section-kicker">Model placeholders</div>
-                      {Object.entries(placeholderRun.predictive_models || {}).map(([key, model]) => (
-                        <div className="model-row" key={key}>
-                          <span>{model.display_name}</span>
-                          <strong>{model.fit_status}</strong>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="placeholder-panel">
-                      <div className="section-kicker">Audience segments</div>
-                      {(placeholderRun.audience_segments || []).map((segment) => (
-                        <div className="model-row" key={segment.label}>
-                          <span>{segment.label}</span>
-                          <strong>{segment.n}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <JsonBlock title="Placeholder engine_run JSON" value={placeholderRun} />
-                </>
-              ) : (
-                <div className="empty-panel">Click Refresh placeholder to load the temporary engine contract.</div>
-              )}
-            </>
           )}
 
           {activePage === "setup" && (
