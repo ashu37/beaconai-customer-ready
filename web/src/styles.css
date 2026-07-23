@@ -596,3 +596,34 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 /* O3: sparse-store interstitial */
 .sparse-interstitial { display: flex; align-items: center; gap: 16px; background: var(--surface-2); border: 1px solid rgba(240,138,36,.28); border-radius: 4px; padding: 14px 16px; margin-bottom: 16px; }
 .sparse-interstitial p { margin: 0; flex: 1; line-height: 1.5; color: var(--ink); }
+
+/* ============ D4: Motion ============ */
+.btn, .rail-row, .recommendation-row, .metric-tile, .results-row, .workspace-card, .in-campaigns-chip {
+  transition: background .15s ease, border-color .15s ease, box-shadow .18s ease, transform .18s ease;
+}
+/* Hover lift on interactive cards/rows */
+.rail-row:hover, .results-row:hover { transform: translateY(-1px); box-shadow: var(--elev-1); }
+.recommendation-row:hover { transform: translateY(-1px); }
+.btn.primary:hover { box-shadow: var(--elev-1); }
+
+/* Page + tab content fade-slide in */
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.page-rise { animation: rise .18s ease-out; }
+.recommendation-tab-body { animation: rise .18s ease-out; }
+
+/* Skeleton shimmer (BriefingWorking) */
+@keyframes shimmer { from { background-position: -400px 0; } to { background-position: 400px 0; } }
+.skeleton { border-radius: var(--radius-ctl); background: linear-gradient(90deg, var(--bg-2) 25%, #e9e7e0 37%, var(--bg-2) 63%); background-size: 800px 100%; animation: shimmer 1.4s linear infinite; }
+.skeleton-page { display: grid; gap: 14px; max-width: 720px; }
+.skeleton-row { height: 16px; }
+.skeleton-row.w-70 { width: 70%; }
+.skeleton-row.w-50 { width: 50%; }
+.skeleton-card { height: 180px; margin-top: 8px; }
+
+/* Reduced-motion: disable all D4 motion */
+@media (prefers-reduced-motion: reduce) {
+  .btn, .rail-row, .recommendation-row, .metric-tile, .results-row, .workspace-card, .in-campaigns-chip { transition: none; }
+  .rail-row:hover, .results-row:hover, .recommendation-row:hover, .btn.primary:hover, .btn.primary:active { transform: none; }
+  .page-rise, .recommendation-tab-body { animation: none; }
+  .skeleton { animation: none; }
+}

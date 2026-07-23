@@ -1112,12 +1112,22 @@ function BriefingStatStrip({ products, customers, orders, reviewPending, campaig
       {items.map(({ label, value, accentWhenPositive, series, seriesTone }) => (
         <div key={label} className="briefing-stat metric-tile">
           <span className="metric-tile-label">{label}</span>
-          <strong className={accentWhenPositive && Number(value) > 0 ? "metric-tile-value accent" : "metric-tile-value"}>{value}</strong>
+          <strong className={accentWhenPositive && Number(value) > 0 ? "metric-tile-value accent" : "metric-tile-value"}>
+            <MetricValue value={value} />
+          </strong>
           {series && series.length > 1 ? <Sparkline points={series} tone={seriesTone} /> : null}
         </div>
       ))}
     </div>
   );
+}
+
+// D4: metric value with count-up. Non-numeric (e.g. "—") renders as-is.
+function MetricValue({ value }) {
+  const numeric = typeof value === "number" || (typeof value === "string" && value !== "" && Number.isFinite(Number(value)));
+  const animated = useCountUp(numeric ? Number(value) : NaN);
+  if (!numeric) return <>{value}</>;
+  return <>{animated.toLocaleString()}</>;
 }
 
 // D6b: tiny inline sparkline (110×26, no axes). Points are numbers.
@@ -1297,16 +1307,46 @@ function BriefingWorking() {
     return () => clearInterval(id);
   }, []);
   return (
-    <div className="briefing-working" role="status" aria-live="polite">
-      <div className="first-run-spinner" aria-hidden="true" />
-      <div className="briefing-working-text">
-        <span>{messages[index]}</span>
-        <div className="briefing-working-bar" aria-hidden="true">
-          <div className="briefing-working-bar-fill" />
+    <div role="status" aria-live="polite">
+      <div className="briefing-working">
+        <div className="first-run-spinner" aria-hidden="true" />
+        <div className="briefing-working-text">
+          <span>{messages[index]}</span>
+          <div className="briefing-working-bar" aria-hidden="true">
+            <div className="briefing-working-bar-fill" />
+          </div>
         </div>
+      </div>
+      {/* D4: shimmer skeleton silhouette */}
+      <div className="skeleton-page" aria-hidden="true">
+        <div className="skeleton skeleton-row w-50" />
+        <div className="skeleton skeleton-row w-70" />
+        <div className="skeleton skeleton-card" />
       </div>
     </div>
   );
+}
+
+// D4: count-up on mount (integers). Returns the display value; skips on reduced-motion.
+function useCountUp(target, duration = 500) {
+  const [value, setValue] = useState(0);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    const end = Number(target);
+    if (!Number.isFinite(end)) { setValue(target); return undefined; }
+    const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || end === 0) { setValue(end); return undefined; }
+    let startTs = null;
+    const tick = (ts) => {
+      if (startTs == null) startTs = ts;
+      const p = Math.min(1, (ts - startTs) / duration);
+      setValue(Math.round(end * p));
+      if (p < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [target, duration]);
+  return value;
 }
 
 function App() {
@@ -2122,7 +2162,7 @@ function App() {
           </div>
         </header>
 
-        <section className="page">
+        <section className="page page-rise" key={activePage}>
           {toast ? (
             <div className={`toast ${toast.error ? "error" : ""}`} role="status" aria-live="polite">
               <span className="toast-check" aria-hidden="true"><Icon name={toast.error ? "alert" : "check"} size={13} /></span>
