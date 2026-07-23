@@ -1194,12 +1194,19 @@ function ResultsPage({ campaigns }) {
         reportDate.setDate(reportDate.getDate() + 30);
         const reportLabel = reportDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
         const sentLabel = base ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Pending send";
+        // D3: measurement progress — days elapsed of 30.
+        const daysElapsed = Math.max(0, (Date.now() - parsed.getTime()) / 86400000);
+        const progress = Math.min(1, daysElapsed / 30) * 100;
         return (
           <div key={item.id} className="results-row">
-            <div>
-              <strong>{item.playTitle}</strong>
-              <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+            <div className="results-head">
+              <span className="results-icon"><Icon name="mail" size={18} /></span>
+              <div className="results-head-body">
+                <h3>{item.playTitle}</h3>
+                <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+              </div>
             </div>
+            <div className="results-progress"><span style={{ width: `${progress}%` }} /></div>
             <p className="results-status">Measurement in progress — first report {reportLabel}.</p>
           </div>
         );
@@ -2579,14 +2586,6 @@ function App() {
 
           {activePage === "setup" && (
             <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Account settings</div>
-                <h2>Manage connected accounts.</h2>
-                <p>
-                  Use this page after onboarding to refresh or reconnect Shopify and Klaviyo.
-                </p>
-              </div>
-
               <div className="integration-card settings-store-card">
                 <h3>Shopify store</h3>
                 <p>Choose which store BeaconAI is working with.</p>
@@ -2603,19 +2602,17 @@ function App() {
 
               <div className="setup-grid">
                 <div className="integration-card">
-                  <h3>1. Shopify</h3>
-                  <p>{status.shopify ? `Connected via ${status.shopifySource}. Production users connect once with Shopify OAuth, then BeaconAI refreshes data automatically.` : "Connect Shopify with OAuth to load products, customers, orders, and order line items."}</p>
+                  <h3>Shopify</h3>
+                  <p>{status.shopify ? "Connected. BeaconAI refreshes products, customers, and orders from this store." : "Connect Shopify to load products, customers, and orders."}</p>
                   <div className="action-row">
                     <button className="btn primary" onClick={status.shopify ? syncShopify : () => startOAuth("shopify")} disabled={status.shopify && loading}>{status.shopify ? (loading ? "Syncing…" : "Refresh Shopify now") : "Connect Shopify"}</button>
-                    <button className="btn" onClick={checkConnections}>Test connection</button>
                   </div>
                 </div>
                 <div className="integration-card">
-                  <h3>2. Klaviyo</h3>
-                  <p>{status.klaviyo ? `Connected via ${status.klaviyoSource}. Production users connect once with Klaviyo OAuth, then templates can refresh in the background.` : "Connect Klaviyo with OAuth to fetch existing templates and prepare BeaconAI template suggestions."}</p>
+                  <h3>Klaviyo</h3>
+                  <p>{status.klaviyo ? "Connected. Templates and campaigns are created in this account." : "Connect Klaviyo to create campaign drafts from BeaconAI."}</p>
                   <div className="action-row">
                     <button className="btn primary" onClick={status.klaviyo ? loadKlaviyoTemplates : () => startOAuth("klaviyo")}>{status.klaviyo ? "Refresh templates" : "Connect Klaviyo"}</button>
-                    <button className="btn" onClick={checkConnections}>Test connection</button>
                   </div>
                 </div>
               </div>
@@ -2625,11 +2622,11 @@ function App() {
           {selectedEvidence ? (
             <div className="drawer-backdrop" onClick={() => setSelectedEvidence(null)}>
               <div className="evidence-drawer" onClick={(event) => event.stopPropagation()}>
-                <button className="drawer-close" onClick={() => setSelectedEvidence(null)}>Close</button>
+                <button className="drawer-close" aria-label="Close" onClick={() => setSelectedEvidence(null)}><Icon name="close" size={16} /></button>
                 <div className="section-kicker">Evidence drawer</div>
                 <h2>{selectedEvidence.play_name || selectedEvidence.play_id}</h2>
                 <p>{selectedEvidence.mechanism}</p>
-                <JsonBlock title="Play JSON" value={selectedEvidence} />
+                {showAdvanced ? <JsonBlock title="Play JSON" value={selectedEvidence} /> : null}
               </div>
             </div>
           ) : null}
