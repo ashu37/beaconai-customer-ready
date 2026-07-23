@@ -1137,6 +1137,8 @@ function App() {
   const [campaignPackages, setCampaignPackages] = useState([]);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [flashCampaignId, setFlashCampaignId] = useState("");
+  // D6b: weekly series for the Orders / Customers sparklines.
+  const [statsSeries, setStatsSeries] = useState(null);
   // Transient confirmation toast: { message, actionLabel?, onAction? }.
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
@@ -1273,6 +1275,17 @@ function App() {
     preloadStoreSnapshot();
     loadBrandContext();
     loadLatestRun();
+  }, []);
+
+  // D6b: fetch weekly series once for sparklines. On failure, tiles render
+  // without sparklines — no error surfaced.
+  useEffect(() => {
+    if (!api.shopDomain) return;
+    let alive = true;
+    api.getStatsSeries(12)
+      .then((res) => { if (alive) setStatsSeries(res.weeks || []); })
+      .catch(() => { if (alive) setStatsSeries(null); });
+    return () => { alive = false; };
   }, []);
 
   // Clear any pending toast timer on unmount.
@@ -1958,6 +1971,8 @@ function App() {
                 orders={orderCount}
                 reviewPending={reviewPendingCount}
                 campaignsPending={readyToSendCampaigns.length}
+                ordersSeries={statsSeries ? statsSeries.map((w) => w.orders) : null}
+                customersSeries={statsSeries ? statsSeries.map((w) => w.newCustomers) : null}
               />
               {stateOfStoreObservations && stateOfStoreObservations.length ? (
                 <div className="delta-row">

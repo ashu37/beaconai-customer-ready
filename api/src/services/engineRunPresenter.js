@@ -466,6 +466,37 @@ function stateOfStoreSentence(engineRun) {
   return `Since the prior period: ${clauses.join(" · ")}`;
 }
 
+// D6a: structured delta observations for the briefing chip row. Top 2 movers by
+// magnitude, plus AOV always if present. `flat` when the rounded pct is 0 or the
+// metric is held (not "moved").
+function stateOfStoreObservations(engineRun) {
+  const observations = engineRun?.state_of_store;
+  if (!Array.isArray(observations)) return [];
+
+  const known = observations.filter((obs) =>
+    obs && Object.prototype.hasOwnProperty.call(METRIC_LABELS, obs.supporting_metric));
+
+  const toChip = (obs) => {
+    const moved = obs.classification === "moved" && Number.isFinite(obs.delta_pct);
+    const pct = moved ? Math.round(Math.abs(obs.delta_pct) * 100) : 0;
+    const direction = !moved || pct === 0 ? "flat" : obs.delta_pct >= 0 ? "up" : "down";
+    return { label: METRIC_LABELS[obs.supporting_metric], direction, pct, metric: obs.supporting_metric };
+  };
+
+  const movers = known
+    .filter((obs) => obs.classification === "moved" && Number.isFinite(obs.delta_pct) && Math.round(Math.abs(obs.delta_pct) * 100) !== 0)
+    .sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct))
+    .slice(0, 2)
+    .map(toChip);
+
+  const chips = [...movers];
+  // AOV always included if present and not already shown.
+  const aov = known.find((obs) => obs.supporting_metric === "aov");
+  if (aov && !chips.some((c) => c.metric === "aov")) chips.push(toChip(aov));
+
+  return chips.map(({ metric, ...chip }) => chip);
+}
+
 function presentEngineRun(engineRun, manifest = null, narration = null) {
   const narrationMap = narrationByPlay(narration);
   const recommendations = [
@@ -473,6 +504,7 @@ function presentEngineRun(engineRun, manifest = null, narration = null) {
     ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest, narrationMap)),
   ];
   const stateOfStore = stateOfStoreSentence(engineRun);
+  const stateOfStoreObs = stateOfStoreObservations(engineRun);
 
   return {
     schema: "beaconai.ui_recommendations.v1",
@@ -482,6 +514,7 @@ function presentEngineRun(engineRun, manifest = null, narration = null) {
     generated_at: engineRun?.created_at || manifest?.created_at || null,
     recommendation_count: recommendations.length,
     ...(stateOfStore ? { state_of_store: stateOfStore } : {}),
+    ...(stateOfStoreObs.length ? { state_of_store_observations: stateOfStoreObs } : {}),
     recommendations,
     considered: (engineRun?.considered || []).map((card, index) => normalizeRejectedCard(card, index, narrationMap)),
     watching: engineRun?.watching || [],

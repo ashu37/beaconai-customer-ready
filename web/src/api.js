@@ -76,4 +76,5 @@ export const api = {
   demoRun: (limit = 250) => request("/demo/run", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), limit }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
   getPlaceholderEngineRun: () => request(`/engine/placeholder/${encodeURIComponent(shopDomain)}`),
+  getStatsSeries: (weeks = 12) => request(`/stats/series/${encodeURIComponent(shopDomain)}?weeks=${weeks}`),
 };

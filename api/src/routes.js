@@ -5,6 +5,7 @@ const {
   saveRawShopifyData,
   upsertAllShopifyData,
   getEngineInput,
+  getWeeklySeries,
 } = require("./services/shopifyRepository");
 const { runMockEngine, saveEngineRun } = require("./services/engineService");
 const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
@@ -240,6 +241,17 @@ router.get("/engine/input/:shopDomain", async (req, res) => {
   try {
     const input = await getEngineInput(req.params.shopDomain);
     res.json({ ok: true, input });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// D6b: weekly order + new-customer series for briefing sparklines. Read-only.
+router.get("/stats/series/:shopDomain", async (req, res) => {
+  try {
+    const weeks = req.query.weeks || 12;
+    const series = await getWeeklySeries(req.params.shopDomain, weeks);
+    res.json({ ok: true, weeks: series });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
