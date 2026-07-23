@@ -19,6 +19,72 @@ function templateForPlay(play) {
   return PLAY_TEMPLATE_MAP[key] || DEFAULT_STARTING_TEMPLATE;
 }
 
+// D0: single inline-SVG icon system (no icon library). Each entry is the inner
+// markup of a 24-viewBox, stroke-1.75, round-cap icon. Fallback: "play".
+const ICON_PATHS = {
+  winback: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/>',
+  discount: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  journey: '<path d="M4 8h12a4 4 0 0 1 0 8H8"/><path d="M8 4 4 8l4 4"/>',
+  bundle: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  replenish: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/>',
+  bestseller: '<path d="m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 21l1.1-6.5L2.6 9.8l6.5-.9L12 3Z"/>',
+  subscription: '<path d="M17 2l4 4-4 4"/><path d="M3 10V8a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 14v2a4 4 0 0 1-4 4H3"/>',
+  watch: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="m10 8 5 4-5 4Z"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  users: '<path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="8" r="3.5"/><path d="M22 20v-2a4 4 0 0 0-3-3.9"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/>',
+  spark: '<path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m6 6 2.5 2.5"/><path d="m15.5 15.5 2.5 2.5"/><path d="m18 6-2.5 2.5"/><path d="m8.5 15.5-2.5 2.5"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+  close: '<path d="M6 6 18 18"/><path d="M18 6 6 18"/>',
+  arrowRight: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  alert: '<path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/>',
+};
+
+function Icon({ name, size = 18, className }) {
+  const inner = ICON_PATHS[name] || ICON_PATHS.play;
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      dangerouslySetInnerHTML={{ __html: inner }}
+    />
+  );
+}
+
+// D0: play → icon. Fallback "play".
+const PLAY_ICON_MAP = {
+  winback_dormant_cohort: "winback",
+  winback_21_45: "winback",
+  at_risk_repeat_buyer_rescue: "winback",
+  cohort_journey_first_to_second: "journey",
+  aov_lift_via_threshold_bundle: "bundle",
+  discount_dependency_hygiene: "discount",
+  discount_hygiene: "discount",
+  bestseller_amplify: "bestseller",
+  replenishment_due: "replenish",
+  empty_bottle: "replenish",
+  subscription_nudge: "subscription",
+  frequency_accelerator: "spark",
+  routine_builder: "bundle",
+  onsite_funnel_watch: "watch",
+};
+
+function iconForPlay(play, lane) {
+  if (lane === "experiment") return "spark";
+  const key = play?.play_id || play?.id;
+  return PLAY_ICON_MAP[key] || "play";
+}
+
 function StatCard({ label, value, detail }) {
   return (
     <div className="stat-card">
@@ -366,7 +432,7 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
   const selectedActionable = selected && lane !== "considered";
   return (
     <button className={`recommendation-row ${selected ? "selected" : ""}`} onClick={() => onSelect(play.play_id || play.id)}>
-      <span className={`recommendation-icon ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
+      <span className={`recommendation-icon ${lane}`}><Icon name={iconForPlay(play, lane)} size={18} /></span>
       <span className="recommendation-row-body">
         {selectedActionable ? <span className="recommendation-overline">Primary</span> : null}
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
@@ -378,11 +444,11 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
               {confidenceLabel} confidence
             </span>
           ) : null}
-          {approved ? <span className="approved-pill">✓ Approved</span> : null}
+          {approved ? <span className="approved-pill"><Icon name="check" size={12} /> Approved</span> : null}
         </span>
         {evidenceLine ? <span className="recommendation-evidence-line">{evidenceLine}</span> : null}
       </span>
-      <span className="recommendation-chevron">›</span>
+      <span className="recommendation-chevron"><Icon name="chevron" size={16} /></span>
     </button>
   );
 }
@@ -416,12 +482,11 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
   return (
     <div className="recommendation-detail">
       <div className="recommendation-detail-head">
-        <span className={`recommendation-icon large ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
+        <span className={`recommendation-icon large ${lane}`}><Icon name={iconForPlay(play, lane)} size={22} /></span>
         <div>
           <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Not ready yet" : "Primary recommendation"}</div>
           <h2>{play.play_name || play.play_id}</h2>
         </div>
-        <button className="icon-menu" type="button" aria-label="More actions">...</button>
       </div>
 
       {play.evidence_line ? <div className="detail-evidence-line">{play.evidence_line}</div> : null}
@@ -569,7 +634,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               // P-C3: approved plays show a state chip that jumps to Campaigns,
               // not a second Approve control.
               <button type="button" className="in-campaigns-chip" onClick={() => onOpenInCampaigns(play)}>
-                ✓ In campaigns →
+                <Icon name="check" size={14} /> In campaigns <Icon name="arrowRight" size={14} />
               </button>
             ) : (
               <button className="btn primary" onClick={() => onSendToReview(play)}>Approve &amp; pick template</button>
@@ -2107,12 +2172,12 @@ function App() {
         <section className="page">
           {toast ? (
             <div className={`toast ${toast.error ? "error" : ""}`} role="status" aria-live="polite">
-              <span className="toast-check" aria-hidden="true">{toast.error ? "!" : "✓"}</span>
+              <span className="toast-check" aria-hidden="true"><Icon name={toast.error ? "alert" : "check"} size={13} /></span>
               <span className="toast-message">{toast.message}</span>
               {toast.actionLabel && toast.onAction ? (
                 <button type="button" className="toast-action" onClick={toast.onAction}>{toast.actionLabel}</button>
               ) : null}
-              <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => setToast(null)}>×</button>
+              <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => setToast(null)}><Icon name="close" size={14} /></button>
             </div>
           ) : null}
           {error ? <div className="error-box">{error}</div> : null}
@@ -2321,7 +2386,7 @@ function App() {
                                   disabled={!step.enabled}
                                   onClick={() => step.enabled && setWorkspaceStep(step.key)}
                                 >
-                                  <span className="step-marker">{state === "done" ? "✓" : i + 1}</span>
+                                  <span className="step-marker">{state === "done" ? <Icon name="check" size={14} /> : state === "locked" ? <Icon name="lock" size={13} /> : i + 1}</span>
                                   <span className="step-label">{step.label}</span>
                                 </button>
                               </li>
@@ -2411,7 +2476,7 @@ function App() {
 
                           {workspaceStep === "send" ? (
                             isSent ? (
-                              <span className="send-done">✓ Sent</span>
+                              <span className="send-done"><Icon name="check" size={15} /> Sent</span>
                             ) : !status.klaviyo ? (
                               // P-D2: never a dead/erroring send button when Klaviyo is unconnected.
                               <button className="btn primary" onClick={() => startOAuth("klaviyo")}>Connect Klaviyo to send</button>
