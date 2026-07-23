@@ -282,8 +282,51 @@ async function getEngineInput(shopDomain) {
   };
 }
 
+// D6b: weekly order counts + weekly first-time-customer counts for sparklines.
+// Read-only. A customer's first-time week is the week of their earliest order.
+async function getWeeklySeries(shopDomain, weeks = 12) {
+  const span = Math.max(1, Math.min(52, Number(weeks) || 12));
+  const result = await query(
+    `WITH bounded AS (
+       SELECT id, customer_id, created_at,
+              date_trunc('week', created_at) AS week
+       FROM clean.orders
+       WHERE shop_domain = $1
+         AND created_at >= date_trunc('week', now()) - ($2::int - 1) * interval '1 week'
+         AND (test IS NULL OR test = false)
+         AND cancelled_at IS NULL
+     ),
+     first_order AS (
+       SELECT customer_id, MIN(created_at) AS first_at
+       FROM clean.orders
+       WHERE shop_domain = $1
+         AND customer_id IS NOT NULL
+         AND (test IS NULL OR test = false)
+         AND cancelled_at IS NULL
+       GROUP BY customer_id
+     )
+     SELECT b.week,
+            COUNT(*) AS orders,
+            COUNT(*) FILTER (
+              WHERE b.customer_id IS NOT NULL
+                AND fo.first_at = b.created_at
+            ) AS new_customers
+     FROM bounded b
+     LEFT JOIN first_order fo ON fo.customer_id = b.customer_id
+     GROUP BY b.week
+     ORDER BY b.week ASC`,
+    [shopDomain, span]
+  );
+  return result.rows.map((row) => ({
+    week: row.week,
+    orders: Number(row.orders) || 0,
+    newCustomers: Number(row.new_customers) || 0,
+  }));
+}
+
 module.exports = {
   saveRawShopifyData,
   upsertAllShopifyData,
   getEngineInput,
+  getWeeklySeries,
 };

@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { baseEngineRun } from "./engineMock";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -19,73 +18,70 @@ function templateForPlay(play) {
   return PLAY_TEMPLATE_MAP[key] || DEFAULT_STARTING_TEMPLATE;
 }
 
-function StatCard({ label, value, detail }) {
+// D0: single inline-SVG icon system (no icon library). Each entry is the inner
+// markup of a 24-viewBox, stroke-1.75, round-cap icon. Fallback: "play".
+const ICON_PATHS = {
+  winback: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/>',
+  discount: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  journey: '<path d="M4 8h12a4 4 0 0 1 0 8H8"/><path d="M8 4 4 8l4 4"/>',
+  bundle: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>',
+  replenish: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v4h-4"/>',
+  bestseller: '<path d="m12 3 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 21l1.1-6.5L2.6 9.8l6.5-.9L12 3Z"/>',
+  subscription: '<path d="M17 2l4 4-4 4"/><path d="M3 10V8a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 14v2a4 4 0 0 1-4 4H3"/>',
+  watch: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="m10 8 5 4-5 4Z"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  users: '<path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="8" r="3.5"/><path d="M22 20v-2a4 4 0 0 0-3-3.9"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/>',
+  spark: '<path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m6 6 2.5 2.5"/><path d="m15.5 15.5 2.5 2.5"/><path d="m18 6-2.5 2.5"/><path d="m8.5 15.5-2.5 2.5"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+  close: '<path d="M6 6 18 18"/><path d="M18 6 6 18"/>',
+  arrowRight: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  alert: '<path d="M12 9v4"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/>',
+};
+
+function Icon({ name, size = 18, className }) {
+  const inner = ICON_PATHS[name] || ICON_PATHS.play;
   return (
-    <div className="stat-card">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {detail ? <div className="stat-detail">{detail}</div> : null}
-    </div>
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      dangerouslySetInnerHTML={{ __html: inner }}
+    />
   );
 }
 
-function HomeMetricCard({ label, value, detail, tone = "neutral" }) {
-  return (
-    <div className={`home-metric-card ${tone}`}>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      {detail ? <div className="stat-detail">{detail}</div> : null}
-    </div>
-  );
-}
+// D0: play → icon. Fallback "play".
+const PLAY_ICON_MAP = {
+  winback_dormant_cohort: "winback",
+  winback_21_45: "winback",
+  at_risk_repeat_buyer_rescue: "winback",
+  cohort_journey_first_to_second: "journey",
+  aov_lift_via_threshold_bundle: "bundle",
+  discount_dependency_hygiene: "discount",
+  discount_hygiene: "discount",
+  bestseller_amplify: "bestseller",
+  replenishment_due: "replenish",
+  empty_bottle: "replenish",
+  subscription_nudge: "subscription",
+  frequency_accelerator: "spark",
+  routine_builder: "bundle",
+  onsite_funnel_watch: "watch",
+};
 
-function HomeModule({ title, detail, action, onAction, children }) {
-  return (
-    <div className="home-module">
-      <div className="home-module-head">
-        <div>
-          <h3>{title}</h3>
-          {detail ? <p>{detail}</p> : null}
-        </div>
-        {action ? <button className="btn" onClick={onAction}>{action}</button> : null}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function ConnectionCard({ label, connected, detail, onAction }) {
-  return (
-    <div className={`connection-card ${connected ? "connected" : ""}`}>
-      <div>
-        <span className="connection-dot" />
-        <strong>{label}</strong>
-        <p>{detail}</p>
-      </div>
-      <button className="btn" onClick={onAction}>{connected ? "Refresh" : "Connect"}</button>
-    </div>
-  );
-}
-
-function OnboardingStep({ number, title, detail, done, action, onAction, secondaryAction, onSecondaryAction }) {
-  return (
-    <div className={`onboarding-step ${done ? "done" : ""}`}>
-      <div className="onboarding-step-num">{done ? "✓" : number}</div>
-      <div className="onboarding-step-body">
-        <div className="onboarding-step-head">
-          <div>
-            <h3>{title}</h3>
-            <p>{detail}</p>
-          </div>
-          <span className={`onboarding-status ${done ? "done" : ""}`}>{done ? "Complete" : "Next"}</span>
-        </div>
-        <div className="action-row">
-          {action ? <button className="btn primary" onClick={onAction}>{action}</button> : null}
-          {secondaryAction ? <button className="btn" onClick={onSecondaryAction}>{secondaryAction}</button> : null}
-        </div>
-      </div>
-    </div>
-  );
+function iconForPlay(play, lane) {
+  if (lane === "experiment") return "spark";
+  const key = play?.play_id || play?.id;
+  return PLAY_ICON_MAP[key] || "play";
 }
 
 // P-D1: compact connection chip. Connected → a green dot with a title-attr label.
@@ -100,23 +96,6 @@ function StatusChip({ label, ok, onConnect }) {
   return <span className="status-chip pending">{label}: Pending</span>;
 }
 
-function EmailPreview({ campaign }) {
-  if (!campaign) return <div className="empty-panel">Run analysis to generate a campaign preview.</div>;
-  return (
-    <div className="email-preview">
-      <div className="email-topline">
-        <span>Subject</span>
-        <strong>{campaign.email?.subject}</strong>
-      </div>
-      <div className="email-body" dangerouslySetInnerHTML={{ __html: campaign.email?.html || "" }} />
-      <div className="sms-box">
-        <div className="section-kicker">SMS copy</div>
-        {campaign.sms}
-      </div>
-    </div>
-  );
-}
-
 function JsonBlock({ title, value }) {
   return (
     <details className="json-block">
@@ -126,23 +105,10 @@ function JsonBlock({ title, value }) {
   );
 }
 
-function PlaceholderPlay({ play }) {
-  return (
-    <div className="placeholder-play">
-      <div className="play-num">{play.play_id}</div>
-      <h3>{play.play_name || play.play_id}</h3>
-      <p>{play.mechanism}</p>
-      <div className="evidence-row">
-        {play.audience_archetype ? <span>{play.audience_archetype}</span> : null}
-        {play.audience_size ? <span>Audience: {play.audience_size}</span> : null}
-        {play.evidence?.evidence_class ? <span>Evidence: {play.evidence.evidence_class}</span> : null}
-      </div>
-    </div>
-  );
-}
-
 function statusLabel(value) {
-  return String(value || "pending").replaceAll("_", " ");
+  return String(value || "pending")
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function readableMetaLabel(value) {
@@ -152,43 +118,6 @@ function readableMetaLabel(value) {
   if (["engine", "review", "pending", "placeholder"].includes(normalized)) return null;
   if (normalized === "store observed") return "Observed in store data";
   return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function buildDashboardRun(placeholderRun, counts) {
-  const productCount = placeholderRun?.input_summary?.products ?? counts.products ?? 0;
-  const customerCount = placeholderRun?.input_summary?.customers ?? counts.customers ?? 0;
-  const orderCount = placeholderRun?.input_summary?.orders ?? counts.orders ?? 0;
-  const total = Math.max(productCount + customerCount + orderCount, 1);
-
-  if (!placeholderRun) {
-    return {
-      ...baseEngineRun,
-      audience_segments: baseEngineRun.audience_segments.map((segment) => {
-        const value = segment.label === "Known customers" ? customerCount : segment.label === "Purchased orders" ? orderCount : segment.label === "Catalog products" ? productCount : Math.max(customerCount - orderCount, 0);
-        return { ...segment, n: value, pct: Math.round((value / total) * 100) };
-      }),
-    };
-  }
-
-  return {
-    ...baseEngineRun,
-    ...placeholderRun,
-    slate: {
-      ...baseEngineRun.slate,
-      ...placeholderRun.slate,
-    },
-    predictive_models: {
-      ...baseEngineRun.predictive_models,
-      ...placeholderRun.predictive_models,
-    },
-    audience_segments: (placeholderRun.audience_segments || baseEngineRun.audience_segments).map((segment) => ({
-      ...segment,
-      pct: Math.round(((segment.n || 0) / total) * 100),
-      color_role: segment.color_role || "loyal",
-    })),
-    cohort_retention: baseEngineRun.cohort_retention,
-    month_2_delta: baseEngineRun.month_2_delta,
-  };
 }
 
 function titleizeId(value) {
@@ -212,7 +141,7 @@ function normalizeAtulPlay(play, index) {
     mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Recommendation ready for your review.",
     audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Recommended audience",
     audience_size: audienceSize,
-    confidence: play.confidence_label || play.confidence || play.model_confidence || "engine",
+    confidence: play.confidence_label || play.confidence || play.model_confidence || "Review",
     evidence: play.evidence || { evidence_source: play.evidence_source || null, evidence_class: play.evidence_class || null },
     evidence_source: play.evidence_source || play.evidence?.evidence_source || null,
     evidence_line: play.evidence_line || null,
@@ -366,7 +295,7 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
   const selectedActionable = selected && lane !== "considered";
   return (
     <button className={`recommendation-row ${selected ? "selected" : ""}`} onClick={() => onSelect(play.play_id || play.id)}>
-      <span className={`recommendation-icon ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
+      <span className={`recommendation-icon ${lane}`}><Icon name={iconForPlay(play, lane)} size={18} /></span>
       <span className="recommendation-row-body">
         {selectedActionable ? <span className="recommendation-overline">Primary</span> : null}
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
@@ -378,11 +307,11 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
               {confidenceLabel} confidence
             </span>
           ) : null}
-          {approved ? <span className="approved-pill">✓ Approved</span> : null}
+          {approved ? <span className="approved-pill"><Icon name="check" size={12} /> Approved</span> : null}
         </span>
         {evidenceLine ? <span className="recommendation-evidence-line">{evidenceLine}</span> : null}
       </span>
-      <span className="recommendation-chevron">›</span>
+      <span className="recommendation-chevron"><Icon name="chevron" size={16} /></span>
     </button>
   );
 }
@@ -399,29 +328,30 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
   const lane = classifyPlayLane(play);
   const revenue = revenueRangeParts(play);
   const revenueLabel = formatRevenueRange(play);
-  const oneLiner = play.play_one_liner || play.audience_archetype || "";
   const audienceLabel = formatAudience(play.audience_size);
-  const bannerText = oneLiner
-    ? `${oneLiner} — ${audienceLabel} customers.`
-    : `${audienceLabel} customers in this group.`;
   const heldReason = play.reason_display || "BeaconAI needs more store data before recommending this.";
+  // D1: confidence as a 3-segment meter. Measured/High → 3, Emerging → 2, else 1.
+  const confidenceLc = String(confidence).toLowerCase();
+  const confidenceSegments = /measured|high/.test(confidenceLc) ? 3 : /emerging/.test(confidenceLc) ? 2 : 1;
   const tabLabels = [
     ["thesis", "Play thesis"],
     ["send", "What we'd send"],
-    ["evidence", "Evidence"],
-    ["audience", "Audience"],
+    ["evidence", "Evidence & audience"],
     ...(showAdvanced ? [["sensitivity", "Sensitivity"]] : []),
   ];
+  // D1: never render the raw enum for signal source.
+  const signalSource = (play.evidence_source || play.evidence?.evidence_source) === "STORE_MEASURED"
+    ? "Measured from your store's orders"
+    : "Modeled from similar stores";
 
   return (
     <div className="recommendation-detail">
       <div className="recommendation-detail-head">
-        <span className={`recommendation-icon large ${lane}`}>{lane === "experiment" ? "✦" : lane === "considered" ? "□" : "▷"}</span>
+        <span className={`recommendation-icon large ${lane}`}><Icon name={iconForPlay(play, lane)} size={22} /></span>
         <div>
           <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Not ready yet" : "Primary recommendation"}</div>
           <h2>{play.play_name || play.play_id}</h2>
         </div>
-        <button className="icon-menu" type="button" aria-label="More actions">...</button>
       </div>
 
       {play.evidence_line ? <div className="detail-evidence-line">{play.evidence_line}</div> : null}
@@ -438,12 +368,15 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
           </div>
         ) : null}
         <div>
-          <strong>{statusLabel(confidence)}</strong>
+          <div className="confidence-meter" title={CONFIDENCE_TITLE}>
+            {[1, 2, 3].map((seg) => (
+              <span key={seg} className={`confidence-seg ${seg <= confidenceSegments ? "filled" : ""}`} />
+            ))}
+            <strong className="confidence-meter-label">{statusLabel(confidence)}</strong>
+          </div>
           <span title={CONFIDENCE_TITLE}>Confidence</span>
         </div>
       </div>
-
-      <div className="recommendation-banner">{bannerText}</div>
 
       <div className="recommendation-tabs">
         {tabLabels.map(([key, label]) => (
@@ -465,20 +398,28 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <div className="section-kicker">Play thesis</div>
               <p>{narration.play_thesis || play.mechanism || "Recommendation ready for merchant review."}</p>
             </div>
-            {revenue ? (
-              <div className="revenue-range">
-                <div className="section-kicker">Est. opportunity</div>
-                <div className="range-track">
-                  <span className="range-fill" />
-                  <span className="range-marker" style={{ left: "88%" }} />
+            {revenue ? (() => {
+              // D1: marker position derived from data, not hardcoded. Clamp 4–96%.
+              const span = revenue.high - revenue.low;
+              const raw = revenue.median != null && span > 0
+                ? ((revenue.median - revenue.low) / span) * 100
+                : 50;
+              const markerLeft = Math.min(96, Math.max(4, raw));
+              return (
+                <div className="revenue-range">
+                  <div className="section-kicker">Est. opportunity</div>
+                  <div className="range-track">
+                    <span className="range-fill" />
+                    <span className="range-marker" style={{ left: `${markerLeft}%` }} />
+                  </div>
+                  <div className="range-labels">
+                    <span>{revenue.labelLow}</span>
+                    {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
+                    <span>{revenue.labelHigh}</span>
+                  </div>
                 </div>
-                <div className="range-labels">
-                  <span>{revenue.labelLow}</span>
-                  {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
-                  <span>{revenue.labelHigh}</span>
-                </div>
-              </div>
-            ) : null}
+              );
+            })() : null}
           </>
         ) : null}
 
@@ -507,18 +448,8 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
             </div>
             <div className="model-row">
               <span>Signal source</span>
-              <strong>{play.evidence_source || play.evidence?.evidence_source || "Engine output"}</strong>
+              <strong>{signalSource}</strong>
             </div>
-            <div className="model-row">
-              <span>Decision status</span>
-              <strong>{play.reason_code ? statusLabel(play.reason_code) : "Ready for review"}</strong>
-            </div>
-            <div className="evidence-fineprint">{play.play_id || play.id}</div>
-          </>
-        ) : null}
-
-        {activeTab === "audience" ? (
-          <>
             <div className="model-row">
               <span>Audience</span>
               <strong>{play.audience_archetype || "Recommended audience"}</strong>
@@ -531,6 +462,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <span>Suppression</span>
               <strong>Recent purchasers, unsubscribes</strong>
             </div>
+            <div className="evidence-fineprint">{play.play_id || play.id}</div>
           </>
         ) : null}
 
@@ -569,7 +501,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               // P-C3: approved plays show a state chip that jumps to Campaigns,
               // not a second Approve control.
               <button type="button" className="in-campaigns-chip" onClick={() => onOpenInCampaigns(play)}>
-                ✓ In campaigns →
+                <Icon name="check" size={14} /> In campaigns <Icon name="arrowRight" size={14} />
               </button>
             ) : (
               <button className="btn primary" onClick={() => onSendToReview(play)}>Approve &amp; pick template</button>
@@ -577,103 +509,6 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function EnginePlayCard({ play, onGreenlight, onViewEvidence }) {
-  const gates = play.gate_status || {};
-  return (
-    <div className={`engine-play-card ${play.role === "recommended_experiment" ? "experiment" : ""}`}>
-      <div className="play-role-badge">{play.reason_code ? "Considered - held" : "Recommendation"}</div>
-      <h3>{play.play_name || play.play_id}</h3>
-      <div className="play-archetype">{play.audience_archetype || "ENGINE_PLACEHOLDER"}</div>
-      <p>{play.mechanism}</p>
-      <div className="evidence-class-row">
-        <span className="evidence-class">{play.evidence?.evidence_class || play.reason_code || "placeholder"}</span>
-        <span className="evidence-class-desc">
-          {play.evidence?.p_value ? `p = ${play.evidence.p_value}` : "Awaiting real engine evidence"}
-        </span>
-      </div>
-      <div className="gates-row">
-        <span className={`gate-pill ${gates.cohort_pvalue ? "pass" : ""}`}>Cohort p-value</span>
-        <span className={`gate-pill ${gates.prior_validation ? "pass" : ""}`}>Prior validation</span>
-        <span className={`gate-pill ${gates.ml_fit ? "pass" : ""}`}>ML fit</span>
-      </div>
-      <div className="play-meta-row">
-        <div>
-          <span className="play-meta-label">Audience</span>
-          <strong>{play.audience_size?.toLocaleString?.() || "—"}</strong>
-        </div>
-        <div>
-          <span className="play-meta-label">Revenue</span>
-          <strong>{play.revenue_range ? `$${play.revenue_range.low}-$${play.revenue_range.high}` : "—"}</strong>
-        </div>
-        <div>
-          <span className="play-meta-label">Model</span>
-          <strong>{play.model || "placeholder"}</strong>
-        </div>
-      </div>
-      <div className="play-cta-row">
-        <button className="btn primary" onClick={() => onGreenlight?.(play)}>Greenlight play</button>
-        <button className="btn" onClick={() => onViewEvidence?.(play)}>View evidence</button>
-      </div>
-    </div>
-  );
-}
-
-function ModelCardPanel({ model }) {
-  return (
-    <div className="model-card">
-      <div className="model-card-head">
-        <div>
-          <h3>{model.display_name}</h3>
-          <span>{model.name || model.handoff_status || "placeholder"}</span>
-        </div>
-        <strong>{model.fit_status}</strong>
-      </div>
-      <div className="model-stats">
-        <span>Observed <strong>{model.n_observed?.toLocaleString?.() || "—"}</strong></span>
-        <span>Window <strong>{model.training_window_days ? `${model.training_window_days}d` : "—"}</strong></span>
-        <span>MAPE <strong>{model.holdout_mape ? `${(model.holdout_mape * 100).toFixed(1)}%` : "—"}</strong></span>
-      </div>
-      {(model.fit_warnings || []).map((warning) => <div className="model-warning" key={warning}>{warning}</div>)}
-    </div>
-  );
-}
-
-function SegmentBars({ segments }) {
-  const max = Math.max(...segments.map((segment) => segment.n || 0), 1);
-  return (
-    <div className="chart-panel">
-      {segments.map((segment) => (
-        <div className="segment-row" key={segment.label}>
-          <div className="segment-meta">
-            <span>{segment.label}</span>
-            <strong>{segment.n?.toLocaleString?.() || 0}</strong>
-          </div>
-          <div className="segment-track">
-            <div className={`segment-fill ${segment.color_role || "loyal"}`} style={{ width: `${Math.max(((segment.n || 0) / max) * 100, 4)}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CohortRetentionChart({ curves }) {
-  return (
-    <div className="chart-panel cohort-panel">
-      {curves.map((curve) => (
-        <div className="cohort-row" key={curve.cohort_label}>
-          <div className="cohort-label">{curve.cohort_label}</div>
-          <div className="cohort-points">
-            {curve.points.map((point) => (
-              <span key={point.month} style={{ height: `${Math.max(point.p50 * 100, 10)}%` }} title={`M${point.month}: ${(point.p50 * 100).toFixed(0)}%`} />
-            ))}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
@@ -692,7 +527,7 @@ function CampaignSendPanel({ campaign, onEditStep }) {
   return (
     <div className="send-confirm">
       <p className="send-statement">
-        Send “{selected.subject}” to {selected.customers} matched customers through your Klaviyo account.
+        Send “{selected.subject}” to {formatAudience(selected.customers)} matched customers through your Klaviyo account.
       </p>
 
       <div className="send-summary">
@@ -723,90 +558,11 @@ function CampaignSendPanel({ campaign, onEditStep }) {
       </div>
 
       {selected.klaviyoTemplateId ? (
-        <div className="success-box">
-          Created Klaviyo campaign <strong>{selected.klaviyoCampaignId || selected.klaviyoTemplateId}</strong>
-          {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
-          {selected.klaviyoSendJobId ? ` Send job: ${selected.klaviyoSendJobId}.` : ""}
+        <div className="success-box" title={`Template ${selected.klaviyoTemplateId}${selected.klaviyoCampaignId ? ` · Campaign ${selected.klaviyoCampaignId}` : ""}${selected.klaviyoSendJobId ? ` · Send job ${selected.klaviyoSendJobId}` : ""}`}>
+          Created in Klaviyo — “{selected.templateName || "your campaign"}” is waiting as a draft.
+          {selected.klaviyoAudience ? ` List matched ${formatAudience(selected.klaviyoAudience.count)} recipients.` : ""}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function EditableCampaignDraft({ draft, onChange, onSendToCampaigns }) {
-  if (!draft) return null;
-
-  const update = (field) => (event) => onChange(field, event.target.value);
-
-  return (
-    <div className="draft-editor">
-      <div className="draft-editor-form">
-        <label>
-          <span>Subject line</span>
-          <input value={draft.subject} onChange={update("subject")} />
-        </label>
-        <label>
-          <span>Preview text</span>
-          <input value={draft.previewText} onChange={update("previewText")} />
-        </label>
-        <label>
-          <span>Headline</span>
-          <input value={draft.bodyH2} onChange={update("bodyH2")} />
-        </label>
-        <label>
-          <span>Main message</span>
-          <textarea value={draft.bodyP1} onChange={update("bodyP1")} rows={4} />
-        </label>
-        <label>
-          <span>Support copy</span>
-          <textarea value={draft.bodyP2} onChange={update("bodyP2")} rows={3} />
-        </label>
-        <div className="draft-editor-row">
-          <label>
-            <span>CTA</span>
-            <input value={draft.cta} onChange={update("cta")} />
-          </label>
-          <label>
-            <span>Send timing</span>
-            <input value={draft.sendTime} onChange={update("sendTime")} />
-          </label>
-        </div>
-        <label>
-          <span>Suppression</span>
-          <input value={draft.suppression} onChange={update("suppression")} />
-        </label>
-      </div>
-
-      <div className="campaign-detail-panel draft-preview-panel">
-        <div className="pkg-origin">
-          <span>Template</span>
-          <strong>{draft.templateName} · {draft.templateSource}</strong>
-        </div>
-        <div className="email-preview">
-          <div className="email-topline">
-            <span>Subject</span>
-            <strong>{draft.subject}</strong>
-          </div>
-          <div className="email-topline">
-            <span>Preview</span>
-            <strong>{draft.previewText}</strong>
-          </div>
-          <div className="email-body">
-            <h1>{draft.bodyH2}</h1>
-            <p>{draft.bodyP1}</p>
-            <p>{draft.bodyP2}</p>
-            <p><strong>{draft.cta}</strong></p>
-          </div>
-        </div>
-        <div className="segment-spec">
-          <div><span>Audience</span><strong>{draft.segment}</strong></div>
-          <div><span>Send</span><strong>{draft.sendTime}</strong></div>
-          <div><span>Suppression</span><strong>{draft.suppression}</strong></div>
-        </div>
-        <div className="action-row">
-          <button className="btn primary" onClick={onSendToCampaigns}>Send to Campaigns</button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1093,38 +849,53 @@ function CampaignReviewPane({
   );
 }
 
-function MonthTwoDeltaPanel({ delta }) {
+function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending, ordersSeries, customersSeries }) {
+  // D1: metric tiles — micro label above a 22px value. Accent when actionable > 0.
+  const items = [
+    { label: "Products", value: products },
+    { label: "Customers", value: customers, series: customersSeries, seriesTone: "muted" },
+    { label: "Orders", value: orders, series: ordersSeries, seriesTone: "accent" },
+    { label: "Needs review", value: reviewPending, accentWhenPositive: true },
+    { label: "In pipeline", value: campaignsPending, accentWhenPositive: true },
+  ];
   return (
-    <div className="delta-grid">
-      <StatCard label="Previous p50 LTV" value={`$${delta.ltv_evolution.prev_p50}`} detail="placeholder" />
-      <StatCard label="Current p50 LTV" value={`$${delta.ltv_evolution.curr_p50}`} detail="placeholder" />
-      <StatCard label="Delta" value={`${delta.ltv_evolution.delta_pct >= 0 ? "+" : ""}${delta.ltv_evolution.delta_pct}%`} detail="month over month" />
-      <div className="placeholder-panel">
-        <div className="section-kicker">Audience movement</div>
-        <div className="model-row"><span>Grew</span><strong>{delta.audiences_grew.join(", ")}</strong></div>
-        <div className="model-row"><span>Shrank</span><strong>{delta.audiences_shrank.join(", ")}</strong></div>
-      </div>
+    <div className="briefing-stat-strip">
+      {items.map(({ label, value, accentWhenPositive, series, seriesTone }) => (
+        <div key={label} className="briefing-stat metric-tile">
+          <span className="metric-tile-label">{label}</span>
+          <strong className={accentWhenPositive && Number(value) > 0 ? "metric-tile-value accent" : "metric-tile-value"}>
+            <MetricValue value={value} />
+          </strong>
+          {series && series.length > 1 ? <Sparkline points={series} tone={seriesTone} /> : null}
+        </div>
+      ))}
     </div>
   );
 }
 
-function BriefingStatStrip({ products, customers, orders, reviewPending, campaignsPending }) {
-  const items = [
-    ["Products", products],
-    ["Customers", customers],
-    ["Orders", orders],
-    ["Needs review", reviewPending],
-    ["In pipeline", campaignsPending],
-  ];
+// D4: metric value with count-up. Non-numeric (e.g. "—") renders as-is.
+function MetricValue({ value }) {
+  const numeric = typeof value === "number" || (typeof value === "string" && value !== "" && Number.isFinite(Number(value)));
+  const animated = useCountUp(numeric ? Number(value) : NaN);
+  if (!numeric) return <>{value}</>;
+  return <>{animated.toLocaleString()}</>;
+}
+
+// D6b: tiny inline sparkline (110×26, no axes). Points are numbers.
+function Sparkline({ points, tone = "accent" }) {
+  const w = 110, h = 26, pad = 2;
+  const max = Math.max(...points), min = Math.min(...points);
+  const span = max - min || 1;
+  const step = (w - pad * 2) / (points.length - 1);
+  const coords = points.map((p, i) => {
+    const x = pad + i * step;
+    const y = h - pad - ((p - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
   return (
-    <div className="briefing-stat-strip">
-      {items.map(([label, value]) => (
-        <div key={label} className="briefing-stat">
-          <strong>{value}</strong>
-          <span>{label}</span>
-        </div>
-      ))}
-    </div>
+    <svg className={`sparkline ${tone}`} width={w} height={h} viewBox={`0 0 ${w} ${h}`} fill="none" aria-hidden="true">
+      <polyline points={coords} stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -1184,12 +955,19 @@ function ResultsPage({ campaigns }) {
         reportDate.setDate(reportDate.getDate() + 30);
         const reportLabel = reportDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
         const sentLabel = base ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Pending send";
+        // D3: measurement progress — days elapsed of 30.
+        const daysElapsed = Math.max(0, (Date.now() - parsed.getTime()) / 86400000);
+        const progress = Math.min(1, daysElapsed / 30) * 100;
         return (
           <div key={item.id} className="results-row">
-            <div>
-              <strong>{item.playTitle}</strong>
-              <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+            <div className="results-head">
+              <span className="results-icon"><Icon name="mail" size={18} /></span>
+              <div className="results-head-body">
+                <h3>{item.playTitle}</h3>
+                <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+              </div>
             </div>
+            <div className="results-progress"><span style={{ width: `${progress}%` }} /></div>
             <p className="results-status">Measurement in progress — first report {reportLabel}.</p>
           </div>
         );
@@ -1280,16 +1058,46 @@ function BriefingWorking() {
     return () => clearInterval(id);
   }, []);
   return (
-    <div className="briefing-working" role="status" aria-live="polite">
-      <div className="first-run-spinner" aria-hidden="true" />
-      <div className="briefing-working-text">
-        <span>{messages[index]}</span>
-        <div className="briefing-working-bar" aria-hidden="true">
-          <div className="briefing-working-bar-fill" />
+    <div role="status" aria-live="polite">
+      <div className="briefing-working">
+        <div className="first-run-spinner" aria-hidden="true" />
+        <div className="briefing-working-text">
+          <span>{messages[index]}</span>
+          <div className="briefing-working-bar" aria-hidden="true">
+            <div className="briefing-working-bar-fill" />
+          </div>
         </div>
+      </div>
+      {/* D4: shimmer skeleton silhouette */}
+      <div className="skeleton-page" aria-hidden="true">
+        <div className="skeleton skeleton-row w-50" />
+        <div className="skeleton skeleton-row w-70" />
+        <div className="skeleton skeleton-card" />
       </div>
     </div>
   );
+}
+
+// D4: count-up on mount (integers). Returns the display value; skips on reduced-motion.
+function useCountUp(target, duration = 500) {
+  const [value, setValue] = useState(0);
+  const rafRef = useRef(null);
+  useEffect(() => {
+    const end = Number(target);
+    if (!Number.isFinite(end)) { setValue(target); return undefined; }
+    const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || end === 0) { setValue(end); return undefined; }
+    let startTs = null;
+    const tick = (ts) => {
+      if (startTs == null) startTs = ts;
+      const p = Math.min(1, (ts - startTs) / duration);
+      setValue(Math.round(end * p));
+      if (p < 1) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [target, duration]);
+  return value;
 }
 
 function App() {
@@ -1329,6 +1137,8 @@ function App() {
   const [campaignPackages, setCampaignPackages] = useState([]);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [flashCampaignId, setFlashCampaignId] = useState("");
+  // D6b: weekly series for the Orders / Customers sparklines.
+  const [statsSeries, setStatsSeries] = useState(null);
   // Transient confirmation toast: { message, actionLabel?, onAction? }.
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
@@ -1353,7 +1163,6 @@ function App() {
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
-  const dashboardRun = useMemo(() => buildDashboardRun(placeholderRun, counts), [placeholderRun, counts]);
   const workflowPlays = useMemo(
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
     [atulEngineResult, campaignPackages, campaign]
@@ -1453,6 +1262,7 @@ function App() {
     experimentRows.length === 0 &&
     consideredRows.length > 0;
   const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
+  const stateOfStoreObservations = atulEngineResult?.presentedRun?.state_of_store_observations || null;
   const briefingUpdatedAt = formatUpdatedAt(atulEngineResult?.presentedRun?.generated_at);
   const briefingHeading = !workflowPlays.length
     ? "Run your briefing to see recommendations"
@@ -1465,6 +1275,17 @@ function App() {
     preloadStoreSnapshot();
     loadBrandContext();
     loadLatestRun();
+  }, []);
+
+  // D6b: fetch weekly series once for sparklines. On failure, tiles render
+  // without sparklines — no error surfaced.
+  useEffect(() => {
+    if (!api.shopDomain) return;
+    let alive = true;
+    api.getStatsSeries(12)
+      .then((res) => { if (alive) setStatsSeries(res.weeks || []); })
+      .catch(() => { if (alive) setStatsSeries(null); });
+    return () => { alive = false; };
   }, []);
 
   // Clear any pending toast timer on unmount.
@@ -1772,16 +1593,6 @@ function App() {
     setSync({ synced: result.synced, shopDomain: result.shopDomain });
     setCampaign(result.campaign);
     setActivePage("campaigns");
-  }
-
-  async function loadEngineInput() {
-    const result = await runStep("Engine input load", () => api.getEngineInput());
-    setEngineInput(result.input);
-  }
-
-  async function loadPlaceholderEngineRun() {
-    const result = await runStep("Placeholder engine load", () => api.getPlaceholderEngineRun());
-    setPlaceholderRun(result.engineRun);
   }
 
   async function saveShopDomain(event) {
@@ -2104,15 +1915,15 @@ function App() {
           </div>
         </header>
 
-        <section className="page">
+        <section className="page page-rise" key={activePage}>
           {toast ? (
             <div className={`toast ${toast.error ? "error" : ""}`} role="status" aria-live="polite">
-              <span className="toast-check" aria-hidden="true">{toast.error ? "!" : "✓"}</span>
+              <span className="toast-check" aria-hidden="true"><Icon name={toast.error ? "alert" : "check"} size={13} /></span>
               <span className="toast-message">{toast.message}</span>
               {toast.actionLabel && toast.onAction ? (
                 <button type="button" className="toast-action" onClick={toast.onAction}>{toast.actionLabel}</button>
               ) : null}
-              <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => setToast(null)}>×</button>
+              <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => setToast(null)}><Icon name="close" size={14} /></button>
             </div>
           ) : null}
           {error ? <div className="error-box">{error}</div> : null}
@@ -2160,8 +1971,21 @@ function App() {
                 orders={orderCount}
                 reviewPending={reviewPendingCount}
                 campaignsPending={readyToSendCampaigns.length}
+                ordersSeries={statsSeries ? statsSeries.map((w) => w.orders) : null}
+                customersSeries={statsSeries ? statsSeries.map((w) => w.newCustomers) : null}
               />
-              {stateOfStore ? <div className="state-of-store">{stateOfStore}</div> : null}
+              {stateOfStoreObservations && stateOfStoreObservations.length ? (
+                <div className="delta-row">
+                  {stateOfStoreObservations.map((obs, i) => (
+                    <span key={i} className={`delta ${obs.direction}`}>
+                      <span className="delta-tri" aria-hidden="true">{obs.direction === "down" ? "▼" : obs.direction === "up" ? "▲" : "—"}</span>
+                      {obs.label} {obs.pct}%
+                    </span>
+                  ))}
+                </div>
+              ) : stateOfStore ? (
+                <div className="state-of-store-banner"><Icon name="watch" size={16} /><span>{stateOfStore}</span></div>
+              ) : null}
               <div className="briefing-titlebar">
                 <div>
                   <h2>{briefingHeading}</h2>
@@ -2270,7 +2094,7 @@ function App() {
                           className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`}
                           onClick={() => setReviewPlayId(play.id)}
                         >
-                          <span className={`rail-dot ${g}`} />
+                          <span className={`rail-icon ${g}`}><Icon name={iconForPlay(play)} size={16} /></span>
                           <span className="rail-row-body">
                             <strong>{play.play_name || play.play_id}</strong>
                             <small>{formatAudience(play.audience_size)} customers</small>
@@ -2321,7 +2145,7 @@ function App() {
                                   disabled={!step.enabled}
                                   onClick={() => step.enabled && setWorkspaceStep(step.key)}
                                 >
-                                  <span className="step-marker">{state === "done" ? "✓" : i + 1}</span>
+                                  <span className="step-marker">{state === "done" ? <Icon name="check" size={14} /> : state === "locked" ? <Icon name="lock" size={13} /> : i + 1}</span>
                                   <span className="step-label">{step.label}</span>
                                 </button>
                               </li>
@@ -2372,7 +2196,7 @@ function App() {
                                     {preview.recipients.slice(0, 25).map((recipient) => (
                                       <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
                                         <strong>{recipient.email}</strong>
-                                        <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
+                                        <span>{recipient.orderCount} orders · ${Number(recipient.totalRevenue || 0).toLocaleString()}</span>
                                       </div>
                                     ))}
                                     {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
@@ -2411,7 +2235,7 @@ function App() {
 
                           {workspaceStep === "send" ? (
                             isSent ? (
-                              <span className="send-done">✓ Sent</span>
+                              <span className="send-done"><Icon name="check" size={15} /> Sent</span>
                             ) : !status.klaviyo ? (
                               // P-D2: never a dead/erroring send button when Klaviyo is unconnected.
                               <button className="btn primary" onClick={() => startOAuth("klaviyo")}>Connect Klaviyo to send</button>
@@ -2447,124 +2271,8 @@ function App() {
             <ResultsPage campaigns={finalCampaigns} />
           )}
 
-          {activePage === "ledger" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Engine handoff</div>
-                <h2>Normalized data Atul’s Python engine can consume.</h2>
-                <p>Tables: shop, orders, order_line_items, customers, products, product_variants, refunds.</p>
-                <button className="btn primary" onClick={loadEngineInput}>Refresh engine input</button>
-              </div>
-              <JsonBlock title="Engine input JSON" value={engineInput || "Click Refresh engine input"} />
-            </>
-          )}
-
-          {activePage === "intelligence" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Statistical intelligence</div>
-                <h2>Placeholder model cards and audience views.</h2>
-                <p>These panels mirror the richer `beaconai-frontend-app` direction while waiting for the real engine output.</p>
-                <button className="btn primary" onClick={loadPlaceholderEngineRun}>Load live placeholder counts</button>
-              </div>
-              <div className="model-grid">
-                {Object.entries(dashboardRun.predictive_models || {}).map(([key, model]) => <ModelCardPanel key={key} model={model} />)}
-              </div>
-              <div className="placeholder-grid">
-                <div>
-                  <div className="section-kicker">RFM-style segments</div>
-                  <SegmentBars segments={dashboardRun.audience_segments || []} />
-                </div>
-                <div>
-                  <div className="section-kicker">Cohort retention</div>
-                  <CohortRetentionChart curves={dashboardRun.cohort_retention?.curves || []} />
-                </div>
-              </div>
-            </>
-          )}
-
-          {activePage === "considered" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Considered and held</div>
-                <h2>Plays BeaconAI would hold until stronger evidence exists.</h2>
-                <p>Reason codes explain why a recommendation is not ready for campaign review yet.</p>
-              </div>
-              {(dashboardRun.slate?.considered || []).map((play) => <EnginePlayCard key={play.play_id} play={play} onViewEvidence={setSelectedEvidence} />)}
-              {dashboardRun.month_2_delta ? <MonthTwoDeltaPanel delta={dashboardRun.month_2_delta} /> : <div className="empty-panel">No month-over-month comparison yet.</div>}
-            </>
-          )}
-
-          {activePage === "placeholder" && (
-            <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Engine placeholder</div>
-                <h2>Temporary richer engine run until Atul’s engine is wired in.</h2>
-                <p>
-                  This mirrors the direction of the polished `beaconai-frontend-app` dashboard: slate, evidence,
-                  model cards, audience segments, and a stable handoff contract.
-                </p>
-                <button className="btn primary" onClick={loadPlaceholderEngineRun}>Refresh placeholder</button>
-              </div>
-
-              {placeholderRun ? (
-                <>
-                  <div className="stats-grid">
-                    <StatCard label="Products" value={placeholderRun.input_summary?.products ?? "—"} detail="input summary" />
-                    <StatCard label="Customers" value={placeholderRun.input_summary?.customers ?? "—"} detail="input summary" />
-                    <StatCard label="Orders" value={placeholderRun.input_summary?.orders ?? "—"} detail="input summary" />
-                    <StatCard label="Contract" value={placeholderRun.contract_version || "—"} detail="engine run shape" />
-                  </div>
-
-                  <div className="placeholder-grid">
-                    <div>
-                      <div className="section-kicker">Recommendations</div>
-                      {[
-                        ...(placeholderRun.slate?.recommended_now || []),
-                        ...(placeholderRun.slate?.recommended_experiment || []),
-                      ].map((play) => <PlaceholderPlay key={play.play_id} play={play} />)}
-                    </div>
-                  </div>
-
-                  <div className="placeholder-grid">
-                    <div className="placeholder-panel">
-                      <div className="section-kicker">Model placeholders</div>
-                      {Object.entries(placeholderRun.predictive_models || {}).map(([key, model]) => (
-                        <div className="model-row" key={key}>
-                          <span>{model.display_name}</span>
-                          <strong>{model.fit_status}</strong>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="placeholder-panel">
-                      <div className="section-kicker">Audience segments</div>
-                      {(placeholderRun.audience_segments || []).map((segment) => (
-                        <div className="model-row" key={segment.label}>
-                          <span>{segment.label}</span>
-                          <strong>{segment.n}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <JsonBlock title="Placeholder engine_run JSON" value={placeholderRun} />
-                </>
-              ) : (
-                <div className="empty-panel">Click Refresh placeholder to load the temporary engine contract.</div>
-              )}
-            </>
-          )}
-
           {activePage === "setup" && (
             <>
-              <div className="hero-card compact">
-                <div className="eyebrow">Account settings</div>
-                <h2>Manage connected accounts.</h2>
-                <p>
-                  Use this page after onboarding to refresh or reconnect Shopify and Klaviyo.
-                </p>
-              </div>
-
               <div className="integration-card settings-store-card">
                 <h3>Shopify store</h3>
                 <p>Choose which store BeaconAI is working with.</p>
@@ -2581,19 +2289,17 @@ function App() {
 
               <div className="setup-grid">
                 <div className="integration-card">
-                  <h3>1. Shopify</h3>
-                  <p>{status.shopify ? `Connected via ${status.shopifySource}. Production users connect once with Shopify OAuth, then BeaconAI refreshes data automatically.` : "Connect Shopify with OAuth to load products, customers, orders, and order line items."}</p>
+                  <h3>Shopify</h3>
+                  <p>{status.shopify ? "Connected. BeaconAI refreshes products, customers, and orders from this store." : "Connect Shopify to load products, customers, and orders."}</p>
                   <div className="action-row">
                     <button className="btn primary" onClick={status.shopify ? syncShopify : () => startOAuth("shopify")} disabled={status.shopify && loading}>{status.shopify ? (loading ? "Syncing…" : "Refresh Shopify now") : "Connect Shopify"}</button>
-                    <button className="btn" onClick={checkConnections}>Test connection</button>
                   </div>
                 </div>
                 <div className="integration-card">
-                  <h3>2. Klaviyo</h3>
-                  <p>{status.klaviyo ? `Connected via ${status.klaviyoSource}. Production users connect once with Klaviyo OAuth, then templates can refresh in the background.` : "Connect Klaviyo with OAuth to fetch existing templates and prepare BeaconAI template suggestions."}</p>
+                  <h3>Klaviyo</h3>
+                  <p>{status.klaviyo ? "Connected. Templates and campaigns are created in this account." : "Connect Klaviyo to create campaign drafts from BeaconAI."}</p>
                   <div className="action-row">
                     <button className="btn primary" onClick={status.klaviyo ? loadKlaviyoTemplates : () => startOAuth("klaviyo")}>{status.klaviyo ? "Refresh templates" : "Connect Klaviyo"}</button>
-                    <button className="btn" onClick={checkConnections}>Test connection</button>
                   </div>
                 </div>
               </div>
@@ -2603,11 +2309,11 @@ function App() {
           {selectedEvidence ? (
             <div className="drawer-backdrop" onClick={() => setSelectedEvidence(null)}>
               <div className="evidence-drawer" onClick={(event) => event.stopPropagation()}>
-                <button className="drawer-close" onClick={() => setSelectedEvidence(null)}>Close</button>
+                <button className="drawer-close" aria-label="Close" onClick={() => setSelectedEvidence(null)}><Icon name="close" size={16} /></button>
                 <div className="section-kicker">Evidence drawer</div>
                 <h2>{selectedEvidence.play_name || selectedEvidence.play_id}</h2>
                 <p>{selectedEvidence.mechanism}</p>
-                <JsonBlock title="Play JSON" value={selectedEvidence} />
+                {showAdvanced ? <JsonBlock title="Play JSON" value={selectedEvidence} /> : null}
               </div>
             </div>
           ) : null}
