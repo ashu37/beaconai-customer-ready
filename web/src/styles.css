@@ -216,15 +216,20 @@ h1 { font-family: var(--font-display); font-size: 24px; font-weight: 700; color:
 .approved-pill { display: inline-flex; align-items: center; gap: 4px; color: #1f7a4d; background: #e7f5ee; border: 1px solid #b7e0cb; border-radius: 20px; padding: 1px 8px; font-size: 11px; font-weight: 700; }
 .btn.approved { background: #2f9e6b; border-color: #2f9e6b; color: #ffffff; font-weight: 700; }
 .btn.approved:hover { background: #278a5c; border-color: #278a5c; color: #ffffff; }
+/* P-C3: state chip on approved briefing cards */
+.in-campaigns-chip { display: inline-flex; align-items: center; gap: 6px; color: #1f7a4d; background: #e7f5ee; border: 1px solid #b7e0cb; border-radius: 20px; padding: 8px 14px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.in-campaigns-chip:hover { background: #d8efe1; }
 
 /* Transient confirmation toast */
-.toast { position: sticky; top: 8px; z-index: 5; display: flex; align-items: center; gap: 12px; background: var(--ink-strong); color: #ffffff; border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; box-shadow: 0 6px 20px rgba(16,16,16,.24); animation: toast-in .18s ease-out; }
+/* P-C1: fixed bottom-right toast */
+.toast { position: fixed; right: 24px; bottom: 24px; z-index: 50; max-width: 380px; display: flex; align-items: center; gap: 12px; background: var(--ink-strong); color: #ffffff; border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(16,16,16,.32); animation: toast-in .18s ease-out; }
+.toast.error .toast-check { background: var(--warn); }
 .toast-check { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #2f9e6b; color: #fff; font-size: 12px; font-weight: 700; flex: none; }
 .toast-message { flex: 1; font-size: 13px; line-height: 1.4; }
 .toast-action { background: none; border: 0; color: #ffd9a8; font-weight: 700; font-size: 13px; cursor: pointer; white-space: nowrap; padding: 0; }
 .toast-close { background: none; border: 0; color: rgba(255,255,255,.6); font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
 .toast-close:hover { color: #ffffff; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 .held-reason { color: var(--ink); background: var(--bg-2); border: 1px solid var(--rule); border-radius: 5px; padding: 12px 14px; margin: 0; line-height: 1.5; }
 .btn.danger { color: #9f1239; border-color: #f2b8c6; background: #fff7f9; }

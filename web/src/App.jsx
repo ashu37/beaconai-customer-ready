@@ -383,7 +383,7 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
   );
 }
 
-function RecommendationDetail({ play, onSendToReview, onViewEvidence, approved = false, showAdvanced = false }) {
+function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false }) {
   const [activeTab, setActiveTab] = useState("thesis");
 
   if (!play) {
@@ -561,12 +561,15 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, approved =
           </p>
           <p className="approve-note measurement">We'll track what these customers do for 30 days after send and report it in Results.</p>
           <div className="recommendation-detail-footer">
-            <button
-              className={`btn ${approved ? "approved" : "primary"}`}
-              onClick={() => onSendToReview(play)}
-            >
-              {approved ? "✓ Approved" : "Approve & pick template"}
-            </button>
+            {approved ? (
+              // P-C3: approved plays show a state chip that jumps to Campaigns,
+              // not a second Approve control.
+              <button type="button" className="in-campaigns-chip" onClick={() => onOpenInCampaigns(play)}>
+                ✓ In campaigns →
+              </button>
+            ) : (
+              <button className="btn primary" onClick={() => onSendToReview(play)}>Approve &amp; pick template</button>
+            )}
           </div>
         </div>
       )}
@@ -1111,7 +1114,7 @@ function BriefingStatStrip({ products, customers, orders, reviewPending, campaig
   );
 }
 
-function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFinish, onConnectShopify, onSyncShopify, onConnectKlaviyo, onLoadTemplates, onFinish }) {
+function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFinish, busy = false, onConnectShopify, onSyncShopify, onConnectKlaviyo, onLoadTemplates, onFinish }) {
   const steps = [
     { label: "Shopify", done: Boolean(status.shopify && hasStoreSnapshot) },
     { label: "Klaviyo", done: Boolean(status.klaviyo) },
@@ -1138,7 +1141,9 @@ function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFini
       {readyToFinish ? (
         <button className="btn primary" onClick={onFinish}>Finish setup</button>
       ) : nextAction?.onClick ? (
-        <button className="btn primary" onClick={nextAction.onClick}>{nextAction.label}</button>
+        <button className="btn primary" onClick={nextAction.onClick} disabled={busy}>
+          {busy && nextAction.label === "Sync Shopify" ? "Syncing…" : nextAction.label}
+        </button>
       ) : nextAction ? (
         <span className="onboarding-strip-hint">{nextAction.label}</span>
       ) : null}
@@ -1668,10 +1673,22 @@ function App() {
   }
 
   async function syncShopify() {
-    const result = await runStep("Shopify sync", () => api.syncShopify());
-    setSync(result);
-    await preloadStoreSnapshot();
-    return result;
+    try {
+      const result = await runStep("Shopify sync", () => api.syncShopify());
+      setSync(result);
+      await preloadStoreSnapshot();
+      showToast({ message: "Store synced" });
+      return result;
+    } catch (err) {
+      setError(""); // P-C1: surface this via toast, not the page-level error-box.
+      showToast({
+        message: "Store sync hit a problem.",
+        error: true,
+        actionLabel: "Retry",
+        onAction: () => { setToast(null); syncShopify(); },
+      });
+      return null;
+    }
   }
 
   async function runAnalysis() {
@@ -1835,7 +1852,7 @@ function App() {
   function showToast(next) {
     setToast(next);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 6000);
+    toastTimerRef.current = setTimeout(() => setToast(null), 5000);
   }
 
   // Approve toggles a play into (or out of) Campaigns. Stays on the briefing —
@@ -1870,8 +1887,8 @@ function App() {
       },
     ]);
     showToast({
-      message: "Approved. Review the copy and pick a template in Campaigns.",
-      actionLabel: "Go to Campaigns →",
+      message: "Added to Campaigns",
+      actionLabel: "Review →",
       onAction: () => { setReviewPlayId(playId); setActivePage("campaigns"); setToast(null); },
     });
   }
@@ -1884,7 +1901,7 @@ function App() {
   async function createCampaignTemplateInKlaviyo(campaignDraft) {
     setPublishingCampaignId(campaignDraft.id);
     try {
-      const result = await runStep("Klaviyo send package creation", () => api.createSendPackage(campaignDraft));
+      const result = await api.createSendPackage(campaignDraft);
       const templateId = result.template?.data?.id;
       const listId = result.list?.data?.id;
       const campaignId = result.klaviyoCampaign?.data?.id;
@@ -1904,7 +1921,16 @@ function App() {
         },
       }));
       setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
+      showToast({ message: "Created in Klaviyo" });
       return result;
+    } catch (err) {
+      showToast({
+        message: "Couldn't create the Klaviyo package.",
+        error: true,
+        actionLabel: "Retry",
+        onAction: () => { setToast(null); createCampaignTemplateInKlaviyo(campaignDraft); },
+      });
+      return null;
     } finally {
       setPublishingCampaignId("");
     }
@@ -2062,8 +2088,8 @@ function App() {
 
         <section className="page">
           {toast ? (
-            <div className="toast" role="status" aria-live="polite">
-              <span className="toast-check" aria-hidden="true">✓</span>
+            <div className={`toast ${toast.error ? "error" : ""}`} role="status" aria-live="polite">
+              <span className="toast-check" aria-hidden="true">{toast.error ? "!" : "✓"}</span>
               <span className="toast-message">{toast.message}</span>
               {toast.actionLabel && toast.onAction ? (
                 <button type="button" className="toast-action" onClick={toast.onAction}>{toast.actionLabel}</button>
@@ -2102,6 +2128,7 @@ function App() {
                   hasStoreSnapshot={hasStoreSnapshot}
                   approvedCount={approvedCount}
                   readyToFinish={onboardingReadyToFinish}
+                  busy={loading}
                   onConnectShopify={() => startOAuth("shopify")}
                   onSyncShopify={syncShopify}
                   onConnectKlaviyo={() => startOAuth("klaviyo")}
@@ -2201,6 +2228,7 @@ function App() {
                   play={selectedBriefingRow?.play}
                   onSendToReview={greenlightEnginePlay}
                   onViewEvidence={setSelectedEvidence}
+                  onOpenInCampaigns={(play) => { setReviewPlayId(play.play_id || play.id); setActivePage("campaigns"); }}
                   approved={selectedBriefingRow ? approvedPlayIdSet.has(selectedBriefingRow.play.play_id || selectedBriefingRow.play.id) : false}
                   showAdvanced={showAdvanced}
                 />
@@ -2536,7 +2564,7 @@ function App() {
                   <h3>1. Shopify</h3>
                   <p>{status.shopify ? `Connected via ${status.shopifySource}. Production users connect once with Shopify OAuth, then BeaconAI refreshes data automatically.` : "Connect Shopify with OAuth to load products, customers, orders, and order line items."}</p>
                   <div className="action-row">
-                    <button className="btn primary" onClick={status.shopify ? syncShopify : () => startOAuth("shopify")}>{status.shopify ? "Refresh Shopify now" : "Connect Shopify"}</button>
+                    <button className="btn primary" onClick={status.shopify ? syncShopify : () => startOAuth("shopify")} disabled={status.shopify && loading}>{status.shopify ? (loading ? "Syncing…" : "Refresh Shopify now") : "Connect Shopify"}</button>
                     <button className="btn" onClick={checkConnections}>Test connection</button>
                   </div>
                 </div>
