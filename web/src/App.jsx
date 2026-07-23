@@ -673,94 +673,55 @@ function CohortRetentionChart({ curves }) {
 
 // C2: Send step — detail for a single selected campaign (no internal list; the
 // master-detail left rail owns selection now).
-function CampaignSendPanel({ campaign, onCreateInKlaviyo, onSendCampaign, publishingId, sendingId, audiencePreviews, onPreviewAudience, previewingId }) {
+// P-B: Send is a confirmation, not a workspace. Statement + three summary rows
+// (each with an Edit link back to its step) + a truthful what-happens-next line.
+// The primary action lives in the sticky action bar (P-A3), not here.
+function CampaignSendPanel({ campaign, onEditStep }) {
   const selected = campaign;
-  const preview = audiencePreviews[selected?.id] || selected?.klaviyoAudience || null;
-
   if (!selected) {
     return <div className="empty-panel">No campaign package is ready yet.</div>;
   }
 
   return (
-    <div className="campaign-send">
-      <div className="campaign-detail-panel">
-        <div className="blast-radius">
-          Sends to {selected.customers} matched customers through your Klaviyo account.
-        </div>
-        <div className="managed-note">
-          This email is managed by BeaconAI — edit the copy here before sending. It will appear in Klaviyo as a code template.
-        </div>
-        <div className="pkg-origin">
-          <span>From play</span>
-          <strong>{selected.playTitle}</strong>
-        </div>
-        {selected.templateName ? (
-          <div className="pkg-origin">
-            <span>Template</span>
-            <strong>{selected.templateName} · {selected.templateSource}</strong>
+    <div className="send-confirm">
+      <p className="send-statement">
+        Send “{selected.subject}” to {selected.customers} matched customers through your Klaviyo account.
+      </p>
+
+      <div className="send-summary">
+        <div className="send-summary-row">
+          <div className="send-summary-body">
+            <span className="send-summary-label">Copy</span>
+            <span className="send-summary-value">{selected.subject}</span>
+            <span className="send-summary-meta">{selected.templateName || "Starting copy"}</span>
           </div>
-        ) : null}
-        <div className="email-preview">
-          <div className="email-topline">
-            <span>Subject</span>
-            <strong>{selected.subject}</strong>
-          </div>
-          <div className="email-body">
-            <h1>{selected.bodyH2}</h1>
-            <p>{selected.bodyP1}</p>
-            <p>{selected.bodyP2}</p>
-            <p><strong>{selected.cta}</strong></p>
-          </div>
+          <button type="button" className="link-btn" onClick={() => onEditStep("copy")}>Edit</button>
         </div>
-        <div className="segment-spec">
-          <div><span>Audience</span><strong>{selected.segment}</strong></div>
-          <div><span>Send</span><strong>{selected.sendTime}</strong></div>
-          <div><span>Suppression</span><strong>{selected.suppression}</strong></div>
-        </div>
-        <div className="recipient-preview">
-          <div className="recipient-preview-head">
-            <div>
-              <span className="section-meta">Recipient preview</span>
-              <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
-            </div>
-            <button className="btn" onClick={() => onPreviewAudience(selected)} disabled={previewingId === selected.id}>
-              {previewingId === selected.id ? "Loading..." : "Show emails"}
-            </button>
+
+        <div className="send-summary-row">
+          <div className="send-summary-body">
+            <span className="send-summary-label">Audience</span>
+            <span className="send-summary-value">{selected.segment}</span>
+            <span className="send-summary-meta">Suppressed: recent purchasers, unsubscribes, suppressed profiles</span>
           </div>
-          {preview?.recipients?.length ? (
-            <div className="recipient-list">
-              {preview.recipients.slice(0, 25).map((recipient) => (
-                <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
-                  <strong>{recipient.email}</strong>
-                  <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
-                </div>
-              ))}
-              {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
-            </div>
-          ) : preview ? (
-            <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
-          ) : null}
+          <button type="button" className="link-btn" onClick={() => onEditStep("audience")}>Edit</button>
         </div>
-        {selected.klaviyoTemplateId ? (
-          <div className="success-box">
-            Created Klaviyo campaign <strong>{selected.klaviyoCampaignId || selected.klaviyoTemplateId}</strong>
-            {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
-            {selected.klaviyoListId ? ` Audience list: ${selected.klaviyoListId}.` : ""}
-            {selected.klaviyoSendJobId ? ` Send job: ${selected.klaviyoSendJobId}.` : ""}
+
+        <div className="send-summary-row">
+          <div className="send-summary-body">
+            <span className="send-summary-label">Delivery</span>
+            <span className="send-summary-value">Created as a draft in Klaviyo for your final approval</span>
           </div>
-        ) : null}
-        <div className="action-row">
-          <button className="btn primary" onClick={() => onCreateInKlaviyo(selected)} disabled={publishingId === selected.id || Boolean(selected.klaviyoTemplateId)}>
-            {selected.klaviyoTemplateId ? "Send package ready" : publishingId === selected.id ? "Creating..." : "Create Klaviyo send package"}
-          </button>
-          {selected.klaviyoCampaignId ? (
-            <button className="btn danger" onClick={() => onSendCampaign(selected)} disabled={sendingId === selected.id || Boolean(selected.klaviyoSendJobId)}>
-              {selected.klaviyoSendJobId ? "Campaign sent" : sendingId === selected.id ? "Sending..." : "Send campaign now"}
-            </button>
-          ) : null}
-          <button className="btn">Request changes</button>
         </div>
       </div>
+
+      {selected.klaviyoTemplateId ? (
+        <div className="success-box">
+          Created Klaviyo campaign <strong>{selected.klaviyoCampaignId || selected.klaviyoTemplateId}</strong>
+          {selected.klaviyoAudience ? ` for ${selected.klaviyoAudience.count} run-matched recipients.` : "."}
+          {selected.klaviyoSendJobId ? ` Send job: ${selected.klaviyoSendJobId}.` : ""}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1060,7 +1021,8 @@ function CampaignReviewPane({
             <div className="phone-frame">
               {previewMode === "inbox" ? (
                 <div className="phone-inbox">
-                  <div className="phone-inbox-title">{senderName}</div>
+                  {/* P-A4: this is the customer's mail app, not the brand — static label. */}
+                  <div className="phone-inbox-title">Inbox</div>
                   {/* The merchant's email as the top row — the open/no-open decision. */}
                   <div className="inbox-mail-row unread">
                     <span className="inbox-mail-dot" aria-hidden="true" />
@@ -2279,122 +2241,147 @@ function App() {
                     const isSent = selectedCampaignGroup === "sent";
                     // Send unlocks only after explicit approval — this is the gate
                     // that separates "reviewing" from "ready to send".
+                    // P-A2: numbered steps. A step is "done" if a later step is
+                    // reachable (its prerequisite is met); the current step is active.
+                    const stepOrder = ["copy", "audience", "send"];
+                    const currentIndex = stepOrder.indexOf(workspaceStep);
                     const steps = [
                       { key: "copy", label: "Copy", enabled: true },
                       { key: "audience", label: "Audience", enabled: hasTemplate },
                       { key: "send", label: "Send", enabled: isApproved },
                     ];
                     const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
+                    const publishing = selectedCampaign && publishingCampaignId === selectedCampaign.id;
+                    const created = Boolean(selectedCampaign?.klaviyoTemplateId);
                     return (
                       <div className="workspace-card">
                         <div className="workspace-head">
                           <h3>{reviewPlay.play_name || reviewPlay.play_id}</h3>
                           {reviewPlay.play_one_liner ? <p className="workspace-oneliner">{reviewPlay.play_one_liner}</p> : null}
-                          <span className="workspace-audience">{formatAudience(reviewPlay.audience_size)} customers</span>
+                          <span className="workspace-audience">{formatAudience(reviewPlay.audience_size)} customers matched</span>
                         </div>
 
-                        <div className="stepper">
-                          {steps.map((step) => (
-                            <button
-                              key={step.key}
-                              type="button"
-                              className={`step ${workspaceStep === step.key ? "active" : ""}`}
-                              disabled={!step.enabled}
-                              onClick={() => step.enabled && setWorkspaceStep(step.key)}
-                            >
-                              {step.label}
-                            </button>
-                          ))}
-                        </div>
-
-                        {workspaceStep === "copy" ? (
-                          beaconTemplates.length ? (
-                            <CampaignReviewPane
-                              play={reviewPlay}
-                              brandContext={brandContext}
-                              beaconTemplates={beaconTemplates}
-                              klaviyoTemplates={klaviyoOnlyTemplates}
-                              selectedTemplate={selectedTemplate}
-                              onChooseTemplate={(templateId) => chooseTemplate(reviewPlay.id, templateId)}
-                              draft={selectedDraft}
-                              onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
-                              onRestoreField={(field) => restoreDraftField(reviewPlay.id, reviewPlay, field)}
-                              onRefreshBrandContext={loadBrandContext}
-                              onRefreshTemplates={loadKlaviyoTemplates}
-                              klaviyoFailed={klaviyoTemplatesFailed}
-                            />
-                          ) : (
-                            <div className="empty-panel">Loading starting copy…</div>
-                          )
-                        ) : null}
-
-                        {workspaceStep === "copy" && hasTemplate ? (
-                          <div className="step-nav">
-                            <button className="btn primary" onClick={() => setWorkspaceStep("audience")}>Review audience →</button>
-                          </div>
-                        ) : null}
-
-                        {workspaceStep === "audience" && selectedCampaign ? (
-                          <div className="audience-step">
-                            <div className="segment-spec">
-                              <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
-                              <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
-                            </div>
-                            <div className="recipient-preview">
-                              <div className="recipient-preview-head">
-                                <div>
-                                  <span className="section-meta">Recipient preview</span>
-                                  <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
-                                </div>
-                                <button className="btn" onClick={() => previewCampaignAudience(selectedCampaign)} disabled={previewingCampaignId === selectedCampaign.id}>
-                                  {previewingCampaignId === selectedCampaign.id ? "Loading..." : "Show emails"}
+                        {/* P-A2: numbered stepper connected by a rule */}
+                        <ol className="stepper">
+                          {steps.map((step, i) => {
+                            const state = i === currentIndex ? "current" : i < currentIndex && step.enabled ? "done" : step.enabled ? "upcoming" : "locked";
+                            return (
+                              <li key={step.key} className={`step ${state}`}>
+                                <button
+                                  type="button"
+                                  className="step-btn"
+                                  disabled={!step.enabled}
+                                  onClick={() => step.enabled && setWorkspaceStep(step.key)}
+                                >
+                                  <span className="step-marker">{state === "done" ? "✓" : i + 1}</span>
+                                  <span className="step-label">{step.label}</span>
                                 </button>
-                              </div>
-                              {preview?.recipients?.length ? (
-                                <div className="recipient-list">
-                                  {preview.recipients.slice(0, 25).map((recipient) => (
-                                    <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
-                                      <strong>{recipient.email}</strong>
-                                      <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
-                                    </div>
-                                  ))}
-                                  {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
-                                </div>
-                              ) : preview ? (
-                                <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
-                              ) : null}
-                            </div>
-                            <div className="step-nav">
-                              {isApproved ? (
-                                <>
-                                  <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Go to Send →</button>
-                                  <button className="btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
-                                </>
-                              ) : (
-                                <button className="btn primary" onClick={() => approveForSend(reviewPlay.id)}>Approve for send</button>
-                              )}
-                            </div>
-                          </div>
-                        ) : null}
+                              </li>
+                            );
+                          })}
+                        </ol>
 
-                        {workspaceStep === "send" && selectedCampaign ? (
-                          <>
-                            <CampaignSendPanel
-                              campaign={selectedCampaign}
-                              onCreateInKlaviyo={createCampaignTemplateInKlaviyo}
-                              onSendCampaign={sendKlaviyoCampaign}
-                              publishingId={publishingCampaignId}
-                              sendingId={sendingCampaignId}
-                              audiencePreviews={audiencePreviewsByCampaign}
-                              onPreviewAudience={previewCampaignAudience}
-                              previewingId={previewingCampaignId}
-                            />
-                            {!isSent ? (
-                              <div className="step-nav">
-                                <button className="btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
+                        <div className="workspace-step-body">
+                          {workspaceStep === "copy" ? (
+                            beaconTemplates.length ? (
+                              <CampaignReviewPane
+                                play={reviewPlay}
+                                brandContext={brandContext}
+                                beaconTemplates={beaconTemplates}
+                                klaviyoTemplates={klaviyoOnlyTemplates}
+                                selectedTemplate={selectedTemplate}
+                                onChooseTemplate={(templateId) => chooseTemplate(reviewPlay.id, templateId)}
+                                draft={selectedDraft}
+                                onChange={(field, value) => updateDraftField(reviewPlay.id, field, value)}
+                                onRestoreField={(field) => restoreDraftField(reviewPlay.id, reviewPlay, field)}
+                                onRefreshBrandContext={loadBrandContext}
+                                onRefreshTemplates={loadKlaviyoTemplates}
+                                klaviyoFailed={klaviyoTemplatesFailed}
+                              />
+                            ) : (
+                              <div className="empty-panel">Loading starting copy…</div>
+                            )
+                          ) : null}
+
+                          {workspaceStep === "audience" && selectedCampaign ? (
+                            <div className="audience-step">
+                              <div className="segment-spec">
+                                <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
+                                <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
                               </div>
-                            ) : null}
-                          </>
+                              <div className="recipient-preview">
+                                <div className="recipient-preview-head">
+                                  <div>
+                                    <span className="section-meta">Recipient preview</span>
+                                    <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
+                                  </div>
+                                  <button className="btn" onClick={() => previewCampaignAudience(selectedCampaign)} disabled={previewingCampaignId === selectedCampaign.id}>
+                                    {previewingCampaignId === selectedCampaign.id ? "Loading..." : "Show emails"}
+                                  </button>
+                                </div>
+                                {preview?.recipients?.length ? (
+                                  <div className="recipient-list">
+                                    {preview.recipients.slice(0, 25).map((recipient) => (
+                                      <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
+                                        <strong>{recipient.email}</strong>
+                                        <span>{recipient.orderCount} orders · ${recipient.totalRevenue}</span>
+                                      </div>
+                                    ))}
+                                    {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
+                                  </div>
+                                ) : preview ? (
+                                  <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {workspaceStep === "send" && selectedCampaign ? (
+                            <CampaignSendPanel campaign={selectedCampaign} onEditStep={setWorkspaceStep} />
+                          ) : null}
+                        </div>
+
+                        {/* P-A3: sticky action bar — current step's primary action, right-aligned */}
+                        <div className="workspace-actionbar">
+                          {workspaceStep === "send" && isApproved && !isSent && !created ? (
+                            <button type="button" className="link-btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
+                          ) : currentIndex > 0 ? (
+                            <button type="button" className="link-btn" onClick={() => setWorkspaceStep(stepOrder[currentIndex - 1])}>Back</button>
+                          ) : <span />}
+
+                          {workspaceStep === "copy" ? (
+                            <button className="btn primary" disabled={!hasTemplate} onClick={() => setWorkspaceStep("audience")}>Continue to audience</button>
+                          ) : null}
+
+                          {workspaceStep === "audience" ? (
+                            isApproved ? (
+                              <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Continue to send</button>
+                            ) : (
+                              <button className="btn primary" onClick={() => approveForSend(reviewPlay.id)}>Continue to send</button>
+                            )
+                          ) : null}
+
+                          {workspaceStep === "send" ? (
+                            isSent ? (
+                              <span className="send-done">✓ Sent</span>
+                            ) : !status.klaviyo ? (
+                              // P-D2: never a dead/erroring send button when Klaviyo is unconnected.
+                              <button className="btn primary" onClick={() => startOAuth("klaviyo")}>Connect Klaviyo to send</button>
+                            ) : selectedCampaign?.klaviyoCampaignId ? (
+                              <button className="btn danger" onClick={() => sendKlaviyoCampaign(selectedCampaign)} disabled={sendingCampaignId === selectedCampaign.id || Boolean(selectedCampaign.klaviyoSendJobId)}>
+                                {selectedCampaign.klaviyoSendJobId ? "Campaign sent" : sendingCampaignId === selectedCampaign.id ? "Sending…" : "Send campaign now"}
+                              </button>
+                            ) : (
+                              <button className="btn primary" onClick={() => createCampaignTemplateInKlaviyo(selectedCampaign)} disabled={publishing || created}>
+                                {created ? "Send package ready" : publishing ? "Creating…" : "Create Klaviyo send package"}
+                              </button>
+                            )
+                          ) : null}
+                        </div>
+
+                        {/* P-B4: truthful what-happens-next (verified: create = draft only, no send) */}
+                        {workspaceStep === "send" && !isSent && status.klaviyo && !selectedCampaign?.klaviyoCampaignId ? (
+                          <p className="whats-next">This creates the template and campaign in your Klaviyo account — nothing sends until you approve it there.</p>
                         ) : null}
                       </div>
                     );
