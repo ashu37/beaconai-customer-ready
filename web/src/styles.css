@@ -41,10 +41,12 @@ button { font: inherit; cursor: pointer; }
 h1,h2,h3,p { margin-top: 0; }
 h1 { font-family: var(--font-display); font-size: 24px; font-weight: 700; color: var(--ink-strong); margin-bottom: 2px; }
 .topbar p { color: var(--muted); margin: 0; font-size: 12px; }
-.status-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.status-pill { border: 1px solid var(--rule); background: var(--surface); color: var(--muted); border-radius: 3px; padding: 6px 10px; font-size: 11px; display: inline-flex; gap: 6px; align-items: center; }
-.status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
-.status-pill.ok .dot { background: var(--positive); }
+.status-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+/* P-D1: connected = green dot (title-attr label); pending = actionable chip */
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--positive); box-shadow: 0 0 0 3px rgba(47,158,107,.14); }
+.status-chip { border: 1px solid rgba(240,138,36,.4); background: var(--accent-soft); color: #9a4d00; border-radius: 20px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.status-chip:hover { border-color: var(--accent); }
+button.status-chip:not([onclick]) { cursor: default; }
 .page { max-width: 1280px; padding: 48px; }
 .onboarding-hero, .onboarding-progress-card, .onboarding-step, .home-hero, .home-module, .home-metric-card, .hero-card, .play-card, .draft-detail, .integration-card, .stat-card, .json-block, .draft-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 5px; box-shadow: 0 1px 0 rgba(16,16,16,.03); }
 .onboarding-hero { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 28px; align-items: stretch; padding: 34px 38px; margin-bottom: 22px; position: relative; overflow: hidden; }
@@ -329,6 +331,9 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .review-field { display: grid; gap: 7px; color: var(--ink-strong); font-weight: 700; font-size: 13px; }
 .review-field-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
 .restore-link { background: none; border: 0; color: var(--accent); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; cursor: pointer; padding: 0; }
+/* P-D4: edited-field indicator */
+.review-field-label { display: inline-flex; align-items: center; gap: 8px; }
+.edited-chip { font-family: var(--font-body); font-size: 9px; font-weight: 700; text-transform: none; letter-spacing: 0; color: #9a4d00; background: var(--accent-soft); border: 1px solid rgba(240,138,36,.3); border-radius: 10px; padding: 1px 7px; }
 .review-field input, .review-field textarea { width: 100%; border: 1px solid var(--rule); border-radius: 5px; padding: 11px 12px; color: var(--ink-strong); background: #fbfaf7; font: inherit; font-weight: 400; resize: vertical; }
 .review-field input:focus, .review-field textarea:focus { outline: 2px solid rgba(224, 164, 55, .28); border-color: var(--accent); background: #ffffff; }
 .review-preview-pane { display: grid; gap: 14px; justify-items: center; position: sticky; top: 16px; align-self: start; }

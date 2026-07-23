@@ -88,12 +88,16 @@ function OnboardingStep({ number, title, detail, done, action, onAction, seconda
   );
 }
 
-function StatusPill({ label, ok }) {
-  return (
-    <span className={`status-pill ${ok ? "ok" : "pending"}`}>
-      <span className="dot" /> {label}: {ok ? "Connected" : "Pending"}
-    </span>
-  );
+// P-D1: compact connection chip. Connected → a green dot with a title-attr label.
+// Not connected + actionable → a clickable chip that starts OAuth.
+function StatusChip({ label, ok, onConnect }) {
+  if (ok) {
+    return <span className="status-dot ok" title={`${label}: Connected`} aria-label={`${label} connected`} />;
+  }
+  if (onConnect) {
+    return <button type="button" className="status-chip pending" onClick={onConnect}>Connect {label}</button>;
+  }
+  return <span className="status-chip pending">{label}: Pending</span>;
 }
 
 function EmailPreview({ campaign }) {
@@ -944,13 +948,22 @@ function CampaignReviewPane({
       {draft ? (
         <div className="review-two-pane">
           <div className="review-edit-pane">
-            {editFields.map(({ field, label, type }) => (
+            {editFields.map(({ field, label, type }) => {
+              // P-D4: field diverges from the suggested copy → show "Edited" +
+              // offer Restore; when it matches, neither is shown.
+              const edited = (draft[field] || "") !== (suggestedValueForField(play, field) || "");
+              return (
               <label key={field} className="review-field">
                 <span className="review-field-head">
-                  {label}
-                  <button type="button" className="restore-link" onClick={() => onRestoreField(field)}>
-                    Restore suggested
-                  </button>
+                  <span className="review-field-label">
+                    {label}
+                    {edited ? <span className="edited-chip">Edited</span> : null}
+                  </span>
+                  {edited ? (
+                    <button type="button" className="restore-link" onClick={() => onRestoreField(field)}>
+                      Restore suggested
+                    </button>
+                  ) : null}
                 </span>
                 {type === "textarea" ? (
                   <textarea
@@ -967,7 +980,8 @@ function CampaignReviewPane({
                   />
                 )}
               </label>
-            ))}
+            );
+            })}
 
             {/* C3: Advanced Klaviyo pairing moves to the bottom of the Copy step. */}
             <button
@@ -1157,7 +1171,7 @@ function ResultsPage({ campaigns }) {
   if (!tracked.length) {
     return (
       <div className="empty-panel">
-        Results appear here after your first campaign goes out. For each campaign, BeaconAI tracks the customers it targeted and reports what they did over the following 30 days.
+        Results appear here after your first campaign goes out. BeaconAI tracks the customers each campaign targeted and reports what they did over the following 30 days.
       </div>
     );
   }
@@ -1457,6 +1471,11 @@ function App() {
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
+
+  // P-D3: tab identity — "BeaconAI — {store}", fallback "BeaconAI".
+  useEffect(() => {
+    document.title = shopDomain ? `BeaconAI — ${shopDomain}` : "BeaconAI";
+  }, [shopDomain]);
 
   // Keep the selected campaign valid against the APPROVED set (the campaigns view).
   useEffect(() => {
@@ -2080,9 +2099,8 @@ function App() {
             <p>{shopDomain ? `Marketing copilot for ${shopDomain}` : "Your marketing copilot"}</p>
           </div>
           <div className="status-row">
-            <StatusPill label="API" ok={status.api} />
-            <StatusPill label="Shopify" ok={status.shopify} />
-            <StatusPill label="Klaviyo" ok={status.klaviyo} />
+            <StatusChip label="Shopify" ok={status.shopify} onConnect={() => startOAuth("shopify")} />
+            <StatusChip label="Klaviyo" ok={status.klaviyo} onConnect={() => startOAuth("klaviyo")} />
           </div>
         </header>
 
@@ -2220,7 +2238,9 @@ function App() {
                           />
                         ))}
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="empty-panel inline">Everything BeaconAI considered this run was strong enough to recommend.</div>
+                    )}
                   </div>
                 </div>
 
