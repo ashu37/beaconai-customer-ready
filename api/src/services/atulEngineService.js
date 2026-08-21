@@ -221,16 +221,39 @@ async function listManifestCandidates(engineDir, runId, storeIds = []) {
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.join(dataDir, entry.name)) : []);
 
-  for (const storeRoot of storeRoots) {
-    const runsDir = path.join(storeRoot, "runs");
-    if (!(await pathExists(runsDir))) continue;
-    const entries = await fs.readdir(runsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const manifestPath = path.join(runsDir, entry.name, "manifest.json");
-      if (!(await pathExists(manifestPath))) continue;
-      if (!runId || entry.name === runId) candidates.push(manifestPath);
+  async function scanStoreRoots(roots) {
+    for (const storeRoot of roots) {
+      const runsDir = path.join(storeRoot, "runs");
+      if (!(await pathExists(runsDir))) continue;
+      const entries = await fs.readdir(runsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const manifestPath = path.join(runsDir, entry.name, "manifest.json");
+        if (!(await pathExists(manifestPath))) continue;
+        if (!runId || entry.name === runId) candidates.push(manifestPath);
+      }
     }
+  }
+
+  await scanStoreRoots(storeRoots);
+
+  // Resilience: the run is WRITTEN under sanitizeStoreId(brand) where brand can
+  // resolve to shop_domain / raw.name / "BeaconAI", which may NOT equal
+  // sanitizeStoreId(shopDomain) used to READ it here. When a specific store was
+  // requested but produced zero candidates, fall back to scanning ALL store dirs
+  // and let the mtime sort pick the most recent run. Read-only; does not change
+  // how runs are written (engine seam / D-S13.7-5 untouched).
+  //
+  // PILOT-ONLY CONSTRAINT: this cross-store fallback is safe while the deployment
+  // is SINGLE-TENANT (one merchant per server). With multiple real merchants on
+  // one server it could serve another store's most-recent run — so the real fix
+  // is store_id write/read alignment (DS-owned, D-S13.7-5). TODO(multitenant):
+  // remove this fallback once writes key on the same id /latest reads.
+  if (!candidates.length && uniqueStoreIds.length && (await pathExists(dataDir))) {
+    const allRoots = (await fs.readdir(dataDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(dataDir, entry.name));
+    await scanStoreRoots(allRoots);
   }
 
   const unique = [...new Set(candidates)];

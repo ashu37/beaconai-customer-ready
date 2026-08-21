@@ -1334,6 +1334,9 @@ function App() {
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
+  // Briefing content cache — shop-keyed (no run_id needed at mount) so a browser
+  // refresh repaints the last briefing instantly, independent of the server.
+  const briefingCacheKey = shopDomain ? `beaconai:${shopDomain}:latest-briefing` : null;
   const workflowPlays = useMemo(
     () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
     [atulEngineResult, campaignPackages, campaign]
@@ -1761,6 +1764,18 @@ function App() {
   function applyEngineResult(result) {
     setAtulEngineResult(result);
     setActivePage("briefing");
+    // Cache the presented run (incl. embedded narration) so a BROWSER refresh
+    // repaints the briefing instantly from localStorage — independent of the
+    // server /latest round-trip (which can miss on store_id mismatch or an
+    // ephemeral-filesystem wipe). Keyed by shop so mount can read it without a
+    // run_id. Only cache a real presented run, never an empty rehydrate.
+    if (result?.presentedRun?.recommendations?.length && briefingCacheKey) {
+      try {
+        localStorage.setItem(briefingCacheKey, JSON.stringify({ presentedRun: result.presentedRun }));
+      } catch (_) {
+        // best-effort (storage may be unavailable in private mode)
+      }
+    }
   }
 
   async function runAtulEngine(useFixture = false) {
@@ -1770,27 +1785,46 @@ function App() {
   }
 
   // O1: read-only rehydration of the latest run on mount. Never triggers an engine run.
+  // Stale-while-revalidate: paint the cached briefing immediately (survives refresh
+  // even when the server can't find the run), then reconcile with /latest.
   async function loadLatestRun() {
     if (!api.shopDomain) {
       setLatestRunChecked(true);
       setRehydrating(false);
       return;
     }
+
+    // 1) Instant paint from the localStorage briefing cache, if present.
+    let hadCache = false;
+    try {
+      const cachedRaw = briefingCacheKey && localStorage.getItem(briefingCacheKey);
+      if (cachedRaw) {
+        const cached = JSON.parse(cachedRaw);
+        if (cached?.presentedRun?.recommendations?.length) {
+          setAtulEngineResult({ presentedRun: cached.presentedRun });
+          setActivePage("briefing");
+          setLatestRunFound(true);
+          hadCache = true;
+        }
+      }
+    } catch (_) { /* ignore malformed cache */ }
+
     setRehydrating(true);
     try {
       const result = await api.getLatestEngineRun();
       setLatestRunErrored(false);
       if (result.found) {
+        // Server has a (possibly fresher) run — reconcile + refresh the cache.
         applyEngineResult({ presentedRun: result.presentedRun });
         setLatestRunFound(true);
-      } else {
+      } else if (!hadCache) {
+        // Only fall to "no run" when we ALSO had nothing cached to show.
         setLatestRunFound(false);
       }
     } catch (_) {
-      // Fetch failed — this is NOT "no run yet". Flag the error so first-run
-      // detection holds instead of kicking off a full sync on a transient blip.
+      // Fetch failed — NOT "no run yet". Keep any cached briefing on screen.
       setLatestRunErrored(true);
-      setLatestRunFound(false);
+      if (!hadCache) setLatestRunFound(false);
     } finally {
       setLatestRunChecked(true);
       setRehydrating(false);
