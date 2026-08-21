@@ -13,6 +13,12 @@ const PLAY_TEMPLATE_MAP = {
 };
 const DEFAULT_STARTING_TEMPLATE = "beacon-lifecycle-soft-nudge";
 
+// The engine emits NO per-play suppression rules (verified: not in the audience
+// CSV header nor the manifest audience entry). So this is an HONEST, generic
+// platform disclosure — true of every Klaviyo send — not a per-play data claim.
+// Do NOT reword this into a play-specific sentence (that would be invented prose).
+const STANDARD_SUPPRESSIONS_NOTE = "Standard suppressions apply — recent buyers and unsubscribers are excluded.";
+
 function templateForPlay(play) {
   const key = play?.play_id || play?.id;
   return PLAY_TEMPLATE_MAP[key] || DEFAULT_STARTING_TEMPLATE;
@@ -138,8 +144,12 @@ function normalizeAtulPlay(play, index) {
     lane: play.lane || role,
     reason_code: play.reason_code || play.null_reason || null,
     reason_display: play.reason_display || null,
-    mechanism: narration.play_thesis || play.recommendation_text || play.mechanism || play.rationale || play.why || "Recommendation ready for your review.",
-    audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || "Recommended audience",
+    // Prose is the LLM's or NOTHING (Pivot 2). null → the UI renders the
+    // evidence chip grid, never a canned "recommendation ready" sentence.
+    mechanism: narration.play_thesis || play.mechanism || null,
+    audience_archetype: play.audience_archetype || play.audience?.definition || play.audience?.description || play.audience || null,
+    // Formal chip payload from the presenter. The card face reads from here.
+    evidence_facts: play.evidence_facts || null,
     audience_size: audienceSize,
     confidence: play.confidence_label || play.confidence || play.model_confidence || "Review",
     evidence: play.evidence || { evidence_source: play.evidence_source || null, evidence_class: play.evidence_class || null },
@@ -205,15 +215,18 @@ function buildCampaignFromSelection(play, template, edits = {}) {
     templateSource: template.source,
     status: "draft",
     customers: play.audience_size || 0,
-    segment: play.audience_archetype || "Recommended audience",
+    // Draft-seed fields (approval #2's EDITABLE email). Real seeds come from the
+    // selected template / buildTemplatePrompt; last-resort fallbacks are NEUTRAL
+    // placeholders, not invented marketing copy (LLM copywriter lands in Phase 4).
+    segment: play.audience_archetype || "—",
     subject: template.subject || prompt.subject || `${play.play_name} campaign`,
     previewText: template.previewText || prompt.previewText || "Selected template ready for campaign review.",
     bodyH2: template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
-    bodyP1: template.bodyP1 || prompt.body || prompt.support || "Here's what's new for you.",
-    bodyP2: prompt.support || "You'll pick and edit the exact template before anything is sent.",
-    cta: template.cta || prompt.cta || "Shop the picks",
+    bodyP1: template.bodyP1 || prompt.body || prompt.support || "",
+    bodyP2: prompt.support || "You'll pick and edit the exact email before anything is sent.",
+    cta: template.cta || prompt.cta || "",
     sendTime: "Manual review",
-    suppression: "Recent purchasers, unsubscribes, suppressed profiles",
+    suppression: STANDARD_SUPPRESSIONS_NOTE,
   };
   return { ...draft, ...edits, id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName, templateSource: draft.templateSource, status: draft.status };
 }
@@ -316,6 +329,59 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
   );
 }
 
+// Signal-source label from the typed atom. Data-derived, never prose.
+function signalSourceLabel(evidenceSource) {
+  return evidenceSource === "STORE_MEASURED"
+    ? "Measured from your store's orders"
+    : "Modeled from similar stores";
+}
+
+// The evidence chip grid — 100% data-derived from the presenter's
+// `evidence_facts`. This is the merchant's "understand & trust why" surface and
+// stands ALONE when the LLM authored no prose (Pivot 2 typed-absence). Each chip
+// renders only when its atom is present; no chip is a hand-written sentence.
+function EvidenceChips({ play }) {
+  const facts = play.evidence_facts || {};
+  const chips = [];
+
+  if (facts.sample_size != null && Number(facts.sample_size) > 0) {
+    chips.push(["Orders analyzed", Number(facts.sample_size).toLocaleString()]);
+  }
+  const audienceSize = facts.audience_size ?? play.audience_size;
+  if (audienceSize != null && Number(audienceSize) > 0) {
+    chips.push(["Audience", `${Number(audienceSize).toLocaleString()} customers`]);
+  }
+  if (facts.evidence_source) {
+    chips.push(["Signal source", signalSourceLabel(facts.evidence_source)]);
+  }
+  if (facts.confidence_label) {
+    chips.push(["Confidence", statusLabel(facts.confidence_label)]);
+  }
+  if (facts.observed_effect != null) {
+    const pct = Math.round(Number(facts.observed_effect) * 1000) / 10;
+    if (Number.isFinite(pct)) chips.push(["Observed effect", `${pct}%`]);
+  }
+  if (facts.primary_window) {
+    chips.push(["Window", String(facts.primary_window)]);
+  }
+  const revenueLabel = formatRevenueRange(play);
+  if (revenueLabel) {
+    chips.push(["Est. opportunity", revenueLabel]);
+  }
+
+  if (!chips.length) return null;
+  return (
+    <div className="evidence-chip-grid">
+      {chips.map(([label, value]) => (
+        <div className="evidence-chip" key={label}>
+          <span className="evidence-chip-label">{label}</span>
+          <strong className="evidence-chip-value">{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false }) {
   const [activeTab, setActiveTab] = useState("thesis");
 
@@ -339,10 +405,6 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
     ["evidence", "Evidence & audience"],
     ...(showAdvanced ? [["sensitivity", "Sensitivity"]] : []),
   ];
-  // D1: never render the raw enum for signal source.
-  const signalSource = (play.evidence_source || play.evidence?.evidence_source) === "STORE_MEASURED"
-    ? "Measured from your store's orders"
-    : "Modeled from similar stores";
 
   return (
     <div className="recommendation-detail">
@@ -394,10 +456,19 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
       <div className="recommendation-tab-body">
         {activeTab === "thesis" ? (
           <>
-            <div className="detail-copy-block">
-              <div className="section-kicker">Play thesis</div>
-              <p>{narration.play_thesis || play.mechanism || "Recommendation ready for merchant review."}</p>
-            </div>
+            {/* Prose only when the LLM authored it; otherwise the chip grid is
+                the thesis surface (Pivot 2 typed-absence — no canned sentence). */}
+            {narration.play_thesis ? (
+              <div className="detail-copy-block">
+                <div className="section-kicker">Play thesis</div>
+                <p>{narration.play_thesis}</p>
+              </div>
+            ) : (
+              <div className="detail-copy-block">
+                <div className="section-kicker">Why this play</div>
+                <EvidenceChips play={play} />
+              </div>
+            )}
             {revenue ? (() => {
               // D1: marker position derived from data, not hardcoded. Clamp 4–96%.
               const span = revenue.high - revenue.low;
@@ -425,42 +496,45 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
 
         {activeTab === "send" ? (
           <>
-            <div className="model-row">
-              <span>Message angle</span>
-              <strong>{narration.what_we_d_send || play.template_prompt?.support || play.play_name || "BeaconAI recommendation"}</strong>
-            </div>
+            {/* Message angle is LLM prose — shown only when authored. The exact
+                copy is re-authored at approval #2, so absence just hides the row. */}
+            {narration.what_we_d_send ? (
+              <div className="model-row">
+                <span>Message angle</span>
+                <strong>{narration.what_we_d_send}</strong>
+              </div>
+            ) : null}
             <div className="model-row">
               <span>Template step</span>
               <strong>Choose in Campaigns after approving</strong>
             </div>
             <div className="model-row">
-              <span>CTA</span>
-              <strong>{play.template_prompt?.cta || "Personalized offer or reminder"}</strong>
+              <span>Next</span>
+              <strong>You'll pick and edit the exact email before anything sends.</strong>
             </div>
           </>
         ) : null}
 
         {activeTab === "evidence" ? (
           <>
-            <div className="model-row">
-              <span>Evidence summary</span>
-              <strong>{narration.evidence_summary || play.evidence?.evidence_class || statusLabel(confidence)}</strong>
-            </div>
-            <div className="model-row">
-              <span>Signal source</span>
-              <strong>{signalSource}</strong>
-            </div>
-            <div className="model-row">
-              <span>Audience</span>
-              <strong>{play.audience_archetype || "Recommended audience"}</strong>
-            </div>
-            <div className="model-row">
-              <span>Estimated size</span>
-              <strong>{formatAudience(play.audience_size)} customers</strong>
-            </div>
+            {/* Evidence summary is LLM prose — shown only when authored. The
+                chip grid below always carries the data. */}
+            {narration.evidence_summary ? (
+              <div className="detail-copy-block">
+                <div className="section-kicker">Evidence summary</div>
+                <p>{narration.evidence_summary}</p>
+              </div>
+            ) : null}
+            <EvidenceChips play={play} />
+            {play.audience_archetype ? (
+              <div className="model-row">
+                <span>Audience</span>
+                <strong>{play.audience_archetype}</strong>
+              </div>
+            ) : null}
             <div className="model-row">
               <span>Suppression</span>
-              <strong>Recent purchasers, unsubscribes</strong>
+              <strong>{STANDARD_SUPPRESSIONS_NOTE}</strong>
             </div>
             <div className="evidence-fineprint">{play.play_id || play.id}</div>
           </>
@@ -1349,7 +1423,7 @@ function App() {
           playTitle: play.play_name || play.play_id,
           status: "building",
           customers: play.audience_size || 0,
-          segment: play.audience_archetype || "Recommended audience",
+          segment: play.audience_archetype || "—",
           subject: "Placeholder subject from engine play",
           previewText: "Waiting for real engine copy.",
           bodyH2: play.play_name || play.play_id,
@@ -1357,7 +1431,7 @@ function App() {
           bodyP2: "Replace this package with Atul engine output when available.",
           cta: "Review package",
           sendTime: "Manual review",
-          suppression: "Recent purchasers, unsubscribes",
+          suppression: STANDARD_SUPPRESSIONS_NOTE,
         }));
       if (!additions.length) return prev;
       return [...prev, ...additions];
@@ -1705,7 +1779,7 @@ function App() {
         status: "building",
         builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
         customers: play.audience_size || 0,
-        segment: play.audience_archetype || "Recommended audience",
+        segment: play.audience_archetype || "—",
         subject: "Placeholder subject from engine play",
         previewText: "Waiting for real engine copy.",
         bodyH2: play.play_name || play.play_id,
@@ -1713,7 +1787,7 @@ function App() {
         bodyP2: "Replace this package with Atul engine output when available.",
         cta: "Review package",
         sendTime: "Manual review",
-        suppression: "Recent purchasers, unsubscribes",
+        suppression: STANDARD_SUPPRESSIONS_NOTE,
       },
     ]);
     showToast({
@@ -2312,7 +2386,10 @@ function App() {
                 <button className="drawer-close" aria-label="Close" onClick={() => setSelectedEvidence(null)}><Icon name="close" size={16} /></button>
                 <div className="section-kicker">Evidence drawer</div>
                 <h2>{selectedEvidence.play_name || selectedEvidence.play_id}</h2>
-                <p>{selectedEvidence.mechanism}</p>
+                {/* LLM prose when authored; else the data chip grid (Pivot 2). */}
+                {selectedEvidence.mechanism
+                  ? <p>{selectedEvidence.mechanism}</p>
+                  : <EvidenceChips play={selectedEvidence} />}
                 {showAdvanced ? <JsonBlock title="Play JSON" value={selectedEvidence} /> : null}
               </div>
             </div>

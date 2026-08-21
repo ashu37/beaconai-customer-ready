@@ -336,7 +336,10 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
       res.json({ ok: true, found: false });
       return;
     }
-    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, null);
+    // Serve the narration PERSISTED at run time (keyed to run_id). No LLM call
+    // on refresh — same run → same prose. null when a run predates persistence,
+    // in which case the presenter renders data chips (no templated prose).
+    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null);
     res.json({ ok: true, found: true, presentedRun });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });

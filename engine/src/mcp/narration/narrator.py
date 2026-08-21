@@ -18,9 +18,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ...engine_run import EngineRun
-from .atoms import CardAtoms, project_play_card, project_rejected_play
+from .atoms import (
+    CardAtoms,
+    StateOfStoreAtoms,
+    project_play_card,
+    project_rejected_play,
+    project_state_of_store,
+)
 from .config import NarrationConfig
-from .guards import GuardViolation, run_all_guards, safe_fallback_narration
+from .guards import (
+    GuardViolation,
+    run_all_guards,
+    run_state_of_store_guards,
+    safe_fallback_narration,
+)
 from .llm_client import LLMClient, MockLLMClient
 
 # Stable system preamble — cached across cards (Anthropic prompt caching).
@@ -97,6 +108,31 @@ def _user_text(atoms: CardAtoms) -> str:
 
 _REQUIRED_KEYS = ("play_thesis", "what_we_d_send", "evidence_summary")
 
+# Store-summary (briefing header) — a single merchant-facing sentence on how
+# the store moved since the prior period. Authored from the state_of_store
+# atoms and guarded (no $, no AOV, percentages must trace to real deltas).
+_STATE_OF_STORE_PREAMBLE = """You are the BeaconAI narration writer. You turn typed \
+store-movement atoms into ONE short, merchant-facing sentence for an e-commerce \
+store owner — a briefing header summarizing how their store moved since the prior \
+period. You author LANGUAGE ONLY. You NEVER invent numbers.
+
+Hard rules (violating any is a defect):
+- Quote ONLY percentages present in `allowed_percentages`. State no other number.
+- State NO dollar figure of any kind. State NO average order value figure.
+- Describe ONLY metrics whose classification is "moved". Metrics marked "flat" \
+have NOT meaningfully changed — omit them; do not call them a change.
+- Use the given metric labels and directions verbatim in meaning; do not \
+reinterpret an "up" as good/bad.
+- If no metric moved, say the store held steady since the prior period.
+- Never mention internal machinery, models, or evidence classes.
+
+Output STRICT JSON with exactly this key and nothing else:
+{"summary": "..."}
+- summary: 1 sentence (2 at most) on the store's movement since the prior period.
+"""
+
+_STATE_OF_STORE_REQUIRED_KEYS = ("summary",)
+
 
 def _parse_narration(raw: str) -> Optional[Dict[str, str]]:
     """Parse the model's JSON output to the 3-key narration dict."""
@@ -124,6 +160,32 @@ def _parse_narration(raw: str) -> Optional[Dict[str, str]]:
     if not any(out.values()):
         return None
     return out
+
+
+def _parse_summary(raw: str) -> Optional[Dict[str, str]]:
+    """Parse the model's JSON output to the 1-key store-summary dict."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1 :]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        return None
+    try:
+        obj = json.loads(text[start : end + 1])
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(obj, dict):
+        return None
+    summary = str(obj.get("summary", "") or "").strip()
+    if not summary:
+        return None
+    return {"summary": summary}
 
 
 @dataclass
@@ -246,6 +308,44 @@ class Narrator:
         atoms = project_rejected_play(rp)
         return self.narrate_atoms(atoms, run_id=run_id, store_id=store_id)
 
+    def narrate_state_of_store(self, engine_run: EngineRun) -> Optional[Dict[str, Any]]:
+        """Narrate the run-level store-movement header from state_of_store atoms.
+
+        Returns ``{"summary": str, "used_fallback": bool, "guard_violations":
+        [...]}`` or ``None`` when there are no surfaceable observations. Fails
+        CLOSED: a guard violation yields ``None`` summary (frontend → chips),
+        never a laundered claim. NO templated prose is authored on failure —
+        typed absence is correct (the observation chips carry the data).
+        """
+        atoms = project_state_of_store(getattr(engine_run, "state_of_store", None))
+        if not atoms.observations:
+            return None
+
+        try:
+            raw = self.llm.complete(
+                [{"type": "text", "text": _STATE_OF_STORE_PREAMBLE,
+                  "cache_control": {"type": "ephemeral"}}],
+                "Summarize the store movement. Use ONLY these atoms:\n\n<atoms>\n"
+                + json.dumps(atoms.to_prompt_dict(), indent=2, sort_keys=True)
+                + "\n</atoms>",
+            )
+        except Exception as e:  # noqa: BLE001 — LLM failure => fail closed
+            return {"summary": None, "used_fallback": True,
+                    "guard_violations": [f"LLM error: {e}"]}
+
+        parsed = _parse_summary(raw)
+        if parsed is None:
+            return {"summary": None, "used_fallback": True,
+                    "guard_violations": ["LLM output was not parseable JSON"]}
+
+        violations = run_state_of_store_guards(parsed, atoms)
+        if violations:
+            return {"summary": None, "used_fallback": True,
+                    "guard_violations": [f"{v.lock}: {v.detail}" for v in violations]}
+
+        return {"summary": parsed["summary"], "used_fallback": False,
+                "guard_violations": []}
+
     def narrate_run(self, engine_run: EngineRun) -> Dict[str, Any]:
         """Narrate every card in a run. Returns the narration artifact dict
         keyed (run_id, play_id). Pure read; never writes back."""
@@ -270,6 +370,7 @@ class Narrator:
             "llm_mode": self.mode,
             "model": self.config.model if self.mode == "anthropic" else None,
             "cards": [c.to_dict() for c in cards],
+            "state_of_store_summary": self.narrate_state_of_store(engine_run),
         }
 
 

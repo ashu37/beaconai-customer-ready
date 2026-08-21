@@ -249,13 +249,52 @@ async function readEngineRunFromManifest(manifestPath) {
   }
   const engineRunPath = path.resolve(path.dirname(manifestPath), engineRunRelPath);
   const engineRun = await readJson(engineRunPath);
+  const narration = await readPersistedNarration(engineRunPath);
 
   return {
     manifest,
     engineRun,
     manifestPath,
     engineRunPath,
+    narration,
   };
+}
+
+// Narration is a pure function of the run's typed atoms, so it is IMMUTABLE per
+// run — persist it keyed to run_id, next to the (immutable) run snapshot, and
+// serve the saved copy on every refresh/rehydrate. Only a NEW run (new run_id →
+// new snapshot → no sibling yet) re-narrates. NO time-based TTL. See
+// PROSE_ARCHITECTURE_PLAN.md §6-C. Sibling path: <run_id>.json -> <run_id>.narration.json.
+function narrationSiblingPath(engineRunPath) {
+  return engineRunPath.replace(/\.json$/i, ".narration.json");
+}
+
+// Persist the narration payload next to the run snapshot. Best-effort: a write
+// failure must not fail the run (the caller still has the in-memory narration).
+async function persistNarration(engineRunPath, narration) {
+  if (!engineRunPath || !narration || narration.error) return false;
+  try {
+    await fs.writeFile(
+      narrationSiblingPath(engineRunPath),
+      JSON.stringify(narration),
+      "utf8"
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Read the persisted narration for a run. Returns null when none exists (a fresh
+// run that has not been narrated yet, or a snapshot from before persistence).
+async function readPersistedNarration(engineRunPath) {
+  if (!engineRunPath) return null;
+  const siblingPath = narrationSiblingPath(engineRunPath);
+  try {
+    return await readJson(siblingPath);
+  } catch (_) {
+    return null;
+  }
 }
 
 async function runAtulEngine(input, options = {}) {
@@ -366,12 +405,28 @@ print(json.dumps(payload))
 `;
 
   const output = await runProcess(pythonPath, ["-c", code], { cwd: engineDir, env: process.env });
-  return JSON.parse(output.stdout);
+  const narration = JSON.parse(output.stdout);
+
+  // Persist keyed to run_id so refreshes (GET /latest) serve the SAME prose
+  // without another LLM call. Immutable-per-run; only a new run re-narrates.
+  // Resolve the snapshot path FROM THE MANIFEST (../<run_id>.json) — the same
+  // path GET /latest reads back — never the legacy receipts/ mirror, so the
+  // write and read land on the same file.
+  const engineRunRelPath = result?.manifest?.artifacts?.engine_run;
+  const snapshotPath = engineRunRelPath
+    ? path.resolve(manifestDir, engineRunRelPath)
+    : null;
+  await persistNarration(snapshotPath, narration);
+
+  return narration;
 }
 
 module.exports = {
   narrateAtulRun,
+  narrationSiblingPath,
+  persistNarration,
   readLatestRun,
+  readPersistedNarration,
   runAtulEngine,
   writeOrdersCsv,
 };
