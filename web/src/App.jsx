@@ -2450,24 +2450,29 @@ function App() {
                                 <div className="recipient-preview-head">
                                   <div>
                                     <span className="section-meta">Recipient preview</span>
-                                    <strong>{preview ? `${preview.count} matched emails` : "Not loaded"}</strong>
+                                    <strong>{preview ? (preview.materialized === false ? "Held this run" : `${preview.count} matched emails`) : "Not loaded"}</strong>
                                   </div>
                                   <button className="btn" onClick={() => previewCampaignAudience(selectedCampaign)} disabled={previewingCampaignId === selectedCampaign.id}>
                                     {previewingCampaignId === selectedCampaign.id ? "Loading..." : "Show emails"}
                                   </button>
                                 </div>
-                                {preview?.recipients?.length ? (
+                                {/* R1: the engine deliberately did not materialize an auditable audience
+                                    this run — a correct typed absence, not "0 matched". Explain it. */}
+                                {preview && preview.materialized === false ? (
+                                  <div className="empty-panel inline">
+                                    This audience isn't ready to send this run — BeaconAI held it until there's enough store data to build an auditable list. It unlocks as more orders sync.
+                                  </div>
+                                ) : preview?.recipients?.length ? (
                                   <div className="recipient-list">
                                     {preview.recipients.slice(0, 25).map((recipient) => (
                                       <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
                                         <strong>{recipient.email}</strong>
-                                        <span>{recipient.orderCount} orders · ${Number(recipient.totalRevenue || 0).toLocaleString()}</span>
                                       </div>
                                     ))}
-                                    {preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
+                                    {preview.suppressedCount ? <small>{preview.recipients.length} of {preview.memberCount} have an email on file{preview.recipients.length > 25 ? ` · showing first 25` : ""}.</small> : preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
                                   </div>
                                 ) : preview ? (
-                                  <div className="empty-panel inline">No subscribed recipient emails matched this campaign yet.</div>
+                                  <div className="empty-panel inline">No recipient emails on file for this audience yet.</div>
                                 ) : null}
                               </div>
                             </div>

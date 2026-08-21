@@ -1,123 +1,147 @@
+// Audience resolution for the send preview.
+//
+// CONTRACT (DS-adjudicated 2026-08-21): the send audience is the ENGINE's
+// decision, not an app re-derivation. Membership = the per-play audience CSV the
+// engine materialized (customer_id list, keyed by audience_definition_id via the
+// manifest, matched by play_id). The DB is used ONLY to hydrate email for those
+// ids — never to SELECT who is in the audience. This traces every recipient to
+// (run_id, audience_definition_id) per RULE B.
+//
+// Guards (DS-locked, non-negotiable):
+//  R1: honor audience_materialization_status. != MATERIALIZED => typed absence
+//      ("no auditable audience this run"), NEVER a DB fallback.
+//  R2: never surface aov_individual (hardcoded 0.0) or CSV predicted_segment as a
+//      merchant figure. Preview shows count + play identity only.
+//  R3: consent is NOT gated here — Klaviyo enforces consent at send (founder
+//      decision 2026-08-21). We hydrate emails and hand off; we do not filter.
+//  R4: no audienceMode() / heuristic thresholds. Re-deriving membership is the bug.
+
+const fs = require("fs/promises");
+const path = require("path");
 const { query } = require("../db");
+const { readLatestRun } = require("./atulEngineService");
 
-function normalizeText(value) {
-  return String(value || "").toLowerCase();
+const MATERIALIZED = "MATERIALIZED";
+
+// Parse the customer_id column from an engine audience CSV. Header is
+// `customer_id,aov_individual,predicted_segment,rank_score`. We read ONLY
+// customer_id (R2: never surface aov/segment). Returns an array of ids.
+function parseCustomerIds(csvText) {
+  const lines = String(csvText || "").split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length <= 1) return []; // header-only or empty
+  const header = lines[0].split(",").map((h) => h.trim());
+  const idIdx = header.indexOf("customer_id");
+  if (idIdx === -1) return [];
+  const ids = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cols = lines[i].split(",");
+    const id = (cols[idIdx] || "").trim();
+    if (id) ids.push(id);
+  }
+  return ids;
 }
 
-function daysBetween(date, now = new Date()) {
-  if (!date) return 0;
-  const parsed = new Date(date);
-  if (Number.isNaN(parsed.getTime())) return 0;
-  return Math.max(0, Math.floor((now.getTime() - parsed.getTime()) / 86400000));
+// Find the manifest audience entry for a play and return { status, csvPath }.
+function audienceEntryForPlay(manifest, manifestPath, playId) {
+  const audiences = manifest?.artifacts?.audiences || [];
+  const entry = audiences.find((a) => a.play_id === playId);
+  if (!entry) return null;
+  return {
+    status: entry.audience_materialization_status || null,
+    csvPath: path.resolve(path.dirname(manifestPath), entry.path),
+    audienceDefinitionId: entry.audience_definition_id || null,
+  };
 }
 
-function audienceMode(campaign = {}) {
-  const text = normalizeText([
-    campaign.id,
-    campaign.playTitle,
-    campaign.segment,
-    campaign.subject,
-    campaign.bodyH2,
-    campaign.bodyP1,
-  ].filter(Boolean).join(" "));
-
-  if (text.includes("first-to-second") || text.includes("second purchase") || text.includes("first time")) return "first_to_second";
-  if (text.includes("discount")) return "discount";
-  if (text.includes("aov") || text.includes("bundle")) return "aov_bundle";
-  if (text.includes("dormant") || text.includes("winback") || text.includes("hibernating")) return "dormant";
-  return "all_marketable";
+// Hydrate emails for a set of customer_ids from the DB. Returns
+// [{ customerId, email }] for ids that resolve to an email. Consent is NOT
+// filtered here (R3) — Klaviyo enforces it at send.
+async function hydrateEmails(shopDomain, customerIds) {
+  if (!customerIds.length) return [];
+  // Emails live on clean.customers (id) and/or clean.orders (customer_id).
+  const [customers, orders] = await Promise.all([
+    query(
+      `SELECT id::text AS customer_id, email FROM clean.customers
+       WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND id::text = ANY($2)`,
+      [shopDomain, customerIds]
+    ),
+    query(
+      `SELECT DISTINCT customer_id::text AS customer_id, email FROM clean.orders
+       WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND customer_id::text = ANY($2)`,
+      [shopDomain, customerIds]
+    ),
+  ]);
+  const emailById = new Map();
+  for (const row of orders.rows) if (!emailById.has(row.customer_id)) emailById.set(row.customer_id, row.email);
+  for (const row of customers.rows) emailById.set(row.customer_id, row.email); // customers table wins
+  const recipients = [];
+  for (const id of customerIds) {
+    const email = emailById.get(String(id));
+    if (email) recipients.push({ customerId: id, email });
+  }
+  return recipients;
 }
 
-function customerKey(row) {
-  return row.customer_id || row.email;
-}
-
+/**
+ * Resolve the send audience for a campaign from the ENGINE's materialized CSV.
+ * @param {string} shopDomain
+ * @param {object} campaign  the draft; campaign.id is the play_id.
+ * @returns {Promise<{count, recipients, materialized, status, reason?, audienceDefinitionId?}>}
+ */
 async function resolveCampaignAudience(shopDomain, campaign = {}) {
-  const ordersResult = await query(
-    `
-    SELECT customer_id, email, created_at, total_price, total_discounts
-    FROM clean.orders
-    WHERE shop_domain = $1
-      AND COALESCE(email, '') <> ''
-      AND cancelled_at IS NULL
-    ORDER BY created_at ASC
-    `,
-    [shopDomain]
-  );
-
-  const customersResult = await query(
-    `
-    SELECT id, email, email_marketing_consent, state
-    FROM clean.customers
-    WHERE shop_domain = $1
-      AND COALESCE(email, '') <> ''
-    `,
-    [shopDomain]
-  );
-
-  const consentByEmail = new Map();
-  for (const customer of customersResult.rows) {
-    const consent = customer.email_marketing_consent || {};
-    const state = normalizeText(consent.state || customer.state);
-    consentByEmail.set(normalizeText(customer.email), state);
+  const playId = campaign.play_id || campaign.id || null;
+  if (!playId) {
+    return { count: 0, recipients: [], materialized: false, status: null, reason: "no_play_id" };
   }
 
-  const grouped = new Map();
-  for (const order of ordersResult.rows) {
-    const key = customerKey(order);
-    if (!key) continue;
-    const existing = grouped.get(key) || {
-      customerId: order.customer_id,
-      email: order.email,
-      orders: [],
-      totalRevenue: 0,
-      totalDiscounts: 0,
+  const latest = await readLatestRun({ shopDomain });
+  if (!latest?.manifest || !latest?.manifestPath) {
+    return { count: 0, recipients: [], materialized: false, status: null, reason: "no_run" };
+  }
+
+  const entry = audienceEntryForPlay(latest.manifest, latest.manifestPath, playId);
+  if (!entry) {
+    return { count: 0, recipients: [], materialized: false, status: null, reason: "no_audience_for_play" };
+  }
+
+  // R1: only a MATERIALIZED audience yields recipients. Anything else is a typed
+  // absence — the engine deliberately did not produce an auditable audience.
+  if (entry.status !== MATERIALIZED) {
+    return {
+      count: 0,
+      recipients: [],
+      materialized: false,
+      status: entry.status,
+      audienceDefinitionId: entry.audienceDefinitionId,
+      reason: "not_materialized",
     };
-    existing.orders.push(order);
-    existing.email = existing.email || order.email;
-    existing.customerId = existing.customerId || order.customer_id;
-    existing.totalRevenue += Number(order.total_price || 0);
-    existing.totalDiscounts += Number(order.total_discounts || 0);
-    grouped.set(key, existing);
   }
 
-  const mode = audienceMode(campaign);
-  const now = new Date();
-  const candidates = Array.from(grouped.values()).filter((customer) => {
-    const consentState = consentByEmail.get(normalizeText(customer.email));
-    if (consentState && consentState !== "subscribed") return false;
+  let customerIds = [];
+  try {
+    customerIds = parseCustomerIds(await fs.readFile(entry.csvPath, "utf8"));
+  } catch (_) {
+    return { count: 0, recipients: [], materialized: false, status: entry.status, reason: "csv_unreadable" };
+  }
 
-    const orderCount = customer.orders.length;
-    const firstOrder = customer.orders[0];
-    const lastOrder = customer.orders[customer.orders.length - 1];
-    const daysSinceFirst = daysBetween(firstOrder?.created_at, now);
-    const daysSinceLast = daysBetween(lastOrder?.created_at, now);
-    const discountRatio = customer.totalRevenue > 0 ? customer.totalDiscounts / customer.totalRevenue : 0;
-    const averageOrderValue = orderCount ? customer.totalRevenue / orderCount : 0;
-
-    if (mode === "first_to_second") return orderCount === 1 && daysSinceFirst >= 30;
-    if (mode === "discount") return discountRatio >= 0.1 || customer.totalDiscounts > 0;
-    if (mode === "aov_bundle") return averageOrderValue >= 50;
-    if (mode === "dormant") return daysSinceLast >= 45;
-    return true;
-  });
-
-  const limit = Math.max(1, Math.min(Number(campaign.customers || candidates.length || 100), 1000));
-  const recipients = candidates.slice(0, limit).map((customer) => ({
-    customerId: customer.customerId,
-    email: customer.email,
-    orderCount: customer.orders.length,
-    totalRevenue: Number(customer.totalRevenue.toFixed(2)),
-  }));
+  const recipients = await hydrateEmails(shopDomain, customerIds);
+  // suppressedCount = engine members whose email we could not resolve in the DB
+  // (data gap, not a consent decision — R3 leaves consent to Klaviyo).
+  const suppressedCount = Math.max(0, customerIds.length - recipients.length);
 
   return {
-    mode,
     count: recipients.length,
     recipients,
-    suppressedCount: Math.max(0, candidates.length - recipients.length),
+    materialized: true,
+    status: entry.status,
+    audienceDefinitionId: entry.audienceDefinitionId,
+    memberCount: customerIds.length,
+    suppressedCount,
   };
 }
 
 module.exports = {
   resolveCampaignAudience,
+  // exported for tests
+  parseCustomerIds,
 };
