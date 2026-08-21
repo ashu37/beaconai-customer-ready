@@ -186,6 +186,12 @@ button.status-chip:not([onclick]) { cursor: default; }
 .recommendation-tab-body { margin-bottom: 18px; }
 .detail-copy-block { border-bottom: 1px solid var(--rule); padding-bottom: 16px; margin-bottom: 18px; }
 .detail-copy-block p { color: var(--ink); line-height: 1.6; margin-bottom: 0; max-width: 760px; }
+/* Evidence chip grid — the data-derived "why" surface shown when the LLM
+   authored no prose (Pivot 2 typed-absence). */
+.evidence-chip-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 0; }
+.evidence-chip { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.evidence-chip-label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.evidence-chip-value { display: block; color: var(--ink-strong); font-size: 15px; overflow-wrap: anywhere; }
 .revenue-range { padding: 6px 0 0; }
 .range-track { height: 8px; border-radius: 999px; background: #f1e0c6; position: relative; overflow: visible; margin: 12px 0 8px; }
 .range-fill { display: block; width: 100%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #f5c56f, #e39c3f); }

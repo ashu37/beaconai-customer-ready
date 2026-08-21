@@ -35,10 +35,13 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
-from .atoms import CardAtoms
+from .atoms import CardAtoms, StateOfStoreAtoms
 
 # A dollar figure: $1,234 or $1234.50 etc.
 _DOLLAR_RE = re.compile(r"\$\s?([0-9][0-9,]*(?:\.[0-9]+)?)")
+
+# A percentage figure: 12% or 12.5%.
+_PERCENT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s?%")
 
 # Lift / incremental framing forbidden for non-STORE_MEASURED cards (L2).
 _LIFT_TERMS = [
@@ -256,6 +259,66 @@ def run_all_guards(narration: Dict[str, str], atoms: CardAtoms) -> List[GuardVio
     return out
 
 
+# --- Store-level summary guards --------------------------------------------
+#
+# The card guards above are keyed to per-card atoms (evidence_source,
+# allowed_dollar_figures, mechanism). A store-level summary has none of those,
+# so it runs a store-scoped subset PLUS a percentage-traceability guard.
+
+
+def check_no_dollar_figures_store(summary: Dict[str, str]) -> List[GuardViolation]:
+    """A store summary states NO dollar figure (no BLEND range backs it)."""
+    text = " ".join(str(v or "") for v in summary.values())
+    return [
+        GuardViolation("L8", f"dollar figure ${m.group(1)} in store summary "
+                             "(no dollar figure is permitted at store level)")
+        for m in _DOLLAR_RE.finditer(text)
+    ]
+
+
+def check_percentages_traceable(
+    summary: Dict[str, str], atoms: StateOfStoreAtoms
+) -> List[GuardViolation]:
+    """Every percentage in the summary must trace to a real delta_pct.
+
+    Mirrors the L8 dollar guard for percentages: the LLM may quote a movement
+    percentage ONLY if it appears in ``allowed_percentages`` (the rounded
+    delta_pct magnitudes the engine actually emitted). This keeps the
+    'invents no number' guarantee for the percent figures the header quotes.
+    """
+    allowed = set(int(p) for p in (atoms.allowed_percentages or []))
+    text = " ".join(str(v or "") for v in summary.values())
+    violations: List[GuardViolation] = []
+    for m in _PERCENT_RE.finditer(text):
+        try:
+            val = int(round(float(m.group(1))))
+        except ValueError:
+            continue
+        if val not in allowed:
+            violations.append(
+                GuardViolation(
+                    "L8-pct",
+                    f"percentage {m.group(1)}% in store summary is not "
+                    f"traceable to an engine delta_pct {sorted(allowed)}",
+                )
+            )
+    return violations
+
+
+def run_state_of_store_guards(
+    summary: Dict[str, str], atoms: StateOfStoreAtoms
+) -> List[GuardViolation]:
+    """Run the store-scoped guard set: no $, no AOV, no fit-warning leak, and
+    percentage traceability. Returns the aggregated violations (empty==clean)."""
+    out: List[GuardViolation] = []
+    out.extend(check_no_dollar_figures_store(summary))
+    out.extend(check_percentages_traceable(summary, atoms))
+    # Reuse the vocabulary guards (they read narration.values() only).
+    out.extend(check_no_aov_or_csv_segment(summary, atoms))  # atoms unused by L6
+    out.extend(check_no_fit_warning_leak(summary, atoms))     # atoms unused by L3
+    return out
+
+
 def safe_fallback_narration(atoms: CardAtoms) -> Dict[str, str]:
     """Deterministic, lock-clean fallback used when guards fail closed.
 
@@ -293,5 +356,8 @@ __all__ = [
     "check_no_fit_warning_leak",
     "check_no_aov_or_csv_segment",
     "run_all_guards",
+    "check_no_dollar_figures_store",
+    "check_percentages_traceable",
+    "run_state_of_store_guards",
     "safe_fallback_narration",
 ]

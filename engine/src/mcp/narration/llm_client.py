@@ -67,6 +67,10 @@ class MockLLMClient:
         if self._responder is not None:
             return self._responder(system_blocks, user_text)
         atoms = _extract_atoms_block(user_text)
+        # The store-summary atoms carry "observations"/"allowed_percentages"
+        # instead of a play_id — emit a lock-clean summary for that shape.
+        if "observations" in atoms or "allowed_percentages" in atoms:
+            return json.dumps(_default_mock_state_of_store(atoms))
         return json.dumps(_default_mock_narration(atoms))
 
 
@@ -126,6 +130,21 @@ def _default_mock_narration(atoms: Dict[str, Any]) -> Dict[str, Any]:
         "what_we_d_send": what,
         "evidence_summary": evidence,
     }
+
+
+def _default_mock_state_of_store(atoms: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a safe, deterministic store-summary from the projected atoms.
+
+    Uses ONLY moved metrics + their allowed percentages, so the output passes
+    the store guards (no $, no AOV, percentages traceable). No movement =>
+    'held steady' line.
+    """
+    observations = atoms.get("observations") or []
+    moved = [o for o in observations if o.get("classification") == "moved" and o.get("percent")]
+    if not moved:
+        return {"summary": "Your store held steady since the prior period."}
+    clauses = [f"{o['metric']} {o['direction']} {o['percent']}%" for o in moved[:2]]
+    return {"summary": "Since the prior period: " + " and ".join(clauses) + "."}
 
 
 class AnthropicLLMClient:

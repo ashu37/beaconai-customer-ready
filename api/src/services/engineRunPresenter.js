@@ -160,12 +160,6 @@ function compactSentence(value, fallback) {
   return text || fallback;
 }
 
-function mechanismLabel(mechanismIntent) {
-  const type = mechanismIntent?.type;
-  if (!type) return "";
-  return titleizeId(type).toLowerCase();
-}
-
 function audienceText(audience) {
   if (!audience) return "Recommended audience";
   return compactSentence(audience.definition, "Recommended audience");
@@ -208,40 +202,6 @@ function normalizeRevenueRange(range) {
   };
 }
 
-function moneyLabel(value, currency) {
-  const prefix = currency === "USD" || !currency ? "$" : `${currency} `;
-  return `${prefix}${Number(value).toLocaleString()}`;
-}
-
-// Merchant-facing short label. Leads with median where available.
-// e.g. "~$2,400 typical · range $400–$4,500".
-function formatRevenue(range) {
-  if (!range || range.low == null || range.high == null) return null;
-  const low = range.low;
-  const high = range.high;
-  if (!Number.isFinite(Number(low)) || !Number.isFinite(Number(high))) return null;
-  const currency = range.currency;
-  const rangeLabel = low === high
-    ? moneyLabel(low, currency)
-    : `${moneyLabel(low, currency)}–${moneyLabel(high, currency)}`;
-  if (range.median != null && Number.isFinite(Number(range.median))) {
-    return `~${moneyLabel(range.median, currency)} typical · range ${rangeLabel}`;
-  }
-  return `range ${rangeLabel}`;
-}
-
-function formatAudienceSize(size) {
-  const num = Number(size);
-  if (!Number.isFinite(num) || num <= 0) return null;
-  return num.toLocaleString();
-}
-
-function lowerFirst(text) {
-  const value = String(text || "").trim();
-  if (!value) return "";
-  return value.charAt(0).toLowerCase() + value.slice(1);
-}
-
 // P1-3: short evidence line for the card face.
 function evidenceLineForCard(card) {
   if (card.evidence_source === "STORE_MEASURED") {
@@ -253,50 +213,25 @@ function evidenceLineForCard(card) {
   return "Based on patterns from similar stores";
 }
 
-// P0-2 evidence sentence (full narration form).
-function evidenceSentence(card) {
-  if (card.evidence_source === "STORE_MEASURED") {
-    const n = Number(card.measurement?.n);
-    const nClause = Number.isFinite(n) && n > 0 ? ` (${n.toLocaleString()} orders analyzed)` : "";
-    return `Based on your store's own order history${nClause}.`;
-  }
-  return "Based on patterns from similar stores — your store's data will sharpen this over time.";
-}
-
-// P0-4: revenue sentence for the thesis. Omitted when unsized.
-function revenueSentence(card) {
+// Phase 1: the formal chip payload per card. These are DATA-DERIVED VALUES the
+// frontend renders as chips — never hand-written marketing prose. When the LLM
+// authors no thesis, this grid is the merchant's "understand & trust why"
+// surface. The frontend reads ONLY from here, never from `raw`.
+// (Prose was formerly assembled here by `narrationForCard`; deleted per
+// Pivot 2 / PROSE_ARCHITECTURE_PLAN.md §3 — no templated sentences.)
+function evidenceFactsForCard(card) {
   const range = normalizeRevenueRange(card.revenue_range);
-  if (range.suppressed || range.low == null || range.high == null || range.median == null) return "";
-  return `Estimated opportunity: ${moneyLabel(range.low, range.currency)}–${moneyLabel(range.high, range.currency)} (median ~${moneyLabel(range.median, range.currency)}) if this campaign performs in the typical range.`;
-}
-
-function narrationForCard(card, role) {
-  const audienceCount = formatAudienceSize(card.audience?.size);
-  const oneLiner = playOneLiner(card.play_id) || audienceText(card.audience);
-  const mechanism = mechanismLabel(card.mechanism_intent);
-
-  // WHO + WHY NOW + EXPECTED OUTCOME
-  // One-liners already name the group ("Customers who...", "Buyers who...")
-  // so the count is appended, never prepended, to avoid "234 customers customers who...".
-  const whoWhy = audienceCount
-    ? `${oneLiner} — ${audienceCount} customers match right now.`
-    : `${oneLiner}.`;
-  const evidence = evidenceSentence(card);
-  const revenue = revenueSentence(card);
-
-  const playThesis = [whoWhy, evidence, revenue].filter(Boolean).join(" ");
-
-  const whatWeWouldSend = mechanism
-    ? `A ${mechanism} email to this group. You'll pick and edit the exact template before anything is sent.`
-    : `A tailored email to this group. You'll pick and edit the exact template before anything is sent.`;
-
   return {
-    role,
-    play_thesis: playThesis,
-    what_we_d_send: whatWeWouldSend,
-    evidence_summary: revenue || evidence,
-    used_fallback: true,
-    llm_mode: "api-deterministic",
+    sample_size: card.measurement?.n ?? null,
+    audience_size: card.audience?.size ?? null,
+    audience_fraction_of_base: card.audience?.fraction_of_base ?? null,
+    evidence_source: card.evidence_source || null,
+    evidence_class: card.evidence_class || null,
+    observed_effect: card.measurement?.observed_effect ?? null,
+    measurement_metric: card.measurement?.metric || null,
+    primary_window: card.measurement?.primary_window || null,
+    confidence_label: card.confidence_label || null,
+    revenue_range: range,
   };
 }
 
@@ -350,21 +285,24 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
   // If the narration service itself fell back, its text is the templated
   // "This play targets the <play_id> opportunity..." sentence — prefer our
   // merchant-language narration instead of surfacing that tautology.
+  // Phase 1: prose is the LLM's or NOTHING. When narration didn't clear the
+  // guards (or ran on mock → used_fallback), `narration` is null and the
+  // frontend renders the evidence chip grid instead of a canned sentence.
+  // No templated fallback is authored here anymore (Pivot 2).
   const guardedNarration = rawGuardedNarration
     && !rawGuardedNarration.used_fallback
     && !isTautologyNarration(rawGuardedNarration)
     ? rawGuardedNarration
     : null;
-  const fallbackNarration = narrationForCard(card, role);
   const narration = guardedNarration ? {
     role,
     play_thesis: guardedNarration.play_thesis,
     what_we_d_send: guardedNarration.what_we_d_send,
     evidence_summary: guardedNarration.evidence_summary,
     guard_violations: guardedNarration.guard_violations || [],
-    used_fallback: Boolean(guardedNarration.used_fallback),
+    used_fallback: false,
     llm_mode: "atul-narration",
-  } : fallbackNarration;
+  } : null;
   const audienceArtifact = audienceArtifactFor(card, manifest);
 
   return {
@@ -375,7 +313,8 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
     role,
     lane: role === "recommended_experiment" ? "experiment" : "recommendation",
     source: "atul-engine",
-    mechanism: narration.play_thesis,
+    // Prose only when the LLM authored it; null otherwise (frontend → chips).
+    mechanism: narration ? narration.play_thesis : null,
     audience_archetype: audienceText(card.audience),
     audience_size: card.audience?.size ?? 0,
     confidence: card.confidence_label || "Review",
@@ -389,6 +328,7 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
       sample_size: card.measurement?.n ?? null,
       primary_window: card.measurement?.primary_window || null,
     },
+    evidence_facts: evidenceFactsForCard(card),
     measurement: card.measurement || null,
     revenue_range: revenueRange,
     mechanism_intent: card.mechanism_intent || null,
@@ -413,10 +353,14 @@ function normalizeRejectedCard(card, index, narrationMap) {
     play_one_liner: playOneLiner(id),
     role: "considered",
     reason_code: card.reason_code || null,
+    // reason_display is DATA-DERIVED from the engine's reason_code (the gap +
+    // what unlocks it) — a chip value, not invented marketing prose. OK to keep.
     reason_display: reasonDisplay(card.reason_code, card),
     audience_size: card.audience_size ?? 0,
     audience_archetype: card.audience_definition || "Held for more evidence",
-    mechanism: guardedNarration?.play_thesis || reasonDisplay(card.reason_code, card),
+    // Prose only when the LLM authored it; null otherwise. The held-reason is
+    // surfaced via `reason_display`, so no templated sentence is needed here.
+    mechanism: guardedNarration?.play_thesis || null,
     narration: guardedNarration ? {
       role: "considered",
       play_thesis: guardedNarration.play_thesis,
@@ -431,9 +375,9 @@ function normalizeRejectedCard(card, index, narrationMap) {
 }
 
 // B1: engineRun.state_of_store is a LIST of typed observations, not a string.
-// The engine intentionally emits no prose (Pivot 2); the presenter authors the
-// language. We synthesize a header sentence from the top-moved metrics. Never
-// fabricated numbers — magnitudes come straight from the engine's delta_pct.
+// The header SENTENCE is authored by the narration MCP (guarded), not here —
+// the former stateOfStoreSentence() templated prose was retired (Pivot 2). These
+// labels remain for the DATA chip row below (a chip value, not a sentence).
 const METRIC_LABELS = {
   aov: "average order value",
   repeat_rate_within_window: "repeat purchase rate",
@@ -441,30 +385,6 @@ const METRIC_LABELS = {
   returning_customer_share: "returning-customer share",
   net_sales: "net sales",
 };
-
-function stateOfStoreSentence(engineRun) {
-  const observations = engineRun?.state_of_store;
-  if (!Array.isArray(observations)) return null;
-
-  const clauses = observations
-    .filter((obs) =>
-      obs
-      && obs.classification === "moved"
-      && Number.isFinite(obs.delta_pct)
-      && Object.prototype.hasOwnProperty.call(METRIC_LABELS, obs.supporting_metric))
-    .sort((a, b) => Math.abs(b.delta_pct) - Math.abs(a.delta_pct))
-    .slice(0, 2)
-    .map((obs) => {
-      const pct = Math.round(Math.abs(obs.delta_pct) * 100);
-      if (pct === 0) return null;
-      const direction = obs.delta_pct >= 0 ? "up" : "down";
-      return `${METRIC_LABELS[obs.supporting_metric]} ${direction} ${pct}%`;
-    })
-    .filter(Boolean);
-
-  if (!clauses.length) return null;
-  return `Since the prior period: ${clauses.join(" · ")}`;
-}
 
 // D6a: structured delta observations for the briefing chip row. Top 2 movers by
 // magnitude, plus AOV always if present. `flat` when the rounded pct is 0 or the
@@ -503,7 +423,14 @@ function presentEngineRun(engineRun, manifest = null, narration = null) {
     ...(engineRun?.recommendations || []).map((card, index) => normalizeCard(card, "recommendation", index, manifest, narrationMap)),
     ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest, narrationMap)),
   ];
-  const stateOfStore = stateOfStoreSentence(engineRun);
+  // Briefing header prose is LLM-authored by the narration MCP (guarded) or
+  // NOTHING — the observation chips carry the data when no summary was authored.
+  // The former presenter-synthesized sentence (stateOfStoreSentence) is retired
+  // per Pivot 2 (no templated prose outside the MCP).
+  const summaryPayload = narration?.state_of_store_summary || null;
+  const stateOfStore = summaryPayload && !summaryPayload.used_fallback && summaryPayload.summary
+    ? summaryPayload.summary
+    : null;
   const stateOfStoreObs = stateOfStoreObservations(engineRun);
 
   return {

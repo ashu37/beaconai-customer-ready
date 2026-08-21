@@ -244,6 +244,94 @@ def project_play_card(card: PlayCard, role: str) -> CardAtoms:
     )
 
 
+# --- Store-level summary atoms (run-level, NOT card-level) -----------------
+#
+# Contract extension (2026-08-20): the briefing header sentence was formerly
+# assembled by string concatenation in the JS presenter (a Pivot-2 drift). It
+# is now LLM-authored from these lock-clean atoms and guarded like card prose.
+#
+# Merchant-facing metric labels. ONLY these metrics are surfaceable; any other
+# supporting_metric is dropped (never invent a label for an unknown metric).
+_STATE_OF_STORE_METRIC_LABELS = {
+    "aov": "average order value",
+    "repeat_rate_within_window": "repeat purchase rate",
+    "orders": "orders",
+    "returning_customer_share": "returning-customer share",
+    "net_sales": "net sales",
+}
+
+
+@dataclass
+class StateOfStoreAtoms:
+    """Lock-clean projection of the run's state_of_store observations.
+
+    Carries ONLY merchant-safe fields: a metric label, the direction, and the
+    rounded percent magnitude (the SAME percent the prose may quote). Raw
+    ``current``/``prior`` dollar values are NEVER projected (L6/L8 — an AOV of
+    $59.17 must not leak). ``allowed_percentages`` is the single source of truth
+    for which percent figures may appear in the summary; the guard rejects any
+    other.
+    """
+
+    observations: List[Dict[str, Any]] = field(default_factory=list)
+    allowed_percentages: List[int] = field(default_factory=list)
+
+    def to_prompt_dict(self) -> Dict[str, Any]:
+        return {
+            "observations": self.observations,
+            "allowed_percentages": self.allowed_percentages,
+            "note": (
+                "Summarize how the store has moved since the prior period in "
+                "1-2 sentences. State ONLY the metric labels, directions, and "
+                "percentages given below. Quote NO percentage that is not in "
+                "allowed_percentages. State NO dollar figure. State NO average "
+                "order value figure. 'held'/'flat' metrics have not "
+                "meaningfully moved — do not describe them as a change."
+            ),
+        }
+
+
+def project_state_of_store(observations: Optional[List[Any]]) -> StateOfStoreAtoms:
+    """Project the engine's state_of_store list to lock-clean summary atoms.
+
+    Keeps only known metrics with a finite delta_pct; surfaces the rounded
+    percent + direction + classification. Excludes raw current/prior values.
+    """
+    if not observations:
+        return StateOfStoreAtoms()
+
+    projected: List[Dict[str, Any]] = []
+    allowed: List[int] = []
+    for obs in observations:
+        # obs may be a dataclass or a plain dict depending on caller.
+        metric = _obs_get(obs, "supporting_metric")
+        label = _STATE_OF_STORE_METRIC_LABELS.get(metric)
+        if label is None:
+            continue  # unknown metric — never invent a label
+        delta_pct = _obs_get(obs, "delta_pct")
+        classification = _obs_get(obs, "classification")
+        moved = classification == "moved" and isinstance(delta_pct, (int, float))
+        pct = int(round(abs(delta_pct) * 100)) if moved else 0
+        direction = "up" if (moved and delta_pct >= 0) else "down" if moved else "flat"
+        if moved and pct > 0:
+            allowed.append(pct)
+        projected.append(
+            {
+                "metric": label,
+                "direction": direction,
+                "percent": pct,
+                "classification": "moved" if (moved and pct > 0) else "flat",
+            }
+        )
+    return StateOfStoreAtoms(observations=projected, allowed_percentages=sorted(set(allowed)))
+
+
+def _obs_get(obs: Any, key: str) -> Any:
+    if isinstance(obs, dict):
+        return obs.get(key)
+    return getattr(obs, key, None)
+
+
 def project_rejected_play(rp: RejectedPlay, role: str = "considered") -> CardAtoms:
     """Project a Considered (RejectedPlay) entry to lock-clean atoms.
 
@@ -269,6 +357,8 @@ def project_rejected_play(rp: RejectedPlay, role: str = "considered") -> CardAto
 
 __all__ = [
     "CardAtoms",
+    "StateOfStoreAtoms",
     "project_play_card",
     "project_rejected_play",
+    "project_state_of_store",
 ]
