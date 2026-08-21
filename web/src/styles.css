@@ -277,6 +277,18 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 /* P-D4: edited-field indicator */
 .review-field-label { display: inline-flex; align-items: center; gap: 8px; }
 .edited-chip { font-family: var(--font-body); font-size: 9px; font-weight: 700; text-transform: none; letter-spacing: 0; color: #9a4d00; background: var(--accent-soft); border: 1px solid rgba(240,138,36,.3); border-radius: 10px; padding: 1px 7px; }
+/* CA-4 copywriter UI: rationale, rewrite + steer chips, subject chips, shimmer. */
+.copy-rationale { color: var(--muted); font-size: 13px; line-height: 1.5; background: #fbfaf7; border: 1px solid var(--rule); border-radius: var(--radius-ctl); padding: 10px 12px; margin: 0 0 14px; }
+.copy-rewrite-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.steer-chips, .subject-variants { display: flex; gap: 6px; flex-wrap: wrap; }
+.subject-variants { margin-bottom: 14px; }
+.steer-chip, .subject-chip { font: inherit; font-size: 12px; color: var(--muted); background: #fbfaf7; border: 1px solid var(--rule); border-radius: 999px; padding: 4px 11px; cursor: pointer; }
+.steer-chip:hover:not(:disabled), .subject-chip:hover { border-color: var(--accent); }
+.steer-chip.active, .subject-chip.active { color: #9a4d00; background: var(--accent-soft); border-color: rgba(240,138,36,.4); }
+.steer-chip:disabled { opacity: .45; cursor: not-allowed; }
+.rewrite-btn { white-space: nowrap; }
+.copy-shimmer-line { color: var(--muted); font-size: 13px; padding: 10px 12px; margin-bottom: 14px; border-radius: var(--radius-ctl); background: linear-gradient(90deg, #f4f1ea 25%, #faf8f3 50%, #f4f1ea 75%); background-size: 200% 100%; animation: copy-shimmer 1.4s ease-in-out infinite; }
+@keyframes copy-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 .review-field input, .review-field textarea { width: 100%; border: 1px solid var(--rule); border-radius: var(--radius-ctl); padding: 11px 12px; color: var(--ink-strong); background: #fbfaf7; font: inherit; font-weight: 400; resize: vertical; }
 .review-field input:focus, .review-field textarea:focus { border-color: var(--accent); background: #ffffff; }
 .review-preview-pane { display: grid; gap: 14px; justify-items: center; position: sticky; top: 16px; align-self: start; }

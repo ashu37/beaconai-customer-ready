@@ -202,10 +202,27 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
   }];
 }
 
-function buildCampaignFromSelection(play, template, edits = {}) {
+// CA-4: map the copywriter's slot object to the draft's field shape. subject_variants[0]
+// is the pre-selected subject (adopt #5). Returns {} when no agent copy present.
+function agentCopyToDraftFields(agentCopy) {
+  if (!agentCopy) return {};
+  const out = {};
+  const variants = Array.isArray(agentCopy.subject_variants) ? agentCopy.subject_variants : [];
+  if (variants[0]) out.subject = variants[0];
+  if (agentCopy.preview_text != null) out.previewText = agentCopy.preview_text;
+  if (agentCopy.headline != null) out.bodyH2 = agentCopy.headline;
+  if (agentCopy.body != null) out.bodyP1 = agentCopy.body;
+  if (agentCopy.support != null) out.bodyP2 = agentCopy.support;
+  if (agentCopy.cta != null) out.cta = agentCopy.cta;
+  return out;
+}
+
+function buildCampaignFromSelection(play, template, edits = {}, agentCopy = null) {
   if (!play || !template) return null;
   const prompt = play.template_prompt || {};
-  const narration = play.narration || {};
+  // Base copy precedence: LLM agent copy (CA-4) > selected template > static
+  // template_prompt > neutral placeholder. Merchant edits always layer on top.
+  const agentFields = agentCopyToDraftFields(agentCopy);
   const draft = {
     // Key by play id (1:1 with its selected template). A composite id broke every
     // downstream lookup (grouping, audience preview, klaviyo assets) that keys by play.id.
@@ -215,16 +232,15 @@ function buildCampaignFromSelection(play, template, edits = {}) {
     templateSource: template.source,
     status: "draft",
     customers: play.audience_size || 0,
-    // Draft-seed fields (approval #2's EDITABLE email). Real seeds come from the
-    // selected template / buildTemplatePrompt; last-resort fallbacks are NEUTRAL
-    // placeholders, not invented marketing copy (LLM copywriter lands in Phase 4).
     segment: play.audience_archetype || "—",
-    subject: template.subject || prompt.subject || `${play.play_name} campaign`,
-    previewText: template.previewText || prompt.previewText || "Selected template ready for campaign review.",
-    bodyH2: template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
-    bodyP1: template.bodyP1 || prompt.body || prompt.support || "",
-    bodyP2: prompt.support || "You'll pick and edit the exact email before anything is sent.",
-    cta: template.cta || prompt.cta || "",
+    subject: agentFields.subject || template.subject || prompt.subject || `${play.play_name} campaign`,
+    previewText: agentFields.previewText || template.previewText || prompt.previewText || "Selected template ready for campaign review.",
+    bodyH2: agentFields.bodyH2 || template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
+    bodyP1: agentFields.bodyP1 || template.bodyP1 || prompt.body || prompt.support || "",
+    bodyP2: agentFields.bodyP2 != null ? agentFields.bodyP2 : (prompt.support || ""),
+    cta: agentFields.cta || template.cta || prompt.cta || "",
+    // CA-5: featured product for the image block (resolved from the agent copy).
+    featuredProduct: agentCopy?.featured_product || null,
     sendTime: "Manual review",
     suppression: STANDARD_SUPPRESSIONS_NOTE,
   };
@@ -641,10 +657,13 @@ function CampaignSendPanel({ campaign, onEditStep }) {
   );
 }
 
-// A3: per-field mapping from a draft field to the play's template_prompt value.
-// "Restore suggested" resets a field to the suggested copy from the presenter's
-// PLAY_DISPLAY (template_prompt) added in the first refactor.
-function suggestedValueForField(play, field) {
+// CA-4: the "Suggested" value for a field = what the AGENT wrote (agentCopy),
+// falling back to the static template_prompt when no agent copy exists. This is
+// the anchor for the Edited badge (#2: a field with a badge = merchant changed it
+// from the agent's suggestion) and edit-preserving rewrite (#1).
+function suggestedValueForField(play, field, agentCopy = null) {
+  const agentFields = agentCopyToDraftFields(agentCopy);
+  if (agentFields[field] != null) return agentFields[field];
   const prompt = play?.template_prompt || {};
   switch (field) {
     case "subject": return prompt.subject ?? "";
@@ -670,13 +689,20 @@ function CampaignReviewPane({
   onRefreshBrandContext,
   onRefreshTemplates,
   klaviyoFailed,
+  agentCopy,
+  copyStatus,
+  draftEdits,
+  onRewrite,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   const [previewMode, setPreviewMode] = useState("inbox");
+  const [steer, setSteer] = useState(null); // active rewrite-steer chip (adopt #4)
   const debounceRef = useRef(null);
+  const copyLoading = copyStatus === "loading";
+  const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
   const refreshPreview = React.useCallback(async (currentDraft) => {
     if (!currentDraft) return;
@@ -778,10 +804,74 @@ function CampaignReviewPane({
       {draft ? (
         <div className="review-two-pane">
           <div className="review-edit-pane">
+            {/* adopt #3: one merchant-facing "why" line above the fields. LLM-authored
+                + guarded server-side; shown only when present. */}
+            {agentCopy?.rationale ? (
+              <p className="copy-rationale">{agentCopy.rationale}</p>
+            ) : null}
+
+            {/* adopt #1/#4: rewrite regenerates only agent-written (Suggested) fields,
+                never a merchant edit. Optional steer chips nudge the rewrite. */}
+            {onRewrite ? (() => {
+              const allEdited = editFields.every(
+                ({ field }) => (draft[field] || "") !== (suggestedValueForField(play, field, agentCopy) || "")
+              );
+              return (
+                <div className="copy-rewrite-row">
+                  <div className="steer-chips" role="group" aria-label="Rewrite style">
+                    {["Shorter", "Warmer", "More direct"].map((label) => (
+                      <button
+                        key={label}
+                        type="button"
+                        className={`steer-chip ${steer === label ? "active" : ""}`}
+                        disabled={copyLoading || allEdited}
+                        onClick={() => setSteer((prev) => (prev === label ? null : label))}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn small rewrite-btn"
+                    disabled={copyLoading || allEdited}
+                    title={allEdited ? "All fields are yours — restore a field to rewrite it." : undefined}
+                    onClick={() => onRewrite(steer ? steer.toLowerCase() : null)}
+                  >
+                    {copyLoading ? "Writing…" : "Rewrite"}
+                  </button>
+                </div>
+              );
+            })() : null}
+
+            {/* adopt #9: the agent reads as a copywriter, not a system. No "AI",
+                no "generating", no "validation". Just the honest activity line. */}
+            {copyLoading ? (
+              <div className="copy-shimmer-line">Writing your copy from your store's data…</div>
+            ) : null}
+
+            {/* adopt #5: subject variant chips, pre-selected to variant 1 (already
+                in the subject field). Tapping swaps; a hand-edited subject deselects. */}
+            {subjectVariants.length > 1 ? (
+              <div className="subject-variants" role="group" aria-label="Subject options">
+                {subjectVariants.map((variant) => (
+                  <button
+                    key={variant}
+                    type="button"
+                    className={`subject-chip ${draft.subject === variant ? "active" : ""}`}
+                    onClick={() => onChange("subject", variant)}
+                  >
+                    {variant}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
             {editFields.map(({ field, label, type }) => {
-              // P-D4: field diverges from the suggested copy → show "Edited" +
-              // offer Restore; when it matches, neither is shown.
-              const edited = (draft[field] || "") !== (suggestedValueForField(play, field) || "");
+              // CA-4 #2: a field carries the "Edited" badge only when the merchant
+              // changed it from what the AGENT wrote (quiet Suggested, loud Edited).
+              // Agent-written & untouched → no badge.
+              const edited = (draft[field] || "") !== (suggestedValueForField(play, field, agentCopy) || "");
               return (
               <label key={field} className="review-field">
                 <span className="review-field-head">
@@ -1192,6 +1282,13 @@ function App() {
   const [klaviyoTemplatesFailed, setKlaviyoTemplatesFailed] = useState(false);
   const [selectedTemplateByPlay, setSelectedTemplateByPlay] = useState({});
   const [draftEditsByPlay, setDraftEditsByPlay] = useState({});
+  // CA-4: LLM-authored copy per play, keyed by play id. The "Suggested" value
+  // for a field reads from here (falling back to static template_prompt) so the
+  // Edited badge + edit-preserving rewrite know what the AGENT wrote vs. what the
+  // MERCHANT edited (draftEditsByPlay). Persisted so it survives refresh (#8v1).
+  const [agentCopyByPlay, setAgentCopyByPlay] = useState({});
+  // Per-play copy-generation status: "loading" | "ready" | "static" (fell back).
+  const [copyStatusByPlay, setCopyStatusByPlay] = useState({});
   // Explicit merchant sign-off (end of stepper) that moves a campaign from
   // "Needs review" to "Ready to send". Distinct from a template being selected,
   // which auto-happens on view and only means "has a draft".
@@ -1254,9 +1351,9 @@ function App() {
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
-  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id]) : null;
+  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id]) : null;
   const finalCampaigns = approvedPlays
-    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id]))
+    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id]))
     .map((item) => {
       if (!item) return item;
       const asset = klaviyoAssetsByCampaign[item.id];
@@ -1273,6 +1370,52 @@ function App() {
       };
     })
     .filter(Boolean);
+
+  // CA-4: generate LLM copy for a play. On rewrite, the merchant's edited fields
+  // are sent as LOCKED context (adopt #1) and the result is applied to Suggested
+  // slots only. Fails soft: available:false leaves the static copy untouched.
+  const fetchCopyForPlay = React.useCallback(async (play, template, { regenerate = false, steer = null } = {}) => {
+    if (!play || !template) return;
+    const playId = play.id;
+    // Map the merchant's current edits back to copywriter slot names to lock them.
+    const edits = draftEditsByPlay[playId] || {};
+    const lockedSlots = {};
+    if (regenerate) {
+      if (edits.subject != null) lockedSlots.subject = edits.subject;
+      if (edits.previewText != null) lockedSlots.preview_text = edits.previewText;
+      if (edits.bodyH2 != null) lockedSlots.headline = edits.bodyH2;
+      if (edits.bodyP1 != null) lockedSlots.body = edits.bodyP1;
+      if (edits.bodyP2 != null) lockedSlots.support = edits.bodyP2;
+      if (edits.cta != null) lockedSlots.cta = edits.cta;
+    }
+    setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "loading" }));
+    try {
+      const res = await api.generateCopy({
+        playId, templateId: template.id, regenerate,
+        lockedSlots: regenerate ? lockedSlots : null, steer,
+      });
+      if (res && res.available && res.copy) {
+        setAgentCopyByPlay((prev) => ({ ...prev, [playId]: res.copy }));
+        setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "ready" }));
+      } else {
+        // No key / fell back → keep static copy, no message (adopt #9).
+        setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "static" }));
+      }
+    } catch (_) {
+      setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "static" }));
+    }
+  }, [draftEditsByPlay]);
+
+  // Fire once when the merchant enters the Copy step for a play/template with no
+  // cached agent copy yet (adopt: fetch-on-enter, once per play/template).
+  useEffect(() => {
+    if (!reviewPlay || !selectedTemplate) return;
+    if (agentCopyByPlay[reviewPlay.id]) return;            // already have copy
+    if (copyStatusByPlay[reviewPlay.id] === "loading") return; // in flight
+    fetchCopyForPlay(reviewPlay, selectedTemplate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewPlay?.id, selectedTemplate?.id]);
+
   // Counts reflect only approved campaigns: those still needing review sign-off.
   const reviewPendingCount = approvedPlays.filter((play) => !approvedForSend.includes(play.id)).length;
   const sentCampaigns = finalCampaigns.filter((item) => item.klaviyoSendJobId);
@@ -1403,6 +1546,7 @@ function App() {
       if (Array.isArray(saved.approvedForSend)) setApprovedForSend(saved.approvedForSend);
       if (saved.selectedTemplateByPlay) setSelectedTemplateByPlay(saved.selectedTemplateByPlay);
       if (saved.draftEditsByPlay) setDraftEditsByPlay(saved.draftEditsByPlay);
+      if (saved.agentCopyByPlay) setAgentCopyByPlay(saved.agentCopyByPlay);
       if (Array.isArray(saved.approvedPlayIds)) setRestoredApprovedPlayIds(saved.approvedPlayIds);
     } catch (_) {
       // Corrupt stored state is non-fatal; the merchant can re-approve.
@@ -1448,6 +1592,7 @@ function App() {
       approvedPlayIds,
       selectedTemplateByPlay,
       draftEditsByPlay,
+      agentCopyByPlay,
       authorizedPackageIds,
       approvedForSend,
     };
@@ -1456,7 +1601,7 @@ function App() {
     } catch (_) {
       // Storage may be unavailable (private mode); persistence is best-effort.
     }
-  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, authorizedPackageIds, approvedForSend]);
+  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, agentCopyByPlay, authorizedPackageIds, approvedForSend]);
 
   // O3: auto-start the first-run pipeline once per shop. The localStorage guard
   // prevents a page refresh from re-running a full sync — without it, every
@@ -1905,10 +2050,18 @@ function App() {
     }));
   }
 
-  // A3: reset a single field to the play's suggested template_prompt value.
+  // CA-4: "Restore suggested" DROPS the merchant's edit so the field reverts to
+  // the base (agent copy, else static). Deleting the edit — rather than writing
+  // the suggested value as a new edit — keeps the field in the un-Edited state so
+  // its badge clears and a later rewrite can regenerate it (adopt #1/#2).
   function restoreDraftField(playId, play, field) {
-    const suggested = suggestedValueForField(play, field);
-    updateDraftField(playId, field, suggested);
+    setDraftEditsByPlay((prev) => {
+      const current = prev[playId];
+      if (!current || !(field in current)) return prev;
+      const next = { ...current };
+      delete next[field];
+      return { ...prev, [playId]: next };
+    });
   }
 
   function startOAuth(provider) {
@@ -2243,6 +2396,10 @@ function App() {
                                 onRefreshBrandContext={loadBrandContext}
                                 onRefreshTemplates={loadKlaviyoTemplates}
                                 klaviyoFailed={klaviyoTemplatesFailed}
+                                agentCopy={agentCopyByPlay[reviewPlay.id] || null}
+                                copyStatus={copyStatusByPlay[reviewPlay.id] || null}
+                                draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
+                                onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
                             ) : (
                               <div className="empty-panel">Loading starting copy…</div>

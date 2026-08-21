@@ -38,6 +38,7 @@ const {
   buildBrandContext,
 } = require("./services/brandContextService");
 const { getStartupState } = require("./startupState");
+const { generateCampaignCopy } = require("./services/copywriterService");
 
 const router = express.Router();
 
@@ -152,6 +153,61 @@ router.get("/brand/context", async (req, res) => {
     res.json({ ok: true, shopDomain, brandContext });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// CA-1: customer-facing copywriter. Context is assembled SERVER-SIDE (never
+// trust client-sent brand context). Absent key or any failure => available:false
+// and the UI silently keeps the static copy.
+router.post("/copy/generate", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const { playId, templateId, regenerate, lockedSlots, steer } = req.body;
+    if (!playId) {
+      res.status(400).json({ ok: false, error: "playId is required" });
+      return;
+    }
+
+    const input = await getEngineInput(shopDomain);
+    const brandContext = buildBrandContext(input);
+    const beaconTemplates = buildBeaconTemplates(brandContext);
+    const template = beaconTemplates.find((t) => t.id === templateId) || beaconTemplates[0] || null;
+
+    // Find the play in the latest run (read-only; never triggers an engine run).
+    const latest = await readLatestRun({ shopDomain });
+    const presented = latest ? presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null) : null;
+    const play = presented
+      ? [...(presented.recommendations || []), ...(presented.considered || [])].find((p) => p.play_id === playId || p.id === playId)
+      : null;
+    if (!play) {
+      res.json({ ok: true, available: false, reason: "play_not_found" });
+      return;
+    }
+
+    const products = (brandContext.productLanguage?.bestSellers || []).map((p) => ({
+      id: String(p.id),
+      title: p.title,
+      productType: p.productType || null,
+      imageUrl: p.imageUrl || null,
+    }));
+    const runId = presented?.run_id || latest?.manifest?.run_id || "norun";
+    const cacheKey = `${shopDomain}:${runId}:${playId}:${template?.id || "none"}`;
+
+    const result = await generateCampaignCopy({
+      play, brandContext, template, products,
+      cacheKey, regenerate: Boolean(regenerate), lockedSlots: lockedSlots || null, steer: steer || null,
+    });
+
+    // CA-5: resolve featured_product_id → { title, imageUrl } for the image block.
+    if (result.available && result.copy?.featured_product_id) {
+      const p = products.find((x) => String(x.id) === String(result.copy.featured_product_id));
+      if (p && p.imageUrl) result.copy.featured_product = { title: p.title, imageUrl: p.imageUrl };
+    }
+
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    // Fail soft: the Copy step must never show an error. available:false => static.
+    res.json({ ok: true, available: false, reason: error.message });
   }
 });
 
