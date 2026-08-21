@@ -198,6 +198,12 @@ router.post("/copy/generate", async (req, res) => {
       cacheKey, regenerate: Boolean(regenerate), lockedSlots: lockedSlots || null, steer: steer || null,
     });
 
+    // CA-5: resolve featured_product_id → { title, imageUrl } for the image block.
+    if (result.available && result.copy?.featured_product_id) {
+      const p = products.find((x) => String(x.id) === String(result.copy.featured_product_id));
+      if (p && p.imageUrl) result.copy.featured_product = { title: p.title, imageUrl: p.imageUrl };
+    }
+
     res.json({ ok: true, ...result });
   } catch (error) {
     // Fail soft: the Copy step must never show an error. available:false => static.

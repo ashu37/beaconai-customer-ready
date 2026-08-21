@@ -29,6 +29,17 @@ function wordsFrom(value) {
     .filter((word) => word.length > 2 && !STOP_WORDS.has(word));
 }
 
+// CA-5: pull a product image URL from the synced Shopify raw payload. Handles
+// both `image.src` and `images[0].src`. Returns null when absent.
+function productImageUrl(product) {
+  const raw = product?.raw || {};
+  const src = raw.image?.src
+    || (Array.isArray(raw.images) && raw.images[0]?.src)
+    || raw.featured_image
+    || null;
+  return typeof src === "string" && src ? src : null;
+}
+
 function isUtilityProduct(product) {
   const text = `${product?.title || ""} ${product?.product_type || ""} ${product?.tags || ""}`.toLowerCase();
   return text.includes("gift card") || text.includes("giftcard");
@@ -139,6 +150,9 @@ function buildBrandContext(input = {}) {
       units: entry.count,
       revenue: Math.round(productRevenue.get(entry.name) || 0),
       productType: product?.product_type || null,
+      // CA-5: the merchant's own Shopify product image (from the raw payload).
+      // No generated/stock imagery. null when the product has no image.
+      imageUrl: productImageUrl(product),
     };
   }).filter((product) => !isUtilityProduct(product)).slice(0, 6);
 

@@ -82,6 +82,16 @@ function campaignHtml(campaign) {
   const supportCopy = campaign.bodyP2
     || (bestSeller && !bestSellerAlreadyShown ? `A customer favorite from the current catalog: ${bestSeller}.` : "");
 
+  // CA-5: featured product image block (merchant's own Shopify CDN asset only).
+  // Rendered between headline and body; skipped entirely when no imageUrl.
+  const featured = campaign.featuredProduct;
+  const imageBlock = featured?.imageUrl
+    ? `<div style="text-align:center;margin:0 0 16px;">
+         <img src="${escapeHtml(featured.imageUrl)}" alt="${escapeHtml(featured.title || "")}" style="max-width:260px;width:100%;height:auto;border-radius:4px;" />
+         ${featured.title ? `<p style="margin:6px 0 0;font-size:13px;color:#8a8578;">${escapeHtml(featured.title)}</p>` : ""}
+       </div>`
+    : "";
+
   return `
 <!doctype html>
 <html>
@@ -98,9 +108,10 @@ function campaignHtml(campaign) {
               <td style="padding:24px 20px;">
                 <p style="margin:0 0 12px;color:#f08a24;font-size:12px;font-weight:bold;text-transform:uppercase;letter-spacing:1.5px;">${escapeHtml(brand)}</p>
                 <h1 style="margin:0 0 16px;font-size:24px;line-height:1.2;color:#111111;">${escapeHtml(headline)}</h1>
+                ${imageBlock}
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(body)}</p>
                 ${supportCopy ? `<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:#3f3a34;">${escapeHtml(supportCopy)}</p>` : ""}
-                <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "Shop now")}</a>
+                <a href="{{ organization.url|default:'#' }}" style="display:inline-block;background:#f08a24;color:#111111;text-decoration:none;font-weight:bold;padding:14px 20px;border-radius:4px;">${escapeHtml(campaign.cta || "See what's new")}</a>
               </td>
             </tr>
             <tr>
