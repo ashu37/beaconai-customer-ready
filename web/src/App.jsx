@@ -1164,11 +1164,11 @@ function StoreGate({ draft, onDraftChange, onSubmit, error }) {
 
 function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
   const stageCopy = {
-    syncing: { title: "Syncing your store…", sub: "Pulling products, customers, and orders from Shopify." },
-    synced: { title: "Store synced.", sub: null },
+    syncing: { title: "Connecting your store…", sub: "Importing your products, customers, and orders from Shopify. First-time setup — this only happens once." },
+    synced: { title: "Store connected.", sub: null },
     analyzing: {
-      title: `Analyzing ${orders} orders for opportunities…`,
-      sub: "BeaconAI is sizing audiences and checking the evidence. This can take a minute.",
+      title: `Building your first briefing…`,
+      sub: `Reading ${orders} orders to find your best campaigns and who to send them to. This takes a minute.`,
     },
   };
 
@@ -1207,10 +1207,10 @@ function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
 // Reuses the first-run spinner; cycles reassuring copy on a timer.
 function BriefingWorking() {
   const messages = [
-    "Reading your latest store snapshot…",
-    "Sizing audiences…",
+    "Refreshing with your latest orders…",
+    "Finding your best campaigns this cycle…",
+    "Sizing the audience for each one…",
     "Checking the evidence behind each play…",
-    "Estimating revenue opportunity…",
     "Writing your briefing…",
   ];
   const [index, setIndex] = useState(0);
@@ -2204,7 +2204,11 @@ function App() {
             <div className="loading-box">Loading your briefing...</div>
           ) : null}
 
-          {activePage === "briefing" && !firstRunActive && !rehydrating && (
+          {/* A briefing run is a full recompute (engine + narration). While it's
+              in flight, show ONLY the working state — never the previous/partial
+              briefing beneath it, which reads as "done" and misleads the merchant
+              into acting on incomplete data. All-or-nothing: loading OR complete. */}
+          {activePage === "briefing" && !firstRunActive && !rehydrating && !loading && (
             <>
               {showSparseInterstitial ? (
                 <div className="sparse-interstitial">
