@@ -108,6 +108,10 @@ def materialize_audience_csvs(
 
         - ``"MATERIALIZED"`` — CSV written with at least one data row
           (parquet present AND resolver returned an audience set).
+        - ``"MATERIALIZED_UNRANKED"`` — CSV written with >=1 audit-traceable
+          order-history member; RFM predictive ranking absent (substrate
+          PROVISIONAL/absent). Sendable. rank_score/predicted_segment not
+          populated.
         - ``"SUPPRESSED_SUBSTRATE_REFUSED"`` — empty CSV written because the
           parquet was missing or unreadable.
         - ``"NOT_MATERIALIZED"`` — empty CSV written because the audience
@@ -290,11 +294,15 @@ def _write_audience_csv(
     discriminate, or ``None`` to signal the normal resolved write path (the
     caller then counts rows to decide MATERIALIZED vs empty):
 
-    - ``"SUPPRESSED_SUBSTRATE_REFUSED"`` — ``rfm_df is None`` (parquet
-      missing/unreadable). Writes empty CSV with header row.
+    - ``"MATERIALIZED_UNRANKED"`` — ``rfm_df is None`` (RFM predictive
+      substrate absent) but the ``audience_ids_resolver`` returned a
+      NON-EMPTY, cohort-scoped, order-history-derived id set. Writes those
+      customer_ids (customer_id populated; aov_individual / predicted_segment /
+      rank_score null since there is no substrate to rank against). Sendable.
     - ``"NOT_MATERIALIZED"`` — the audience could not be resolved
       (``audience_ids_resolver`` is absent, it raised for this play, or
-      ``play_id`` is falsy so resolution cannot run without a play id).
+      ``play_id`` is falsy so resolution cannot run without a play id, or
+      — when ``rfm_df is None`` — the resolver returned an empty cohort).
       Writes empty CSV with header row. This degraded path MUST NOT emit the
       full substrate under a green MATERIALIZED light (DS lock 4, route (a),
       2026-06-01). "The merchant-reputation killer is wrong customers, not
@@ -304,9 +312,66 @@ def _write_audience_csv(
     """
 
     if rfm_df is None:
-        # SUBSTRATE_REFUSED — emit empty CSV with standard header.
-        _write_empty_csv(out_path)
-        return "SUPPRESSED_SUBSTRATE_REFUSED"
+        # RFM predictive substrate absent. The substrate only supplies RANKING
+        # (rank_score / predicted_segment), never MEMBERSHIP. Membership is
+        # fully determined by order history and is computed by the same
+        # audience_ids_resolver used on the resolved (parquet-present) path.
+        # Attempt to write the order-history-derived cohort so recommended
+        # plays remain sendable.
+        #
+        # Guardrails (DS bright line):
+        # - G1: ids MUST come from the play's resolved cohort via the resolver,
+        #   NEVER from rfm_df (absent here anyway) nor the full customer table.
+        # - G2: empty resolved cohort -> empty CSV (honest zero), no fabrication.
+        # - G3: no silent absence — a CSV is always written at out_path.
+        # - G4: MATERIALIZED_UNRANKED fires ONLY when ids were actually written
+        #   AND rfm was absent. A resolver that couldn't run stays
+        #   NOT_MATERIALIZED (a true claim).
+
+        # Resolver absent OR play_id falsy: resolution cannot run. This is the
+        # genuinely-unrunnable degraded path — keep prior behavior. Do NOT emit
+        # ids; write empty + NOT_MATERIALIZED. (G1, G4)
+        if audience_ids_resolver is None or not play_id:
+            _write_empty_csv(out_path)
+            return "NOT_MATERIALIZED"
+
+        try:
+            resolved = audience_ids_resolver(play_id)
+        except Exception as _res_err:
+            # Resolver raised: degraded path, cannot claim membership. (G1, G4)
+            print(
+                f"[AudienceResolver] Warning: audience_ids_resolver raised for "
+                f"play_id={play_id!r} (RFM substrate absent): {_res_err}. "
+                f"Writing empty CSV (NOT_MATERIALIZED)."
+            )
+            _write_empty_csv(out_path)
+            return "NOT_MATERIALIZED"
+
+        if resolved is None:
+            # Resolution could not run (returned None): degraded path. (G1, G4)
+            _write_empty_csv(out_path)
+            return "NOT_MATERIALIZED"
+
+        unranked_ids = {str(x) for x in resolved}
+        if not unranked_ids:
+            # Empty resolved cohort — honest zero-match. Do not fabricate
+            # members. (G2)
+            _write_empty_csv(out_path)
+            return "NOT_MATERIALIZED"
+
+        # Non-empty, cohort-scoped id set. Write customer_ids only; the
+        # substrate-derived columns are unavailable without RFM, so they are
+        # emitted as empty (aov_individual/rank_score omitted -> empty;
+        # predicted_segment empty). Sendable. (G3, G4)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(_CSV_HEADER)
+            for cid in unranked_ids:
+                # customer_id populated; aov_individual / predicted_segment /
+                # rank_score null (empty) — no substrate to rank against.
+                writer.writerow([cid, "", "", ""])
+        return "MATERIALIZED_UNRANKED"
 
     # Resolve the audience customer-id set for filtering.
     # A successfully resolved set (incl. an empty set) is the ONLY thing that
