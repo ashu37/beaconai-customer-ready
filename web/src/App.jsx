@@ -1223,20 +1223,17 @@ function BriefingWorking() {
   }, []);
   return (
     <div role="status" aria-live="polite">
-      <div className="briefing-working">
-        <div className="first-run-spinner" aria-hidden="true" />
-        <div className="briefing-working-text">
-          <span>{messages[index]}</span>
-          <div className="briefing-working-bar" aria-hidden="true">
-            <div className="briefing-working-bar-fill" />
-          </div>
-        </div>
+      {/* Rotating caption ABOVE the skeleton cards — it labels what's being
+          computed; the skeletons below occupy the recommendation cards' footprint
+          so it's unambiguous where the result will land. */}
+      <div className="briefing-skeleton-caption">
+        <div className="first-run-spinner small" aria-hidden="true" />
+        <span>{messages[index]}</span>
       </div>
-      {/* D4: shimmer skeleton silhouette */}
-      <div className="skeleton-page" aria-hidden="true">
-        <div className="skeleton skeleton-row w-50" />
-        <div className="skeleton skeleton-row w-70" />
-        <div className="skeleton skeleton-card" />
+      <div className="briefing-skeleton-cards" aria-hidden="true">
+        <div className="skeleton skeleton-reccard" />
+        <div className="skeleton skeleton-reccard" />
+        <div className="skeleton skeleton-reccard" />
       </div>
     </div>
   );
@@ -1267,6 +1264,10 @@ function useCountUp(target, duration = 500) {
 function App() {
   const [activePage, setActivePage] = useState("briefing");
   const [loading, setLoading] = useState(false);
+  // Distinct from generic `loading`: true ONLY while a briefing recompute is in
+  // flight (not sync). Drives the in-lane skeleton state so the store cards +
+  // page shape persist and only the recommendations region shows loading.
+  const [refreshingBriefing, setRefreshingBriefing] = useState(false);
   const [error, setError] = useState("");
   const [shopDomain, setShopDomain] = useState(api.shopDomain);
   const [shopDomainDraft, setShopDomainDraft] = useState(api.shopDomain);
@@ -1779,9 +1780,14 @@ function App() {
   }
 
   async function runAtulEngine(useFixture = false) {
-    const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
-    applyEngineResult(result);
-    return result;
+    setRefreshingBriefing(true);
+    try {
+      const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
+      applyEngineResult(result);
+      return result;
+    } finally {
+      setRefreshingBriefing(false);
+    }
   }
 
   // O1: read-only rehydration of the latest run on mount. Never triggers an engine run.
@@ -2188,7 +2194,6 @@ function App() {
             </div>
           ) : null}
           {error ? <div className="error-box">{error}</div> : null}
-          {loading && activePage === "briefing" ? <BriefingWorking /> : null}
 
           {activePage === "briefing" && firstRunActive ? (
             <FirstRunProgress
@@ -2204,11 +2209,11 @@ function App() {
             <div className="loading-box">Loading your briefing...</div>
           ) : null}
 
-          {/* A briefing run is a full recompute (engine + narration). While it's
-              in flight, show ONLY the working state — never the previous/partial
-              briefing beneath it, which reads as "done" and misleads the merchant
-              into acting on incomplete data. All-or-nothing: loading OR complete. */}
-          {activePage === "briefing" && !firstRunActive && !rehydrating && !loading && (
+          {/* The store snapshot + page shape stay visible during a briefing
+              refresh (those are stable synced facts). Only the recommendation
+              lane below swaps to a skeleton state while the recompute runs — see
+              the `refreshingBriefing` gate in briefing-workbench. */}
+          {activePage === "briefing" && !firstRunActive && !rehydrating && (
             <>
               {showSparseInterstitial ? (
                 <div className="sparse-interstitial">
@@ -2268,6 +2273,7 @@ function App() {
                 </div>
               </div>
               <div className="briefing-workbench">
+                {refreshingBriefing ? <BriefingWorking /> : (<>
                 <div className="recommendation-list">
                   <div className="lane-box">
                     <div className="lane-head">
@@ -2341,6 +2347,7 @@ function App() {
                   approved={selectedBriefingRow ? approvedPlayIdSet.has(selectedBriefingRow.play.play_id || selectedBriefingRow.play.id) : false}
                   showAdvanced={showAdvanced}
                 />
+                </>)}
               </div>
             </>
           )}
