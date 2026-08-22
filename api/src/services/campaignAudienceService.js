@@ -21,7 +21,12 @@ const path = require("path");
 const { query } = require("../db");
 const { readLatestRun } = require("./atulEngineService");
 
-const MATERIALIZED = "MATERIALIZED";
+// Statuses that carry a sendable, audit-traceable customer list. MATERIALIZED =
+// ranked (RFM substrate present); MATERIALIZED_UNRANKED = same audit-traceable
+// order-history membership but no predictive ranking (substrate absent — cold
+// start). Both are sendable; the merchant never sees the ranked/unranked
+// distinction. SUPPRESSED_SUBSTRATE_REFUSED / NOT_MATERIALIZED are NOT sendable.
+const SENDABLE_STATUSES = new Set(["MATERIALIZED", "MATERIALIZED_UNRANKED"]);
 
 // Parse the customer_id column from an engine audience CSV. Header is
 // `customer_id,aov_individual,predicted_segment,rank_score`. We read ONLY
@@ -104,9 +109,10 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
     return { count: 0, recipients: [], materialized: false, status: null, reason: "no_audience_for_play" };
   }
 
-  // R1: only a MATERIALIZED audience yields recipients. Anything else is a typed
-  // absence — the engine deliberately did not produce an auditable audience.
-  if (entry.status !== MATERIALIZED) {
+  // R1: only a sendable (MATERIALIZED or MATERIALIZED_UNRANKED) audience yields
+  // recipients. Anything else is a typed absence — the engine deliberately did
+  // not produce an auditable audience.
+  if (!SENDABLE_STATUSES.has(entry.status)) {
     return {
       count: 0,
       recipients: [],

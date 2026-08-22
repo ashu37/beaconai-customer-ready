@@ -465,11 +465,17 @@ def test_happy_path_status_is_materialized(tmp_path):
     )
 
 
-def test_parquet_missing_status_is_substrate_refused(tmp_path):
+def test_parquet_missing_with_resolver_status_is_materialized_unranked(tmp_path):
     """
-    Parquet missing branch keeps its existing behavior: empty header-only CSV
-    and SUPPRESSED_SUBSTRATE_REFUSED (NOT NOT_MATERIALIZED — that distinction
-    is the whole point of DS lock 4's two-branch carve-out).
+    Parquet missing + WORKING resolver returning a non-empty cohort:
+    the RFM substrate only supplies RANKING, never MEMBERSHIP. Membership is
+    order-history-derived and already computed by the resolver, so the play is
+    sendable. The CSV carries the resolved customer_ids (unranked) and the
+    status is MATERIALIZED_UNRANKED (DS narrowing of RULE B: membership-validity
+    is independent of ranking-validity).
+
+    Supersedes the pre-narrowing behavior that returned
+    SUPPRESSED_SUBSTRATE_REFUSED and threw away a valid audience.
     """
     from src.audience_resolver import materialize_audience_csvs
 
@@ -477,12 +483,11 @@ def test_parquet_missing_status_is_substrate_refused(tmp_path):
     run_id = "run-no-parquet"
     play_id = "winback_dormant_cohort"
 
-    # No parquet created. Pass a working resolver to prove the status comes
-    # from substrate-refusal, not from resolver absence.
+    # No parquet created. Pass a working resolver returning a real cohort.
     engine_run = _make_minimal_engine_run(play_id)
 
     def _resolver(pid: str) -> Set[str]:
-        return {"cust_001"}
+        return {"cust_001", "cust_002"}
 
     statuses = materialize_audience_csvs(
         engine_run, store_id, run_id, str(tmp_path), audience_ids_resolver=_resolver
@@ -492,9 +497,115 @@ def test_parquet_missing_status_is_substrate_refused(tmp_path):
     assert expected_path.exists()
     with open(expected_path, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
-    assert len(rows) == 1, "parquet-missing: header-only CSV"
-    assert statuses.get(play_id) == "SUPPRESSED_SUBSTRATE_REFUSED", (
-        f"Parquet-missing: expected SUPPRESSED_SUBSTRATE_REFUSED, got {statuses.get(play_id)!r}"
+
+    # Header + one row per resolved customer.
+    assert rows[0] == ["customer_id", "aov_individual", "predicted_segment", "rank_score"]
+    data_rows = rows[1:]
+    assert len(data_rows) == 2, f"expected 2 data rows, got {len(data_rows)}"
+    written_ids = {r[0] for r in data_rows}
+    assert written_ids == {"cust_001", "cust_002"}, (
+        f"G1: ids must be the resolved cohort exactly, got {written_ids}"
+    )
+    # Substrate-derived columns are null (empty) — no RFM to rank against.
+    for r in data_rows:
+        assert r[1] == "" and r[2] == "" and r[3] == "", (
+            f"aov/segment/rank_score must be empty (no substrate), got {r}"
+        )
+
+    assert statuses.get(play_id) == "MATERIALIZED_UNRANKED", (
+        f"Parquet-missing + non-empty resolver: expected MATERIALIZED_UNRANKED, "
+        f"got {statuses.get(play_id)!r}"
+    )
+
+
+def test_parquet_missing_empty_resolver_status_is_not_materialized(tmp_path):
+    """
+    Parquet missing + resolver returning an EMPTY cohort: honest zero-match
+    (G2). Do not fabricate members. Empty header-only CSV, NOT_MATERIALIZED.
+    """
+    from src.audience_resolver import materialize_audience_csvs
+
+    store_id = "test_store_no_parquet_empty"
+    run_id = "run-no-parquet-empty"
+    play_id = "winback_dormant_cohort"
+
+    engine_run = _make_minimal_engine_run(play_id)
+
+    def _empty_resolver(pid: str) -> Set[str]:
+        return set()
+
+    statuses = materialize_audience_csvs(
+        engine_run, store_id, run_id, str(tmp_path), audience_ids_resolver=_empty_resolver
+    )
+
+    expected_path = tmp_path / store_id / "runs" / run_id / "audiences" / f"{play_id}.csv"
+    assert expected_path.exists()
+    with open(expected_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert len(rows) == 1, "empty cohort: header-only CSV (honest zero)"
+    assert statuses.get(play_id) == "NOT_MATERIALIZED", (
+        f"Parquet-missing + empty resolver: expected NOT_MATERIALIZED, "
+        f"got {statuses.get(play_id)!r}"
+    )
+
+
+def test_parquet_missing_no_resolver_status_is_not_materialized(tmp_path):
+    """
+    Parquet missing + resolver ABSENT: resolution cannot run. Degraded path is
+    UNCHANGED — empty CSV, NOT_MATERIALIZED (G1/G4). Never leak the full base.
+    """
+    from src.audience_resolver import materialize_audience_csvs
+
+    store_id = "test_store_no_parquet_no_resolver"
+    run_id = "run-no-parquet-no-resolver"
+    play_id = "winback_dormant_cohort"
+
+    engine_run = _make_minimal_engine_run(play_id)
+
+    statuses = materialize_audience_csvs(
+        engine_run, store_id, run_id, str(tmp_path), audience_ids_resolver=None
+    )
+
+    expected_path = tmp_path / store_id / "runs" / run_id / "audiences" / f"{play_id}.csv"
+    assert expected_path.exists()
+    with open(expected_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert len(rows) == 1, "no resolver: header-only CSV"
+    assert statuses.get(play_id) == "NOT_MATERIALIZED", (
+        f"Parquet-missing + no resolver: expected NOT_MATERIALIZED, "
+        f"got {statuses.get(play_id)!r}"
+    )
+
+
+def test_parquet_missing_resolver_raises_status_is_not_materialized(tmp_path):
+    """
+    Parquet missing + resolver RAISES: resolution could not run. Degraded path
+    — empty CSV, NOT_MATERIALIZED (G1/G4). MATERIALIZED_UNRANKED must be a true
+    claim, so a resolver that couldn't run never earns it.
+    """
+    from src.audience_resolver import materialize_audience_csvs
+
+    store_id = "test_store_no_parquet_raises"
+    run_id = "run-no-parquet-raises"
+    play_id = "winback_dormant_cohort"
+
+    engine_run = _make_minimal_engine_run(play_id)
+
+    def _raising_resolver(pid: str) -> Set[str]:
+        raise RuntimeError("cohort backend unavailable")
+
+    statuses = materialize_audience_csvs(
+        engine_run, store_id, run_id, str(tmp_path), audience_ids_resolver=_raising_resolver
+    )
+
+    expected_path = tmp_path / store_id / "runs" / run_id / "audiences" / f"{play_id}.csv"
+    assert expected_path.exists()
+    with open(expected_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    assert len(rows) == 1, "resolver raised: header-only CSV"
+    assert statuses.get(play_id) == "NOT_MATERIALIZED", (
+        f"Parquet-missing + resolver raised: expected NOT_MATERIALIZED, "
+        f"got {statuses.get(play_id)!r}"
     )
 
 

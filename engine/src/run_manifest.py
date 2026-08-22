@@ -54,6 +54,10 @@ Audience materialization status values
 =======================================
 
 - ``"MATERIALIZED"`` — CSV written with at least one data row.
+- ``"MATERIALIZED_UNRANKED"`` — CSV written with >=1 audit-traceable
+  order-history member; RFM predictive ranking absent (substrate
+  PROVISIONAL/absent). Sendable. rank_score/predicted_segment not
+  populated.
 - ``"SUPPRESSED_SUBSTRATE_REFUSED"`` — empty CSV written (parquet
   missing or unreadable; per DS R4).
 - ``"NOT_MATERIALIZED"`` — CSV not written (resolver not invoked or

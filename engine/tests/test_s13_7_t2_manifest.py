@@ -312,12 +312,14 @@ def test_materialize_audience_csvs_returns_status_for_each_card(tmp_path):
         str(tmp_path),
     )
 
-    # No parquet → SUPPRESSED_SUBSTRATE_REFUSED
+    # No parquet AND no resolver → resolution cannot run → NOT_MATERIALIZED.
+    # (Post-narrowing: the rfm_df-absent branch now delegates to the resolver;
+    # an absent resolver is the genuinely-unrunnable degraded path.)
     assert play_id in result, (
         f"Expected '{play_id}' in status dict, got keys: {list(result.keys())}"
     )
-    assert result[play_id] == "SUPPRESSED_SUBSTRATE_REFUSED", (
-        f"Expected SUPPRESSED_SUBSTRATE_REFUSED (no parquet), got {result[play_id]!r}"
+    assert result[play_id] == "NOT_MATERIALIZED", (
+        f"Expected NOT_MATERIALIZED (no parquet, no resolver), got {result[play_id]!r}"
     )
 
 
