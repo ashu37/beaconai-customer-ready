@@ -58,32 +58,55 @@ function audienceEntryForPlay(manifest, manifestPath, playId) {
   };
 }
 
-// Hydrate emails for a set of customer_ids from the DB. Returns
-// [{ customerId, email }] for ids that resolve to an email. Consent is NOT
-// filtered here (R3) — Klaviyo enforces it at send.
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// Hydrate emails for a set of engine customer_ids. Returns [{ customerId, email }].
+// Consent is NOT filtered here (R3) — Klaviyo enforces it at send.
+//
+// The engine's customer_id can take two shapes, because the app's order-export
+// derives it as `order.customer_id || order.raw.customer.id || <email>`
+// (atulEngineService.js customerId()): a real Shopify id, OR — when no id is
+// present — the customer's EMAIL used as the id. So an audience CSV frequently
+// carries emails in the customer_id column. We must resolve BOTH:
+//   - email-shaped id  → the id IS the email; use it directly.
+//   - other id         → join to clean.customers.id / clean.orders.customer_id.
 async function hydrateEmails(shopDomain, customerIds) {
   if (!customerIds.length) return [];
-  // Emails live on clean.customers (id) and/or clean.orders (customer_id).
-  const [customers, orders] = await Promise.all([
-    query(
-      `SELECT id::text AS customer_id, email FROM clean.customers
-       WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND id::text = ANY($2)`,
-      [shopDomain, customerIds]
-    ),
-    query(
-      `SELECT DISTINCT customer_id::text AS customer_id, email FROM clean.orders
-       WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND customer_id::text = ANY($2)`,
-      [shopDomain, customerIds]
-    ),
-  ]);
-  const emailById = new Map();
-  for (const row of orders.rows) if (!emailById.has(row.customer_id)) emailById.set(row.customer_id, row.email);
-  for (const row of customers.rows) emailById.set(row.customer_id, row.email); // customers table wins
+
   const recipients = [];
+  const nonEmailIds = [];
   for (const id of customerIds) {
-    const email = emailById.get(String(id));
-    if (email) recipients.push({ customerId: id, email });
+    const s = String(id).trim();
+    if (EMAIL_RE.test(s)) {
+      // Email-as-id: already deliverable, no DB lookup needed.
+      recipients.push({ customerId: s, email: s });
+    } else if (s) {
+      nonEmailIds.push(s);
+    }
   }
+
+  if (nonEmailIds.length) {
+    const [customers, orders] = await Promise.all([
+      query(
+        `SELECT id::text AS customer_id, email FROM clean.customers
+         WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND id::text = ANY($2)`,
+        [shopDomain, nonEmailIds]
+      ),
+      query(
+        `SELECT DISTINCT customer_id::text AS customer_id, email FROM clean.orders
+         WHERE shop_domain = $1 AND COALESCE(email,'') <> '' AND customer_id::text = ANY($2)`,
+        [shopDomain, nonEmailIds]
+      ),
+    ]);
+    const emailById = new Map();
+    for (const row of orders.rows) if (!emailById.has(row.customer_id)) emailById.set(row.customer_id, row.email);
+    for (const row of customers.rows) emailById.set(row.customer_id, row.email); // customers table wins
+    for (const id of nonEmailIds) {
+      const email = emailById.get(id);
+      if (email) recipients.push({ customerId: id, email });
+    }
+  }
+
   return recipients;
 }
 
