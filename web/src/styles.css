@@ -516,6 +516,13 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .skeleton-row.w-50 { width: 50%; }
 .skeleton-card { height: 180px; margin-top: 8px; }
 
+/* In-lane briefing-refresh state: rotating caption + skeleton recommendation
+   cards occupying the real cards' footprint. Store cards + page shape persist. */
+.briefing-skeleton-caption { display: flex; align-items: center; gap: 10px; color: #9a4d00; font-size: 14px; margin-bottom: 14px; }
+.first-run-spinner.small { width: 18px; height: 18px; border-width: 2px; flex: none; }
+.briefing-skeleton-cards { display: grid; gap: 10px; }
+.skeleton-reccard { height: 84px; }
+
 /* Reduced-motion: disable all D4 motion */
 @media (prefers-reduced-motion: reduce) {
   .btn, .rail-row, .recommendation-row, .metric-tile, .results-row, .workspace-card, .in-campaigns-chip { transition: none; }
