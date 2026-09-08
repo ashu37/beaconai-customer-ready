@@ -19,14 +19,24 @@ app.use(morgan("dev"));
 
 app.use("/api", router);
 
-// 503 while the database is unreachable. The API deliberately stays up without
-// it (so OAuth and static assets still serve), but every route that touches data
-// fails — reporting 200 there made Render's health check pass on an instance
-// that could not serve a single request.
+// LIVENESS, not readiness — this is render.yaml's healthCheckPath, and a 503
+// here blocks the deploy from being promoted. Gating that on the database means
+// you cannot ship a fix while the database is down, which is exactly when you
+// need to. So: 200 whenever the process is up, with the database state in the
+// body for humans and monitoring to read.
+//
+// `ok` reflects the process. `startup.database` reports the truth about data
+// routes, including which host this instance is actually pointed at.
 app.get("/health", (req, res) => {
+  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
+});
+
+// READINESS — 503 when data routes cannot serve. Safe to alert on; do NOT wire
+// this to healthCheckPath for the reason above.
+app.get("/ready", (req, res) => {
   const startup = getStartupState();
-  const healthy = startup.database.status !== "error";
-  res.status(healthy ? 200 : 503).json({ ok: healthy, service: "beaconai-api", startup });
+  const ready = startup.database.ready;
+  res.status(ready ? 200 : 503).json({ ok: ready, service: "beaconai-api", startup });
 });
 
 app.get("/api", (req, res) => {

@@ -53,9 +53,17 @@ async function resolveKlaviyoKey(body = {}) {
 }
 
 router.get("/health", (req, res) => {
+  // Liveness — always 200 while the process is up. See server.js: this path is
+  // render.yaml's healthCheckPath, so a 503 here would block deploys during a
+  // database outage. Database state is in the body; /api/ready is the readiness
+  // probe that actually fails.
+  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
+});
+
+router.get("/ready", (req, res) => {
   const startup = getStartupState();
-  const healthy = startup.database.status !== "error";
-  res.status(healthy ? 200 : 503).json({ ok: healthy, service: "beaconai-api", startup });
+  const ready = startup.database.ready;
+  res.status(ready ? 200 : 503).json({ ok: ready, service: "beaconai-api", startup });
 });
 
 router.post("/connections/shopify/test", async (req, res) => {
