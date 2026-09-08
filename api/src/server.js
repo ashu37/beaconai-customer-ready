@@ -19,8 +19,14 @@ app.use(morgan("dev"));
 
 app.use("/api", router);
 
+// 503 while the database is unreachable. The API deliberately stays up without
+// it (so OAuth and static assets still serve), but every route that touches data
+// fails — reporting 200 there made Render's health check pass on an instance
+// that could not serve a single request.
 app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
+  const startup = getStartupState();
+  const healthy = startup.database.status !== "error";
+  res.status(healthy ? 200 : 503).json({ ok: healthy, service: "beaconai-api", startup });
 });
 
 app.get("/api", (req, res) => {

@@ -53,7 +53,9 @@ async function resolveKlaviyoKey(body = {}) {
 }
 
 router.get("/health", (req, res) => {
-  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
+  const startup = getStartupState();
+  const healthy = startup.database.status !== "error";
+  res.status(healthy ? 200 : 503).json({ ok: healthy, service: "beaconai-api", startup });
 });
 
 router.post("/connections/shopify/test", async (req, res) => {
