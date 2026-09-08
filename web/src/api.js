@@ -67,6 +67,11 @@ export const api = {
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
   getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),
   getKlaviyoTemplates: () => request(`/klaviyo/templates?shopDomain=${encodeURIComponent(shopDomain)}`),
+  // Campaign state. Replaces the run-scoped localStorage blob: approvals, copy
+  // edits and send state now survive an engine run, a new browser and a new device.
+  listCampaigns: (runId) => request(`/campaigns/${encodeURIComponent(shopDomain)}${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`),
+  saveCampaign: (campaign) => request("/campaigns", { method: "POST", body: JSON.stringify({ shopDomain, ...campaign }) }),
+  patchCampaign: (id, patch) => request(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   createSendPackage: (campaign) => request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),

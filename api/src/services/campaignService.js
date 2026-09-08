@@ -11,7 +11,13 @@
 
 const { query } = require("../db");
 
-const STATUSES = new Set(["draft", "approved", "sent", "failed"]);
+// draft     — greenlit into the pipeline
+// approved  — merchant signed off for send
+// sent      — deployed to Klaviyo
+// failed    — send attempted and failed
+// dismissed — greenlit, then pulled back out. NOT a delete: the record that the
+//             merchant considered and dropped it is signal worth keeping.
+const STATUSES = new Set(["draft", "approved", "sent", "failed", "dismissed"]);
 
 function rowToCampaign(row) {
   return {
@@ -22,6 +28,7 @@ function rowToCampaign(row) {
     status: row.status,
     templateId: row.template_id,
     copy: row.copy,
+    draftEdits: row.draft_edits,
     holdoutPct: row.holdout_pct === null ? null : Number(row.holdout_pct),
     audienceSize: row.audience_size,
     holdoutSize: row.holdout_size,
@@ -37,26 +44,38 @@ function rowToCampaign(row) {
 // updates the existing row rather than opening a second campaign for one send.
 // COALESCE on the optional columns so a partial upsert never blanks a field that
 // was already set — a later call carrying only a status must not erase the copy.
-async function upsertCampaign({ shopDomain, runId, playId, status, templateId, copy }) {
+async function upsertCampaign({ shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId }) {
   if (!shopDomain) throw new Error("shopDomain is required");
   if (!runId) throw new Error("runId is required");
   if (!playId) throw new Error("playId is required");
   if (status && !STATUSES.has(status)) throw new Error(`Unknown status: ${status}`);
 
   const { rows } = await query(
-    `INSERT INTO clean.campaigns (shop_domain, run_id, play_id, status, template_id, copy)
-     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6)
+    `INSERT INTO clean.campaigns
+       (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id)
+     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8)
      ON CONFLICT (shop_domain, run_id, play_id) DO UPDATE SET
-       status      = COALESCE($4, clean.campaigns.status),
-       template_id = COALESCE($5, clean.campaigns.template_id),
-       copy        = COALESCE($6, clean.campaigns.copy),
+       status              = COALESCE($4, clean.campaigns.status),
+       template_id         = COALESCE($5, clean.campaigns.template_id),
+       copy                = COALESCE($6, clean.campaigns.copy),
+       draft_edits         = COALESCE($7, clean.campaigns.draft_edits),
+       klaviyo_campaign_id = COALESCE($8, clean.campaigns.klaviyo_campaign_id),
        approved_at = CASE
                        WHEN $4 = 'approved' AND clean.campaigns.approved_at IS NULL
                        THEN NOW() ELSE clean.campaigns.approved_at
                      END,
+       -- sent_at is what Phase 5 measures windows from, so it has to be stamped
+       -- on whichever path marks the send — not only on PATCH.
+       sent_at     = CASE
+                       WHEN $4 = 'sent' AND clean.campaigns.sent_at IS NULL
+                       THEN NOW() ELSE clean.campaigns.sent_at
+                     END,
        updated_at  = NOW()
      RETURNING *`,
-    [shopDomain, runId, playId, status || null, templateId || null, copy ? JSON.stringify(copy) : null]
+    [shopDomain, runId, playId, status || null, templateId || null,
+     copy ? JSON.stringify(copy) : null,
+     draftEdits === undefined ? null : JSON.stringify(draftEdits),
+     klaviyoCampaignId || null]
   );
   return rowToCampaign(rows[0]);
 }
@@ -87,6 +106,7 @@ async function updateCampaign(id, patch = {}) {
     status: "status",
     templateId: "template_id",
     copy: "copy",
+    draftEdits: "draft_edits",
     audienceSize: "audience_size",
     holdoutSize: "holdout_size",
     holdoutPct: "holdout_pct",
@@ -101,7 +121,8 @@ async function updateCampaign(id, patch = {}) {
   const values = [id];
   for (const [key, column] of Object.entries(allowed)) {
     if (patch[key] === undefined) continue;
-    values.push(key === "copy" ? JSON.stringify(patch[key]) : patch[key]);
+    const jsonColumn = key === "copy" || key === "draftEdits";
+    values.push(jsonColumn ? JSON.stringify(patch[key]) : patch[key]);
     sets.push(`${column} = $${values.length}`);
   }
   if (!sets.length) return getCampaign(id);
@@ -119,7 +140,22 @@ async function updateCampaign(id, patch = {}) {
   return rows.length ? rowToCampaign(rows[0]) : null;
 }
 
-// The copy the LLM authored for this play, if it has been generated before.
+// Cache generated copy on an EXISTING campaign. Deliberately an UPDATE, not an
+// upsert: a campaign row means "the merchant put this play in their pipeline",
+// and generating copy must not smuggle a play in there as a side effect. When no
+// row exists the copy simply isn't cached — the same fail-soft behavior as
+// before it was cached at all.
+async function cacheCopyOnCampaign({ shopDomain, runId, playId, templateId, copy }) {
+  const { rowCount } = await query(
+    `UPDATE clean.campaigns
+        SET copy = $5, template_id = COALESCE($4, template_id), updated_at = NOW()
+      WHERE shop_domain = $1 AND run_id = $2 AND play_id = $3`,
+    [shopDomain, runId, playId, templateId || null, JSON.stringify(copy)]
+  );
+  return rowCount > 0;
+}
+
+// The copy the model authored for this play, if it has been generated before.
 // Replaces copywriterService's in-memory Map, which was lost on every restart —
 // so copy silently regenerated and changed under the merchant.
 async function findCachedCopy({ shopDomain, runId, playId, templateId }) {
@@ -135,6 +171,7 @@ async function findCachedCopy({ shopDomain, runId, playId, templateId }) {
 
 module.exports = {
   upsertCampaign,
+  cacheCopyOnCampaign,
   listCampaigns,
   getCampaign,
   updateCampaign,

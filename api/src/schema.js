@@ -239,6 +239,16 @@ async function initSchema() {
     );
   `);
 
+  // What the MERCHANT changed, kept apart from `copy` (what the model wrote).
+  // The Copy step's Suggested/Edited badge exists only to tell those apart, and
+  // "Restore suggested" works by deleting a merchant key so the field falls back
+  // to the agent value. They also have different lifecycles: `copy` is replaced
+  // wholesale when the model reruns, `draft_edits` has to survive that untouched.
+  await query(`
+    ALTER TABLE clean.campaigns
+      ADD COLUMN IF NOT EXISTS draft_edits JSONB;
+  `);
+
   await query(`
     CREATE INDEX IF NOT EXISTS campaigns_by_shop
       ON clean.campaigns (shop_domain, created_at DESC);
