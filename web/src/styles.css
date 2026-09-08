@@ -129,8 +129,6 @@ button.status-chip:not([onclick]) { cursor: default; }
 .results-progress { height: 5px; border-radius: 3px; background: var(--bg-2); overflow: hidden; margin: 12px 0 8px; }
 .results-progress span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .results-status { color: var(--muted-2); font-size: 12px; margin: 0; }
-.draft-card.flash { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(240,138,36,.28); animation: flash-pulse 2s ease-out; }
-@keyframes flash-pulse { 0% { box-shadow: 0 0 0 4px rgba(240,138,36,.55); } 100% { box-shadow: 0 0 0 3px rgba(240,138,36,.28); } }
 .briefing-titlebar { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 24px; max-width: 1120px; }
 .briefing-titlebar h2 { font-family: var(--font-display); font-size: var(--fs-display); letter-spacing: -0.01em; color: var(--ink-strong); line-height: 1.1; margin-bottom: 8px; max-width: 720px; }
 .briefing-titlebar p { color: var(--muted); margin-bottom: 0; }
@@ -333,7 +331,6 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .rail-row { width: 100%; text-align: left; display: flex; gap: 10px; align-items: center; border: 1px solid var(--rule); background: var(--surface); border-radius: var(--radius-card); padding: 12px 13px; margin-bottom: 8px; cursor: pointer; }
 .rail-row:hover { border-color: var(--accent); }
 .rail-row.selected { border-color: var(--accent); background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
-.rail-row.flash { animation: flash-pulse .6s ease 2 alternate; }
 /* D2: rail icon square (replaces the dot), tinted by group */
 .rail-icon { width: 28px; height: 28px; border-radius: var(--radius-ctl); display: grid; place-items: center; flex: none; background: #ece9e2; color: var(--muted); }
 .rail-icon.review { background: #fff4dc; color: var(--accent-2); }

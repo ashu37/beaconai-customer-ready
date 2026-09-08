@@ -64,20 +64,16 @@ export const api = {
   testKlaviyo: () => request("/connections/klaviyo/test", { method: "POST", body: JSON.stringify({}) }),
   // No limit by default → backend paginates the whole store. Pass a number to bound the sync.
   syncShopify: (limit) => request("/sync/shopify", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), ...(limit != null ? { limit } : {}) }) }),
-  runEngine: () => request("/engine/run", { method: "POST", body: JSON.stringify({ shopDomain }) }),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
   getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),
   getKlaviyoTemplates: () => request(`/klaviyo/templates?shopDomain=${encodeURIComponent(shopDomain)}`),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
-  createTemplate: (campaign) => request("/klaviyo/templates/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   createSendPackage: (campaign) => request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
   generateCopy: ({ playId, templateId, regenerate, lockedSlots, steer } = {}) =>
     request("/copy/generate", { method: "POST", body: JSON.stringify({ shopDomain, playId, templateId, regenerate, lockedSlots, steer }) }),
   sendCampaign: (campaignId) => request("/klaviyo/campaigns/send", { method: "POST", body: JSON.stringify({ shopDomain, campaignId }) }),
-  demoRun: (limit = 250) => request("/demo/run", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), limit }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
-  getPlaceholderEngineRun: () => request(`/engine/placeholder/${encodeURIComponent(shopDomain)}`),
   getStatsSeries: (weeks = 12) => request(`/stats/series/${encodeURIComponent(shopDomain)}?weeks=${weeks}`),
 };

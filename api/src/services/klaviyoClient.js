@@ -310,13 +310,11 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 }
 
 module.exports = {
-  createKlaviyoClient,
   testKlaviyo,
   getKlaviyoLists,
   getKlaviyoProfiles,
   getKlaviyoTemplates,
   campaignHtml,
-  createTemplate,
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,

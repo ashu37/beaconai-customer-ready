@@ -159,16 +159,6 @@ async function initSchema() {
   `);
 
   await query(`
-    CREATE TABLE IF NOT EXISTS clean.engine_runs (
-      id SERIAL PRIMARY KEY,
-      shop_domain TEXT NOT NULL,
-      input JSONB NOT NULL,
-      output JSONB NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await query(`
     CREATE TABLE IF NOT EXISTS clean.klaviyo_assets (
       id SERIAL PRIMARY KEY,
       shop_domain TEXT,
@@ -177,6 +167,48 @@ async function initSchema() {
       payload JSONB NOT NULL,
       created_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+
+  // Engine runs are immutable: inserted once, never updated — except `narration`,
+  // which is written once by the narration pass that follows the same run.
+  // The container filesystem the engine writes to is ephemeral on Render, so
+  // these rows (not `engine/data/`) are what survives a restart.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.engine_run_snapshots (
+      run_id TEXT PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      schema_version TEXT,
+      engine_run JSONB NOT NULL,
+      manifest JSONB,
+      narration JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS engine_run_snapshots_latest
+      ON clean.engine_run_snapshots (shop_domain, created_at DESC);
+  `);
+
+  // Membership is stored whole, as the engine materialized it. An array rather
+  // than a row per customer: a 100k audience is ~1.2MB here vs ~100k rows, and
+  // it is always read in full at send time.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.engine_audiences (
+      run_id TEXT NOT NULL
+        REFERENCES clean.engine_run_snapshots(run_id) ON DELETE CASCADE,
+      audience_definition_id TEXT NOT NULL,
+      play_id TEXT NOT NULL,
+      materialization_status TEXT NOT NULL,
+      customer_ids TEXT[] NOT NULL DEFAULT '{}',
+      PRIMARY KEY (run_id, audience_definition_id)
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS engine_audiences_play
+      ON clean.engine_audiences (run_id, play_id);
   `);
 }
 
