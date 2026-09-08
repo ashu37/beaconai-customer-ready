@@ -66,6 +66,75 @@ router.get("/ready", (req, res) => {
   res.status(ready ? 200 : 503).json({ ok: ready, service: "beaconai-api", startup });
 });
 
+// TEMPORARY — remove once the database connection is resolved.
+//
+// Walks DNS -> raw TCP -> Postgres handshake from INSIDE this container, which
+// is the only way to see which layer fails on a host with no shell. Takes no
+// input and only ever touches the configured DATABASE_URL host, so it is not an
+// SSRF vector; it reports host/port/user (already public on /health) and never
+// the password.
+router.get("/debug/db-connectivity", async (req, res) => {
+  const dns = require("dns").promises;
+  const net = require("net");
+  const stages = [];
+  const since = (t) => Number((Number(process.hrtime.bigint() - t) / 1e6).toFixed(1));
+
+  let url;
+  try {
+    url = new URL(config.databaseUrl);
+  } catch (error) {
+    res.json({ ok: false, stages: [{ stage: "parse", ok: false, error: error.message }] });
+    return;
+  }
+  const host = url.hostname;
+  const port = Number(url.port || 5432);
+  stages.push({ stage: "parse", ok: true, host, port, user: url.username, database: url.pathname.slice(1) });
+
+  let addresses = [];
+  let t = process.hrtime.bigint();
+  try {
+    addresses = await dns.lookup(host, { all: true });
+    stages.push({ stage: "dns", ok: true, ms: since(t), addresses: addresses.map((a) => `IPv${a.family} ${a.address}`) });
+  } catch (error) {
+    stages.push({ stage: "dns", ok: false, ms: since(t), error: error.code || error.message });
+    res.json({ ok: false, stages });
+    return;
+  }
+
+  // Try each resolved address separately: if one family or one host in the
+  // rotation is unreachable, per-address results say so where a single attempt
+  // would just look like a generic timeout.
+  for (const address of addresses) {
+    const started = process.hrtime.bigint();
+    const outcome = await new Promise((resolve) => {
+      const socket = net.createConnection({ host: address.address, port, timeout: 8000 });
+      socket.on("connect", () => { socket.destroy(); resolve({ ok: true }); });
+      socket.on("timeout", () => { socket.destroy(); resolve({ ok: false, error: "TIMEOUT after 8000ms" }); });
+      socket.on("error", (error) => { socket.destroy(); resolve({ ok: false, error: error.code || error.message }); });
+    });
+    stages.push({ stage: "tcp", target: `IPv${address.family} ${address.address}:${port}`, ms: since(started), ...outcome });
+  }
+
+  if (stages.filter((s) => s.stage === "tcp").every((s) => !s.ok)) {
+    res.json({ ok: false, verdict: "No TCP route from this container to the database host.", stages });
+    return;
+  }
+
+  const { Client } = require("pg");
+  const client = new Client({ connectionString: config.databaseUrl, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 8000 });
+  t = process.hrtime.bigint();
+  try {
+    await client.connect();
+    const { rows } = await client.query("select current_database() as db, current_user as usr");
+    stages.push({ stage: "postgres", ok: true, ms: since(t), ...rows[0] });
+    await client.end();
+    res.json({ ok: true, verdict: "Reachable from this container.", stages });
+  } catch (error) {
+    stages.push({ stage: "postgres", ok: false, ms: since(t), error: error.message });
+    res.json({ ok: false, verdict: "TCP works but the Postgres handshake fails — auth, SSL, or database name.", stages });
+  }
+});
+
 router.post("/connections/shopify/test", async (req, res) => {
   try {
     const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
