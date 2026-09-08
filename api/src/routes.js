@@ -38,6 +38,7 @@ const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
 const {
   upsertCampaign,
+  cacheCopyOnCampaign,
   listCampaigns,
   updateCampaign,
   findCachedCopy,
@@ -226,7 +227,7 @@ router.post("/copy/generate", async (req, res) => {
     if (result.available && runId) {
       // Best-effort: a caching failure must never fail copy generation.
       try {
-        await upsertCampaign({
+        await cacheCopyOnCampaign({
           shopDomain, runId, playId, templateId: resolvedTemplateId,
           copy: {
             copy: result.copy,
@@ -492,8 +493,10 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
 router.post("/campaigns", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const { runId, playId, status, templateId, copy } = req.body;
-    const campaign = await upsertCampaign({ shopDomain, runId, playId, status, templateId, copy });
+    const { runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId } = req.body;
+    const campaign = await upsertCampaign({
+      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+    });
     res.json({ ok: true, campaign });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });

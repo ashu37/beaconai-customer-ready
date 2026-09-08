@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import "./styles.css";
@@ -1311,10 +1311,11 @@ function App() {
   const [restoredApprovedPlayIds, setRestoredApprovedPlayIds] = useState([]);
   const firstRunStartedRef = useRef(false);
   const pipelineHydratedRef = useRef(false);
+  // playId -> campaigns.id, so a mutation can patch the row it already has.
+  const [campaignIdByPlay, setCampaignIdByPlay] = useState({});
 
   const counts = sync?.synced || {};
   const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
-  const pipelineStorageKey = shopDomain && currentRunId ? `beaconai:${shopDomain}:${currentRunId}:pipeline` : null;
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
@@ -1526,26 +1527,50 @@ function App() {
     if (!stillPresent) setSelectedBriefingPlayId(selectableRows[0].play.play_id);
   }, [selectableRows, selectedBriefingPlayId]);
 
-  // O4: rehydrate pipeline state after O1's latest-run load resolves.
-  // Stored key embeds the run_id, so a stale run's state is never read (discarded).
+  // Rehydrate pipeline state from the database once the run is known.
+  //
+  // This used to read a localStorage blob keyed on the run id, which meant every
+  // new engine run discarded every approval, copy edit and send state — and none
+  // of it existed outside the one browser that made it. Campaign rows outlive the
+  // run, so the same work is here on any device.
   useEffect(() => {
-    if (!pipelineStorageKey || pipelineHydratedRef.current) return;
+    if (!shopDomain || !currentRunId || pipelineHydratedRef.current) return;
     pipelineHydratedRef.current = true;
-    try {
-      const raw = localStorage.getItem(pipelineStorageKey);
-      if (!raw) return;
-      const saved = JSON.parse(raw);
-      if (saved.run_id && saved.run_id !== currentRunId) return; // stale → discard
-      if (Array.isArray(saved.authorizedPackageIds)) setAuthorizedPackageIds(saved.authorizedPackageIds);
-      if (Array.isArray(saved.approvedForSend)) setApprovedForSend(saved.approvedForSend);
-      if (saved.selectedTemplateByPlay) setSelectedTemplateByPlay(saved.selectedTemplateByPlay);
-      if (saved.draftEditsByPlay) setDraftEditsByPlay(saved.draftEditsByPlay);
-      if (saved.agentCopyByPlay) setAgentCopyByPlay(saved.agentCopyByPlay);
-      if (Array.isArray(saved.approvedPlayIds)) setRestoredApprovedPlayIds(saved.approvedPlayIds);
-    } catch (_) {
-      // Corrupt stored state is non-fatal; the merchant can re-approve.
-    }
-  }, [pipelineStorageKey, currentRunId]);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { campaigns = [] } = await api.listCampaigns(currentRunId);
+        if (cancelled) return;
+
+        // `dismissed` is a play the merchant pulled back out. The row stays (it
+        // records that they considered it) but it is not in the pipeline.
+        const live = campaigns.filter((c) => c.status !== "dismissed");
+
+        setCampaignIdByPlay(Object.fromEntries(campaigns.map((c) => [c.playId, c.id])));
+        setRestoredApprovedPlayIds(live.map((c) => c.playId));
+        setApprovedForSend(live.filter((c) => c.status === "approved" || c.status === "sent").map((c) => c.playId));
+        setAuthorizedPackageIds(live.filter((c) => c.klaviyoCampaignId).map((c) => c.playId));
+
+        const templates = {};
+        const edits = {};
+        const agentCopy = {};
+        for (const c of live) {
+          if (c.templateId) templates[c.playId] = c.templateId;
+          if (c.draftEdits) edits[c.playId] = c.draftEdits;
+          if (c.copy?.copy) agentCopy[c.playId] = c.copy.copy;
+        }
+        setSelectedTemplateByPlay(templates);
+        setDraftEditsByPlay(edits);
+        setAgentCopyByPlay(agentCopy);
+      } catch (_) {
+        // A hydration failure must not block the briefing; the merchant can
+        // re-approve, and the next mutation re-establishes the row.
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [shopDomain, currentRunId]);
 
   // O4: once workflow plays are loaded, rebuild campaign packages for restored approved ids.
   useEffect(() => {
@@ -1577,25 +1602,42 @@ function App() {
     setRestoredApprovedPlayIds([]);
   }, [restoredApprovedPlayIds, workflowPlays]);
 
-  // O4: persist minimal pipeline state. TODO(auth): move to DB.
-  useEffect(() => {
-    if (!pipelineStorageKey) return;
-    const approvedPlayIds = campaignPackages.map((item) => item.id);
-    const payload = {
-      run_id: currentRunId,
-      approvedPlayIds,
-      selectedTemplateByPlay,
-      draftEditsByPlay,
-      agentCopyByPlay,
-      authorizedPackageIds,
-      approvedForSend,
-    };
+  // Write one play's campaign state through to the database. Upsert rather than
+  // patch-by-id: the row may not exist yet (first greenlight), and the endpoint
+  // is idempotent on (shop, run, play). Returns the row so the caller can learn
+  // its id for later patches.
+  const saveCampaignState = useCallback(async (playId, fields) => {
+    if (!currentRunId || !playId) return null;
     try {
-      localStorage.setItem(pipelineStorageKey, JSON.stringify(payload));
+      const { campaign } = await api.saveCampaign({ runId: currentRunId, playId, ...fields });
+      setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
+      return campaign;
     } catch (_) {
-      // Storage may be unavailable (private mode); persistence is best-effort.
+      // Persistence is best-effort against the UI: a failed write must not block
+      // the merchant mid-flow. The next mutation retries the whole field set.
+      return null;
     }
-  }, [pipelineStorageKey, currentRunId, campaignPackages, selectedTemplateByPlay, draftEditsByPlay, agentCopyByPlay, authorizedPackageIds, approvedForSend]);
+  }, [currentRunId]);
+
+  // Copy edits fire on every keystroke, so they are debounced per play — one
+  // request per pause, not per character. The whole edit object is sent rather
+  // than a delta: "Restore suggested" works by DELETING a key, and a delta could
+  // not express that.
+  const editSaveTimers = useRef({});
+  const scheduleDraftEditsSave = useCallback((playId, edits) => {
+    clearTimeout(editSaveTimers.current[playId]);
+    editSaveTimers.current[playId] = setTimeout(() => {
+      delete editSaveTimers.current[playId];
+      saveCampaignState(playId, { draftEdits: edits });
+    }, 600);
+  }, [saveCampaignState]);
+
+  // Flush any pending edit when the workspace closes or the page unloads, so the
+  // last few characters before navigating away are not lost.
+  useEffect(() => {
+    const timers = editSaveTimers.current;
+    return () => { for (const id of Object.keys(timers)) clearTimeout(timers[id]); };
+  }, []);
 
   // O3: auto-start the first-run pipeline once per shop. The localStorage guard
   // prevents a page refresh from re-running a full sync — without it, every
@@ -1928,6 +1970,9 @@ function App() {
 
     if (alreadyApproved) {
       setCampaignPackages((prev) => prev.filter((item) => item.id !== playId));
+      // Dismissed, not deleted — the row records that the merchant considered
+      // this play and pulled it back out.
+      saveCampaignState(playId, { status: "dismissed" });
       showToast({ message: "Removed from Campaigns." });
       return;
     }
@@ -1951,6 +1996,7 @@ function App() {
         suppression: STANDARD_SUPPRESSIONS_NOTE,
       },
     ]);
+    saveCampaignState(playId, { status: "draft" });
     showToast({
       message: "Added to Campaigns",
       actionLabel: "Review →",
@@ -1986,6 +2032,7 @@ function App() {
         },
       }));
       setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
+      if (campaignId) saveCampaignState(campaignDraft.id, { klaviyoCampaignId: campaignId });
       showToast({ message: "Created in Klaviyo" });
       return result;
     } catch (err) {
@@ -2022,6 +2069,9 @@ function App() {
           sentAt: new Date().toISOString(),
         },
       }));
+      // The send is the moment the campaign is deployed; stamp it on the row so
+      // Results can report on it later.
+      saveCampaignState(campaignDraft.id, { status: "sent" });
       return result;
     } finally {
       setSendingCampaignId("");
@@ -2042,28 +2092,30 @@ function App() {
   function chooseTemplate(playId, templateId) {
     setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: templateId }));
     setDraftEditsByPlay((prev) => ({ ...prev, [playId]: {} }));
+    // Switching template resets the edits, so persist both together.
+    saveCampaignState(playId, { templateId, draftEdits: {} });
   }
 
   // Explicit sign-off: move a reviewed campaign to "Ready to send".
   function approveForSend(playId) {
     setApprovedForSend((prev) => (prev.includes(playId) ? prev : [...prev, playId]));
+    saveCampaignState(playId, { status: "approved" });
     setWorkspaceStep("send");
   }
 
   // Send it back to review (edits or a mistaken approval).
   function unapproveForSend(playId) {
     setApprovedForSend((prev) => prev.filter((id) => id !== playId));
+    saveCampaignState(playId, { status: "draft" });
     setWorkspaceStep("copy");
   }
 
   function updateDraftField(playId, field, value) {
-    setDraftEditsByPlay((prev) => ({
-      ...prev,
-      [playId]: {
-        ...(prev[playId] || {}),
-        [field]: value,
-      },
-    }));
+    setDraftEditsByPlay((prev) => {
+      const next = { ...prev, [playId]: { ...(prev[playId] || {}), [field]: value } };
+      scheduleDraftEditsSave(playId, next[playId]);
+      return next;
+    });
   }
 
   // CA-4: "Restore suggested" DROPS the merchant's edit so the field reverts to
@@ -2076,6 +2128,8 @@ function App() {
       if (!current || !(field in current)) return prev;
       const next = { ...current };
       delete next[field];
+      // Whole object, not a delta — a delta cannot express a deleted key.
+      scheduleDraftEditsSave(playId, next);
       return { ...prev, [playId]: next };
     });
   }
