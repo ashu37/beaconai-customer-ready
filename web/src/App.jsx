@@ -2082,7 +2082,7 @@ function App() {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
-      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: result.audience }));
+      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: { ...result.audience, holdout: result.holdout || null } }));
       return result;
     } finally {
       setPreviewingCampaignId("");
@@ -2487,6 +2487,19 @@ function App() {
                                 <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
                                 <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
                               </div>
+                              {/* The holdout is stated before the send, never
+                                  discovered after it. A merchant who chooses to
+                                  hold a group back trusts the result; one who
+                                  finds out later does not. */}
+                              {preview?.holdout && preview.holdout.held > 0 ? (
+                                <div className="holdout-note">
+                                  <strong>{formatAudience(preview.holdout.treated)} will receive this.</strong>
+                                  <span>
+                                    {formatAudience(preview.holdout.held)} matched customers ({Math.round(preview.holdout.pct * 100)}%) are held back and sent nothing,
+                                    so Results can show what this campaign earned rather than what merely happened after it.
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className="recipient-preview">
                                 <div className="recipient-preview-head">
                                   <div>

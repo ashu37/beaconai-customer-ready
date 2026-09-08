@@ -36,8 +36,10 @@ const {
 } = require("./services/brandContextService");
 const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
+const { splitAudience } = require("./services/holdoutService");
 const {
   upsertCampaign,
+  recordRecipients,
   cacheCopyOnCampaign,
   listCampaigns,
   updateCampaign,
@@ -421,20 +423,56 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const brandContext = buildBrandContext(input);
     const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
     const audience = await resolveCampaignAudience(shopDomain, campaign);
-    const packageResult = await createCampaignSendPackage(privateKey, campaign, audience);
+
+    // Split the audience before anything reaches Klaviyo. The held-out arm is
+    // what turns "these customers bought $X" into "this campaign earned $X".
+    const playId = campaign.play_id || campaign.id;
+    let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
+    let campaignRow = null;
+
+    if (audience.materialized && audience.runId && playId) {
+      campaignRow = await upsertCampaign({ shopDomain, runId: audience.runId, playId });
+      split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
+
+      // Recipients are persisted BEFORE the send, deliberately. If this write
+      // fails we must not send: a campaign whose split was never recorded can
+      // never be measured, and an unmeasurable send is worse than a late one.
+      await recordRecipients(campaignRow.id, split);
+      await updateCampaign(campaignRow.id, {
+        audienceSize: split.treated.length + split.holdout.length,
+        holdoutSize: split.holdout.length,
+        holdoutPct: split.holdoutPct,
+      });
+    }
+
+    // Only the treated arm goes to Klaviyo. The holdout is, by definition, the
+    // group that receives nothing.
+    const sendAudience = { ...audience, recipients: split.treated, count: split.treated.length };
+    const packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
+
+    if (campaignRow && klaviyoCampaignId) {
+      await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+    }
 
     await saveKlaviyoAsset({
       shopDomain,
       assetType: "campaign_send_package",
       externalId: klaviyoCampaignId,
-      payload: { campaign, audience, packageResult },
+      payload: { campaign, audience, packageResult, holdout: { treated: split.treated.length, held: split.holdout.length, pct: split.holdoutPct } },
     });
 
     res.json({
       ok: true,
       campaign,
       audience,
+      // What the merchant is told at send time: who receives it, who is held
+      // back, and why the held-back group exists.
+      holdout: {
+        treated: split.treated.length,
+        held: split.holdout.length,
+        pct: split.holdoutPct,
+      },
       brandContext,
       template: packageResult.template,
       list: packageResult.list,
@@ -535,8 +573,23 @@ router.patch("/campaigns/:id", async (req, res) => {
 router.post("/campaigns/audience/preview", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const audience = await resolveCampaignAudience(shopDomain, req.body.campaign || {});
-    res.json({ ok: true, shopDomain, audience });
+    const campaign = req.body.campaign || {};
+    const audience = await resolveCampaignAudience(shopDomain, campaign);
+
+    // Show the merchant the same split the send will actually perform, computed
+    // by the same function — so the number on screen is a promise, not an
+    // estimate. Nobody should discover the holdout after the fact.
+    let holdout = null;
+    if (audience.materialized) {
+      const playId = campaign.play_id || campaign.id;
+      const existing = audience.runId && playId
+        ? (await listCampaigns(shopDomain, { runId: audience.runId })).find((c) => c.playId === playId)
+        : null;
+      const split = splitAudience(shopDomain, audience.recipients, existing?.holdoutPct ?? 0.1);
+      holdout = { treated: split.treated.length, held: split.holdout.length, pct: split.holdoutPct };
+    }
+
+    res.json({ ok: true, shopDomain, audience, holdout });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
