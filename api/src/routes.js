@@ -125,6 +125,14 @@ router.get("/debug/db-connectivity", async (req, res) => {
       { label: "same host, https port", host, port: 443 },
       { label: "general egress (Cloudflare DNS)", host: "1.1.1.1", port: 443 },
       { label: "general egress (Google)", host: "google.com", port: 443 },
+      // Is AWS us-west-2 reachable at all, or only Supabase's IPs blocked?
+      // This is the fork: a whole-region routing failure is a Render problem
+      // (fixable by changing region), while Supabase-only is a peering or
+      // blocklist issue between the two providers.
+      { label: "AWS us-west-2 generally", host: "s3.us-west-2.amazonaws.com", port: 443 },
+      // The direct database host — entirely different IPs from the pooler, and
+      // normally IPv6-only. Tells us whether ANY Supabase endpoint is routable.
+      { label: "supabase direct host", host: `db.${(url.username.split(".")[1] || "")}.supabase.co`, port: 5432 },
     ];
     for (const control of controls) {
       const started = process.hrtime.bigint();
@@ -140,14 +148,20 @@ router.get("/debug/db-connectivity", async (req, res) => {
     const control = (label) => stages.find((s) => s.stage === "control" && s.label.includes(label));
     const egressWorks = stages.some((s) => s.stage === "control" && s.label.startsWith("general") && s.ok);
     const altPortWorks = control("transaction pooler")?.ok;
+    const awsRegionWorks = control("AWS us-west-2")?.ok;
+    const directHostWorks = control("supabase direct")?.ok;
 
     let verdict;
     if (!egressWorks) {
       verdict = "This container has no outbound TCP at all — a Render egress problem, not Supabase.";
     } else if (altPortWorks) {
       verdict = "Outbound works and port 6543 on the SAME host connects — 5432 specifically is blocked. Switch DATABASE_URL to the transaction pooler on 6543.";
+    } else if (!awsRegionWorks) {
+      verdict = "Outbound works, but ALL of AWS us-west-2 is unreachable from this container — a Render routing problem, not Supabase. Moving the Render service to another region should fix it.";
+    } else if (directHostWorks) {
+      verdict = "AWS us-west-2 is reachable and the Supabase DIRECT host connects — only the pooler IPs are blocked. Use the direct connection string (needs the IPv4 add-on if it resolved to IPv6).";
     } else {
-      verdict = "Outbound works, but this host is unreachable on every port tried — the path from Render to Supabase is blocked, not the port.";
+      verdict = "AWS us-west-2 is reachable but every Supabase endpoint is blocked — the block is specific to Supabase's IPs, not the region or the port.";
     }
     res.json({ ok: false, verdict, stages });
     return;
