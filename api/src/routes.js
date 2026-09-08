@@ -116,7 +116,40 @@ router.get("/debug/db-connectivity", async (req, res) => {
   }
 
   if (stages.filter((s) => s.stage === "tcp").every((s) => !s.ok)) {
-    res.json({ ok: false, verdict: "No TCP route from this container to the database host.", stages });
+    // Every address timed out. Timeout (rather than refused/unreachable) means
+    // the SYN left and nothing came back — packets dropped, not rejected. These
+    // controls separate the two explanations: is outbound 5432 blocked, or is
+    // this host unreachable on every port?
+    const controls = [
+      { label: "same host, transaction pooler port", host, port: 6543 },
+      { label: "same host, https port", host, port: 443 },
+      { label: "general egress (Cloudflare DNS)", host: "1.1.1.1", port: 443 },
+      { label: "general egress (Google)", host: "google.com", port: 443 },
+    ];
+    for (const control of controls) {
+      const started = process.hrtime.bigint();
+      const outcome = await new Promise((resolve) => {
+        const socket = net.createConnection({ host: control.host, port: control.port, timeout: 6000 });
+        socket.on("connect", () => { socket.destroy(); resolve({ ok: true }); });
+        socket.on("timeout", () => { socket.destroy(); resolve({ ok: false, error: "TIMEOUT after 6000ms" }); });
+        socket.on("error", (error) => { socket.destroy(); resolve({ ok: false, error: error.code || error.message }); });
+      });
+      stages.push({ stage: "control", label: control.label, target: `${control.host}:${control.port}`, ms: since(started), ...outcome });
+    }
+
+    const control = (label) => stages.find((s) => s.stage === "control" && s.label.includes(label));
+    const egressWorks = stages.some((s) => s.stage === "control" && s.label.startsWith("general") && s.ok);
+    const altPortWorks = control("transaction pooler")?.ok;
+
+    let verdict;
+    if (!egressWorks) {
+      verdict = "This container has no outbound TCP at all — a Render egress problem, not Supabase.";
+    } else if (altPortWorks) {
+      verdict = "Outbound works and port 6543 on the SAME host connects — 5432 specifically is blocked. Switch DATABASE_URL to the transaction pooler on 6543.";
+    } else {
+      verdict = "Outbound works, but this host is unreachable on every port tried — the path from Render to Supabase is blocked, not the port.";
+    }
+    res.json({ ok: false, verdict, stages });
     return;
   }
 
