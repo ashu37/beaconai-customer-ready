@@ -7,7 +7,6 @@ const {
   getEngineInput,
   getWeeklySeries,
 } = require("./services/shopifyRepository");
-const { runMockEngine, saveEngineRun } = require("./services/engineService");
 const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 const {
@@ -16,12 +15,10 @@ const {
   getKlaviyoProfiles,
   getKlaviyoTemplates,
   campaignHtml,
-  createTemplate,
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,
 } = require("./services/klaviyoClient");
-const { buildPlaceholderEngineRun } = require("./services/placeholderEngineService");
 const {
   buildShopifyStartUrl,
   handleShopifyCallback,
@@ -313,29 +310,6 @@ router.get("/stats/series/:shopDomain", async (req, res) => {
   }
 });
 
-router.get("/engine/placeholder/:shopDomain", async (req, res) => {
-  try {
-    const input = await getEngineInput(req.params.shopDomain);
-    const engineRun = buildPlaceholderEngineRun(input);
-    res.json({ ok: true, engineRun });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-router.post("/engine/run", async (req, res) => {
-  try {
-    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const input = await getEngineInput(shopDomain);
-    const output = runMockEngine(input);
-    const run = await saveEngineRun(shopDomain, input, output);
-
-    res.json({ ok: true, engineRunId: run.id, campaign: output });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
 router.post("/engine/atul/run", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
@@ -361,17 +335,6 @@ router.post("/engine/atul/run", async (req, res) => {
       presentedRun,
       narration,
       manifest: result.manifest,
-      runSummary: {
-        data_quality: result.runSummary.data_quality,
-        charts_rel: result.runSummary.charts_rel,
-        segments: result.runSummary.segments,
-        aura_score: result.runSummary.aura_score,
-      },
-      artifacts: result.artifacts,
-      diagnostics: {
-        useFixture: result.diagnostics.useFixture,
-        exportedRows: result.diagnostics.exportedRows,
-      },
     });
   } catch (error) {
     res.status(500).json({
@@ -402,38 +365,18 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
   }
 });
 
-router.post("/klaviyo/templates/from-engine", async (req, res) => {
-  try {
-    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const privateKey = await resolveKlaviyoKey(req.body);
-
-    const input = await getEngineInput(shopDomain);
-    const brandContext = buildBrandContext(input);
-    const campaign = applyBrandVoiceToCampaign(req.body.campaign || runMockEngine(input), brandContext);
-    const audience = await resolveCampaignAudience(shopDomain, campaign);
-
-    const template = await createTemplate(privateKey, campaign);
-    await saveKlaviyoAsset({
-      shopDomain,
-      assetType: "template",
-      externalId: template?.data?.id,
-      payload: { template, campaign, audience },
-    });
-
-    res.json({ ok: true, campaign, template, audience, brandContext });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
-  }
-});
-
 router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
     const privateKey = await resolveKlaviyoKey(req.body);
+    if (!req.body.campaign) {
+      res.status(400).json({ ok: false, error: "campaign is required" });
+      return;
+    }
 
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
-    const campaign = applyBrandVoiceToCampaign(req.body.campaign || runMockEngine(input), brandContext);
+    const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
     const audience = await resolveCampaignAudience(shopDomain, campaign);
     const packageResult = await createCampaignSendPackage(privateKey, campaign, audience);
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
@@ -509,48 +452,6 @@ router.post("/campaigns/audience/preview", async (req, res) => {
     res.json({ ok: true, shopDomain, audience });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-router.post("/demo/run", async (req, res) => {
-  try {
-    const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
-    const privateKey = await resolveKlaviyoKey(req.body);
-    const limit = req.body.limit || 1000;
-
-    const shopifyData = await fetchShopifyData({ shopDomain, accessToken, limit });
-    await saveRawShopifyData(shopDomain, shopifyData);
-    await upsertAllShopifyData(shopDomain, shopifyData);
-
-    const input = await getEngineInput(shopDomain);
-    const brandContext = buildBrandContext(input);
-    const campaign = applyBrandVoiceToCampaign(runMockEngine(input), brandContext);
-    const engineRun = await saveEngineRun(shopDomain, input, campaign);
-
-    const template = await createTemplate(privateKey, campaign);
-    await saveKlaviyoAsset({
-      shopDomain,
-      assetType: "template",
-      externalId: template?.data?.id,
-      payload: template,
-    });
-
-    res.json({
-      ok: true,
-      shopDomain,
-      synced: {
-        shop: Boolean(shopifyData.shop),
-        products: shopifyData.products.length,
-        customers: shopifyData.customers.length,
-        orders: shopifyData.orders.length,
-      },
-      engineRunId: engineRun.id,
-      campaign,
-      brandContext,
-      klaviyoTemplate: template,
-    });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
 

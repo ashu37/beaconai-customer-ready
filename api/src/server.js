@@ -31,7 +31,8 @@ app.get("/api", (req, res) => {
       health: "/api/health",
       syncShopify: "POST /api/sync/shopify",
       engineInput: "GET /api/engine/input/:shopDomain",
-      demoRun: "POST /api/demo/run",
+      engineRun: "POST /api/engine/atul/run",
+      latestRun: "GET /api/engine/atul/latest/:shopDomain",
     },
   });
 });

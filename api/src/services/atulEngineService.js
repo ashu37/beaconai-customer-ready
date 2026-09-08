@@ -446,10 +446,6 @@ print(json.dumps(payload))
 
 module.exports = {
   narrateAtulRun,
-  narrationSiblingPath,
-  persistNarration,
   readLatestRun,
-  readPersistedNarration,
   runAtulEngine,
-  writeOrdersCsv,
 };

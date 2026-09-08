@@ -163,7 +163,7 @@ function normalizeAtulPlay(play, index) {
   };
 }
 
-function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
+function buildWorkflowPlays({ atulEngineResult, campaignPackages }) {
   const presented = atulEngineResult?.presentedRun?.recommendations || [];
   const presentedConsidered = atulEngineResult?.presentedRun?.considered || [];
   const rawEngineCards = [
@@ -185,21 +185,7 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }) {
     source: "workflow",
     raw: item,
   }));
-  if (packagePlays.length) return packagePlays;
-
-  if (!campaign) return [];
-
-  return [{
-    id: "mock-engine-campaign",
-    play_id: "mock-engine-campaign",
-    play_name: campaign.play_name,
-    mechanism: campaign.opportunity_context?.reason || "Mock engine campaign generated.",
-    audience_archetype: campaign.audience?.description,
-    audience_size: campaign.audience?.size,
-    confidence: campaign.confidence_label,
-    source: "mock",
-    raw: campaign,
-  }];
+  return packagePlays;
 }
 
 // CA-4: map the copywriter's slot object to the draft's field shape. subject_variants[0]
@@ -1273,10 +1259,8 @@ function App() {
   const [shopDomainDraft, setShopDomainDraft] = useState(api.shopDomain);
   const [status, setStatus] = useState({ api: false, shopify: false, klaviyo: false, shopifySource: "none", klaviyoSource: "none" });
   const [sync, setSync] = useState(null);
-  const [campaign, setCampaign] = useState(null);
   const [engineInput, setEngineInput] = useState(null);
   const [brandContext, setBrandContext] = useState(null);
-  const [placeholderRun, setPlaceholderRun] = useState(null);
   const [atulEngineResult, setAtulEngineResult] = useState(null);
   const [klaviyoTemplates, setKlaviyoTemplates] = useState([]);
   // C3: true only when Klaviyo is connected but its template fetch failed/fell back.
@@ -1308,7 +1292,6 @@ function App() {
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
   const [campaignPackages, setCampaignPackages] = useState([]);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
-  const [flashCampaignId, setFlashCampaignId] = useState("");
   // D6b: weekly series for the Orders / Customers sparklines.
   const [statsSeries, setStatsSeries] = useState(null);
   // Transient confirmation toast: { message, actionLabel?, onAction? }.
@@ -1339,8 +1322,8 @@ function App() {
   // refresh repaints the last briefing instantly, independent of the server.
   const briefingCacheKey = shopDomain ? `beaconai:${shopDomain}:latest-briefing` : null;
   const workflowPlays = useMemo(
-    () => buildWorkflowPlays({ atulEngineResult, campaignPackages, campaign }),
-    [atulEngineResult, campaignPackages, campaign]
+    () => buildWorkflowPlays({ atulEngineResult, campaignPackages }),
+    [atulEngineResult, campaignPackages]
   );
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
   // Only plays the merchant explicitly approved in Briefing (greenlightEnginePlay
@@ -1449,9 +1432,9 @@ function App() {
   ].filter((g) => g.rows.length);
   const selectedCampaign = finalCampaignById.get(reviewPlay?.id) || null;
   const selectedCampaignGroup = reviewPlay ? campaignGroupFor(reviewPlay) : null;
-  const productCount = counts.products ?? engineInput?.products?.length ?? placeholderRun?.input_summary?.products ?? "—";
-  const customerCount = counts.customers ?? engineInput?.customers?.length ?? placeholderRun?.input_summary?.customers ?? "—";
-  const orderCount = counts.orders ?? engineInput?.orders?.length ?? placeholderRun?.input_summary?.orders ?? "—";
+  const productCount = counts.products ?? engineInput?.products?.length ?? "—";
+  const customerCount = counts.customers ?? engineInput?.customers?.length ?? "—";
+  const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
   const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
   // O3: first-run detection — Shopify connected, no snapshot, and the latest-run
   // check DEFINITIVELY returned no run. Never true while rehydrating, on a fetch
@@ -1754,13 +1737,6 @@ function App() {
     }
   }
 
-  async function runAnalysis() {
-    const result = await runStep("Engine run", () => api.runEngine());
-    setCampaign(result.campaign);
-    setActivePage("campaigns");
-    return result;
-  }
-
   // Shared result-handling path for both a fresh engine run and O1 rehydration.
   function applyEngineResult(result) {
     setAtulEngineResult(result);
@@ -1845,13 +1821,6 @@ function App() {
     setKlaviyoTemplatesFailed(Boolean(status.klaviyo) && result.source !== "klaviyo" && !hasKlaviyoTemplates);
     if (result.brandContext) setBrandContext(result.brandContext);
     return result;
-  }
-
-  async function runFullDemo() {
-    const result = await runStep("Full demo", () => api.demoRun());
-    setSync({ synced: result.synced, shopDomain: result.shopDomain });
-    setCampaign(result.campaign);
-    setActivePage("campaigns");
   }
 
   async function saveShopDomain(event) {
@@ -2363,7 +2332,7 @@ function App() {
                       {group.rows.map(({ play, group: g }) => (
                         <button
                           key={play.id}
-                          className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""} ${flashCampaignId === play.id ? "flash" : ""}`}
+                          className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""}`}
                           onClick={() => setReviewPlayId(play.id)}
                         >
                           <span className={`rail-icon ${g}`}><Icon name={iconForPlay(play)} size={16} /></span>

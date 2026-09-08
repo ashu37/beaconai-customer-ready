@@ -159,16 +159,6 @@ async function initSchema() {
   `);
 
   await query(`
-    CREATE TABLE IF NOT EXISTS clean.engine_runs (
-      id SERIAL PRIMARY KEY,
-      shop_domain TEXT NOT NULL,
-      input JSONB NOT NULL,
-      output JSONB NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await query(`
     CREATE TABLE IF NOT EXISTS clean.klaviyo_assets (
       id SERIAL PRIMARY KEY,
       shop_domain TEXT,
