@@ -36,6 +36,12 @@ const {
 } = require("./services/brandContextService");
 const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
+const {
+  upsertCampaign,
+  listCampaigns,
+  updateCampaign,
+  findCachedCopy,
+} = require("./services/campaignService");
 
 const router = express.Router();
 
@@ -197,13 +203,39 @@ router.post("/copy/generate", async (req, res) => {
       productType: p.productType || null,
       imageUrl: p.imageUrl || null,
     }));
-    const runId = latest?.runId || presented?.run_id || "norun";
-    const cacheKey = `${shopDomain}:${runId}:${playId}:${template?.id || "none"}`;
+    const runId = latest?.runId || presented?.run_id || null;
+    const resolvedTemplateId = template?.id || null;
+
+    // Generated copy is cached on the campaign row rather than in process
+    // memory, so it survives a restart — copy that silently changes between
+    // sessions reads as the product being unreliable. A rewrite (regenerate)
+    // always calls the model fresh, because it depends on the locked slots.
+    if (runId && !regenerate) {
+      const cached = await findCachedCopy({ shopDomain, runId, playId, templateId: resolvedTemplateId });
+      if (cached) {
+        res.json({ ok: true, available: true, ...cached, cached: true });
+        return;
+      }
+    }
 
     const result = await generateCampaignCopy({
       play, brandContext, template, products,
-      cacheKey, regenerate: Boolean(regenerate), lockedSlots: lockedSlots || null, steer: steer || null,
+      regenerate: Boolean(regenerate), lockedSlots: lockedSlots || null, steer: steer || null,
     });
+
+    if (result.available && runId) {
+      // Best-effort: a caching failure must never fail copy generation.
+      try {
+        await upsertCampaign({
+          shopDomain, runId, playId, templateId: resolvedTemplateId,
+          copy: {
+            copy: result.copy,
+            fallback_slots: result.fallback_slots,
+            playbook_version: result.playbook_version,
+          },
+        });
+      } catch (_) {}
+    }
 
     // CA-5: resolve featured_product_id → { title, imageUrl } for the image block.
     if (result.available && result.copy?.featured_product_id) {
@@ -452,6 +484,48 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
     res.json({ ok: true, campaignId, sendJob });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
+// Campaign persistence. The frontend still keeps its own state in this phase;
+// these endpoints give it somewhere durable to move to next.
+router.post("/campaigns", async (req, res) => {
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const { runId, playId, status, templateId, copy } = req.body;
+    const campaign = await upsertCampaign({ shopDomain, runId, playId, status, templateId, copy });
+    res.json({ ok: true, campaign });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// Every campaign for this shop, across every run — newest first. Pass ?runId= to
+// scope to one run.
+router.get("/campaigns/:shopDomain", async (req, res) => {
+  try {
+    const campaigns = await listCampaigns(req.params.shopDomain, { runId: req.query.runId || null });
+    res.json({ ok: true, campaigns });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+router.patch("/campaigns/:id", async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const campaign = await updateCampaign(id, req.body || {});
+    if (!campaign) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+    res.json({ ok: true, campaign });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
   }
 });
 

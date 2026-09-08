@@ -210,6 +210,73 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS engine_audiences_play
       ON clean.engine_audiences (run_id, play_id);
   `);
+
+  // A campaign is one play the merchant acted on, in one run. Rows outlive the
+  // run that produced them: the engine emits a new slate every month, and the
+  // record of what was sent has to survive that. Nothing here is ever deleted.
+  //
+  // Keyed (shop_domain, run_id, play_id) so approving the same play twice
+  // updates one row instead of creating a second campaign for the same send.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.campaigns (
+      id SERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      run_id TEXT NOT NULL
+        REFERENCES clean.engine_run_snapshots(run_id),
+      play_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      template_id TEXT,
+      copy JSONB,
+      holdout_pct NUMERIC(4,3) NOT NULL DEFAULT 0.100,
+      audience_size INTEGER,
+      holdout_size INTEGER,
+      klaviyo_campaign_id TEXT,
+      approved_at TIMESTAMPTZ,
+      sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (shop_domain, run_id, play_id)
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS campaigns_by_shop
+      ON clean.campaigns (shop_domain, created_at DESC);
+  `);
+
+  // Which arm each customer landed in. Written at send time and never after —
+  // without this row the campaign cannot be measured later, because there is no
+  // other record of who was held back.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.campaign_recipients (
+      campaign_id INTEGER NOT NULL
+        REFERENCES clean.campaigns(id) ON DELETE CASCADE,
+      customer_id TEXT NOT NULL,
+      arm TEXT NOT NULL,
+      PRIMARY KEY (campaign_id, customer_id)
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS campaign_recipients_arm
+      ON clean.campaign_recipients (campaign_id, arm);
+  `);
+
+  // One row per campaign per window per arm. Recomputed as windows mature, so
+  // this is the one table here that is updated rather than append-only.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.campaign_measurements (
+      campaign_id INTEGER NOT NULL
+        REFERENCES clean.campaigns(id) ON DELETE CASCADE,
+      window_days INTEGER NOT NULL,
+      arm TEXT NOT NULL,
+      n_customers INTEGER NOT NULL,
+      n_orders INTEGER NOT NULL,
+      revenue NUMERIC(12,2) NOT NULL,
+      measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (campaign_id, window_days, arm)
+    );
+  `);
 }
 
 module.exports = { initSchema };
