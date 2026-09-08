@@ -1,23 +1,29 @@
 // Audience resolution for the send preview.
 //
 // CONTRACT (DS-adjudicated 2026-08-21): the send audience is the ENGINE's
-// decision, not an app re-derivation. Membership = the per-play audience CSV the
-// engine materialized (customer_id list, keyed by audience_definition_id via the
-// manifest, matched by play_id). The DB is used ONLY to hydrate email for those
-// ids — never to SELECT who is in the audience. This traces every recipient to
+// decision, not an app re-derivation. Membership = the per-play customer_id list
+// the engine materialized, keyed by audience_definition_id and matched by
+// play_id. The DB is used ONLY to hydrate email for those ids — never to SELECT
+// who is in the audience. This traces every recipient to
 // (run_id, audience_definition_id) per RULE B.
+//
+// Phase 1 note: that list now comes from clean.engine_audiences instead of
+// reading the engine's CSV off disk. This changes WHERE the engine's decision is
+// read back from, never HOW it is made — the rows are a verbatim copy of the
+// engine's own materialized CSV, written once at run time. The container
+// filesystem the CSVs live on does not survive a restart, which silently turned
+// a sendable audience into "not materialized". Never replace this with a SELECT
+// over clean.customers: re-deriving membership is precisely what R4 forbids.
 //
 // Guards (DS-locked, non-negotiable):
 //  R1: honor audience_materialization_status. != MATERIALIZED => typed absence
 //      ("no auditable audience this run"), NEVER a DB fallback.
-//  R2: never surface aov_individual (hardcoded 0.0) or CSV predicted_segment as a
+//  R2: never surface aov_individual (hardcoded 0.0) or predicted_segment as a
 //      merchant figure. Preview shows count + play identity only.
 //  R3: consent is NOT gated here — Klaviyo enforces consent at send (founder
 //      decision 2026-08-21). We hydrate emails and hand off; we do not filter.
 //  R4: no audienceMode() / heuristic thresholds. Re-deriving membership is the bug.
 
-const fs = require("fs/promises");
-const path = require("path");
 const { query } = require("../db");
 const { readLatestRun } = require("./atulEngineService");
 
@@ -28,33 +34,21 @@ const { readLatestRun } = require("./atulEngineService");
 // distinction. SUPPRESSED_SUBSTRATE_REFUSED / NOT_MATERIALIZED are NOT sendable.
 const SENDABLE_STATUSES = new Set(["MATERIALIZED", "MATERIALIZED_UNRANKED"]);
 
-// Parse the customer_id column from an engine audience CSV. Header is
-// `customer_id,aov_individual,predicted_segment,rank_score`. We read ONLY
-// customer_id (R2: never surface aov/segment). Returns an array of ids.
-function parseCustomerIds(csvText) {
-  const lines = String(csvText || "").split(/\r?\n/).filter((l) => l.trim() !== "");
-  if (lines.length <= 1) return []; // header-only or empty
-  const header = lines[0].split(",").map((h) => h.trim());
-  const idIdx = header.indexOf("customer_id");
-  if (idIdx === -1) return [];
-  const ids = [];
-  for (let i = 1; i < lines.length; i += 1) {
-    const cols = lines[i].split(",");
-    const id = (cols[idIdx] || "").trim();
-    if (id) ids.push(id);
-  }
-  return ids;
-}
-
-// Find the manifest audience entry for a play and return { status, csvPath }.
-function audienceEntryForPlay(manifest, manifestPath, playId) {
-  const audiences = manifest?.artifacts?.audiences || [];
-  const entry = audiences.find((a) => a.play_id === playId);
-  if (!entry) return null;
+// The engine's materialized membership for one play of one run, as stored at
+// run time. Returns null when the run produced no audience for this play.
+async function audienceEntryForPlay(runId, playId) {
+  const { rows } = await query(
+    `SELECT audience_definition_id, materialization_status, customer_ids
+       FROM clean.engine_audiences
+      WHERE run_id = $1 AND play_id = $2
+      LIMIT 1`,
+    [runId, playId]
+  );
+  if (!rows.length) return null;
   return {
-    status: entry.audience_materialization_status || null,
-    csvPath: path.resolve(path.dirname(manifestPath), entry.path),
-    audienceDefinitionId: entry.audience_definition_id || null,
+    status: rows[0].materialization_status || null,
+    audienceDefinitionId: rows[0].audience_definition_id || null,
+    customerIds: rows[0].customer_ids || [],
   };
 }
 
@@ -123,11 +117,11 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
   }
 
   const latest = await readLatestRun({ shopDomain });
-  if (!latest?.manifest || !latest?.manifestPath) {
+  if (!latest?.runId) {
     return { count: 0, recipients: [], materialized: false, status: null, reason: "no_run" };
   }
 
-  const entry = audienceEntryForPlay(latest.manifest, latest.manifestPath, playId);
+  const entry = await audienceEntryForPlay(latest.runId, playId);
   if (!entry) {
     return { count: 0, recipients: [], materialized: false, status: null, reason: "no_audience_for_play" };
   }
@@ -146,13 +140,7 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
     };
   }
 
-  let customerIds = [];
-  try {
-    customerIds = parseCustomerIds(await fs.readFile(entry.csvPath, "utf8"));
-  } catch (_) {
-    return { count: 0, recipients: [], materialized: false, status: entry.status, reason: "csv_unreadable" };
-  }
-
+  const customerIds = entry.customerIds;
   const recipients = await hydrateEmails(shopDomain, customerIds);
   // suppressedCount = engine members whose email we could not resolve in the DB
   // (data gap, not a consent decision — R3 leaves consent to Klaviyo).
@@ -171,6 +159,4 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
 
 module.exports = {
   resolveCampaignAudience,
-  // exported for tests
-  parseCustomerIds,
 };

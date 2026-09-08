@@ -187,7 +187,7 @@ router.post("/copy/generate", async (req, res) => {
       productType: p.productType || null,
       imageUrl: p.imageUrl || null,
     }));
-    const runId = presented?.run_id || latest?.manifest?.run_id || "norun";
+    const runId = latest?.runId || presented?.run_id || "norun";
     const cacheKey = `${shopDomain}:${runId}:${playId}:${template?.id || "none"}`;
 
     const result = await generateCampaignCopy({
