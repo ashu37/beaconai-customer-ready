@@ -300,20 +300,10 @@ async function callModel(userText) {
   return parts.join("");
 }
 
-// --- Cache (in-memory; TODO(auth): move to DB) ------------------------------
-
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const _cache = new Map(); // key -> { at, value }
-
-function cacheGet(key) {
-  const hit = _cache.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > CACHE_TTL_MS) { _cache.delete(key); return null; }
-  return hit.value;
-}
-function cacheSet(key, value) {
-  _cache.set(key, { at: Date.now(), value });
-}
+// Caching lives in the /copy/generate route now, on the campaign row. The
+// in-memory Map that used to sit here was lost on every restart, so copy
+// silently regenerated and changed under the merchant between sessions. This
+// service is pure: same inputs, one model call, no memory.
 
 // --- Public API -------------------------------------------------------------
 
@@ -325,23 +315,15 @@ function cacheSet(key, value) {
  * @param {object} args.brandContext     brand voice + product language
  * @param {object} args.template         selected starting template
  * @param {Array}  args.products         [{ id, title, productType }]
- * @param {string} [args.cacheKey]       ${shopDomain}:${runId}:${playId}:${templateId}
  * @param {boolean}[args.regenerate]     true = rewrite: skip cache read, LLM always called
  * @param {object} [args.lockedSlots]    edited slots to preserve (rewrite; adopt #1)
  * @param {string} [args.steer]          optional revision note (adopt #4)
  * @returns {Promise<{available:boolean, copy?:object, fallback_slots?:string[], playbook_version?:string}>}
  */
 async function generateCampaignCopy(args) {
-  const { play, brandContext, template, products, cacheKey, regenerate, lockedSlots, steer } = args || {};
+  const { play, brandContext, template, products, lockedSlots, steer } = args || {};
 
   if (!apiKeyPresent()) return { available: false };
-
-  // Initial generate is cacheable; a rewrite (regenerate) always calls fresh
-  // because it depends on the locked slots (adopt #1 / founder-locked cache rule).
-  if (cacheKey && !regenerate) {
-    const cached = cacheGet(cacheKey);
-    if (cached) return cached;
-  }
 
   const staticCopy = staticCopyFromPlay(play, template);
   const userText = userMessage({ play, brandContext, template, products, lockedSlots, steer });
@@ -364,11 +346,7 @@ async function generateCampaignCopy(args) {
   // slots as prompt context, so the result coheres with them). The FRONTEND
   // owns which slots are edited and applies the result to Suggested slots only,
   // never overwriting a merchant edit. So no server-side re-injection is needed.
-  const result = { available: true, copy, fallback_slots, playbook_version: PLAYBOOK_VERSION };
-  // Cache the latest result under the key for both initial and rewrite; a
-  // rewrite overwrites so a later cache-read serves the freshest copy.
-  if (cacheKey) cacheSet(cacheKey, result);
-  return result;
+  return { available: true, copy, fallback_slots, playbook_version: PLAYBOOK_VERSION };
 }
 
 // Map the play's static template_prompt into the slot shape the validator uses
