@@ -1435,7 +1435,14 @@ function App() {
   const productCount = counts.products ?? engineInput?.products?.length ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
-  const hasStoreSnapshot = productCount !== "—" && customerCount !== "—" && orderCount !== "—";
+  // Whether this store has any SYNCED DATA — not whether the snapshot request
+  // has resolved. /engine/input returns arrays, so an unsynced store yields
+  // length 0, not undefined; comparing against the "—" placeholder therefore
+  // read as "has data" for every store that had none. That suppressed first-run
+  // (which requires !hasStoreSnapshot), so the auto-sync never fired, and it
+  // marked the onboarding banner's Shopify step done without ever offering Sync.
+  const hasStoreSnapshot = [productCount, customerCount, orderCount]
+    .some((value) => typeof value === "number" && value > 0);
   // O3: first-run detection — Shopify connected, no snapshot, and the latest-run
   // check DEFINITIVELY returned no run. Never true while rehydrating, on a fetch
   // error, or once a run exists — so a refresh can't be mistaken for first-run.
