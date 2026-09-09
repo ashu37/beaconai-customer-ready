@@ -54,13 +54,38 @@ const {
   staleCampaignIds,
 } = require("./services/measurementService");
 const {
+  CampaignFrozen,
+  CampaignRevisionConflict,
   upsertCampaign,
   recordRecipients,
   cacheCopyOnCampaign,
+  freezeCampaignAtHandoff,
+  getCampaign,
   listCampaigns,
   updateCampaign,
   findCachedCopy,
 } = require("./services/campaignService");
+
+// One shape for both write conflicts, so the client can tell "someone else
+// changed this" from "this has already been sent" and recover rather than
+// retrying blindly. 409, never 500: neither is a server fault.
+function campaignConflictResponse(res, error) {
+  if (error instanceof CampaignRevisionConflict) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "revision",
+      expectedRevision: error.expectedRevision, campaign: error.campaign,
+    });
+    return true;
+  }
+  if (error instanceof CampaignFrozen) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "frozen",
+      fields: error.fields, campaign: error.campaign,
+    });
+    return true;
+  }
+  return false;
+}
 
 const router = express.Router();
 
@@ -518,7 +543,25 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // different, unverified one — and would silently re-send an older campaign
     // to today's audience. Falling back to the latest run happens HERE, before
     // the check, never inside audience resolution afterwards.
-    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
+    //
+    // An EXISTING campaign settles it outright: the campaign's own run is its
+    // origin, and the audience must come from there however old it is. Reading
+    // the latest run instead would send a reviewed campaign to a membership
+    // nobody reviewed.
+    const existingCampaign = req.body.campaignId
+      ? await getCampaign(Number.parseInt(req.body.campaignId, 10))
+      : null;
+    if (req.body.campaignId && !existingCampaign) {
+      res.status(404).json({ ok: false, error: `No campaign ${req.body.campaignId}` });
+      return;
+    }
+    if (existingCampaign && existingCampaign.shopDomain !== shopDomain) {
+      res.status(404).json({ ok: false, error: `No campaign ${req.body.campaignId}` });
+      return;
+    }
+    const runId = existingCampaign?.runId
+      || campaign.run_id || req.body.runId
+      || (await readLatestRun({ shopDomain }))?.runId || null;
 
     // Nothing built on input we cannot vouch for reaches a real customer. This
     // runs BEFORE the audience is resolved or anything is written, so a blocked
@@ -530,12 +573,23 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
     // what turns "these customers bought $X" into "this campaign earned $X".
-    const playId = campaign.play_id || campaign.id;
+    const playId = existingCampaign?.playId || campaign.play_id || campaign.id;
     let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
     let campaignRow = null;
 
     if (audience.materialized && playId) {
-      campaignRow = await upsertCampaign({ shopDomain, runId, playId });
+      campaignRow = existingCampaign || await upsertCampaign({
+        shopDomain, runId, playId,
+        displayName: campaign.play_name || campaign.name || null,
+        expectedRevision: req.body.expectedRevision,
+      });
+
+      // A campaign already handed off cannot be handed off again. Sending a
+      // changed version is a new campaign; re-running this one would rewrite the
+      // record of an email that has already gone out.
+      if (campaignRow.frozen) {
+        throw new CampaignFrozen(campaignRow, ["handoff"]);
+      }
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
@@ -555,8 +609,27 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
 
-    if (campaignRow && klaviyoCampaignId) {
-      await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+    // Freeze what was actually sent: the approved copy, the exact HTML that went
+    // to Klaviyo, and the audience as a reference plus a hash of its membership.
+    // From here the row records delivery state and nothing else changes.
+    if (campaignRow) {
+      campaignRow = await freezeCampaignAtHandoff(campaignRow.id, {
+        approvedCopy: campaign,
+        renderedHtml: packageResult.html || packageResult.template?.html || null,
+        templateVersion: campaign.template_id || campaign.templateId || null,
+        audienceRef: {
+          runId,
+          audienceDefinitionId: audience.audienceDefinitionId || null,
+          memberCount: audience.memberCount ?? null,
+          treated: split.treated.length,
+          holdout: split.holdout.length,
+          holdoutPct: split.holdoutPct,
+        },
+        customerIds: (audience.recipients || []).map((r) => r.customerId),
+      });
+      if (klaviyoCampaignId) {
+        campaignRow = await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+      }
     }
 
     await saveKlaviyoAsset({
@@ -578,6 +651,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
+      campaign_record: campaignRow,
       inputProvenance: provenance.provenance,
       syncRunId: provenance.syncRunId,
       template: packageResult.template,
@@ -597,6 +671,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       });
       return;
     }
+    if (campaignConflictResponse(res, error)) return;
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
@@ -646,12 +721,17 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
 router.post("/campaigns", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const { runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct } = req.body;
+    const {
+      runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+      holdoutPct, displayName, expectedRevision,
+    } = req.body;
     const campaign = await upsertCampaign({
-      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct,
+      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+      holdoutPct, displayName, expectedRevision,
     });
     res.json({ ok: true, campaign });
   } catch (error) {
+    if (campaignConflictResponse(res, error)) return;
     res.status(400).json({ ok: false, error: error.message });
   }
 });
@@ -681,6 +761,7 @@ router.patch("/campaigns/:id", async (req, res) => {
     }
     res.json({ ok: true, campaign });
   } catch (error) {
+    if (campaignConflictResponse(res, error)) return;
     res.status(400).json({ ok: false, error: error.message });
   }
 });

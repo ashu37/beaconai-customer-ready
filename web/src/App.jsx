@@ -679,6 +679,8 @@ function CampaignReviewPane({
   copyStatus,
   draftEdits,
   onRewrite,
+  saveState,
+  onRetrySave,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -737,6 +739,14 @@ function CampaignReviewPane({
     { field: "cta", label: "Button label", type: "input" },
   ];
   const startingName = selectedTemplate?.name || "—";
+  // Persistent, not a toast. An edit that failed to save must stay visible:
+  // the merchant is otherwise typing into a draft nothing is storing.
+  const saveLabel = {
+    saving: "Saving…",
+    saved: "Saved",
+    failed: "Not saved",
+    conflict: "Changed elsewhere",
+  }[saveState] || null;
 
   return (
     <div className="review-pane">
@@ -769,6 +779,14 @@ function CampaignReviewPane({
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
           <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
+          {saveLabel ? (
+            <span className={`save-state ${saveState}`} role="status">
+              {saveLabel}
+              {saveState === "failed" && onRetrySave ? (
+                <button type="button" className="link-btn" onClick={onRetrySave}>Retry</button>
+              ) : null}
+            </span>
+          ) : null}
         </span>
         {changeOpen ? (
           <div className="starting-copy-options">
@@ -1558,6 +1576,11 @@ function App() {
   const [selectedBriefingPlayId, setSelectedBriefingPlayId] = useState("");
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
   const [campaignPackages, setCampaignPackages] = useState([]);
+  // Per-play "saving" | "saved" | "failed" | "conflict". A silent write failure
+  // used to leave the merchant editing a draft that was no longer being stored.
+  const [saveStateByPlay, setSaveStateByPlay] = useState({});
+  // Revision each play's campaign was last read at, for optimistic checks.
+  const [revisionByPlay, setRevisionByPlay] = useState({});
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   // D6b: weekly series for the Orders / Customers sparklines.
   const [statsSeries, setStatsSeries] = useState(null);
@@ -1833,6 +1856,7 @@ function App() {
         const live = campaigns.filter((c) => c.status !== "dismissed");
 
         setCampaignIdByPlay(Object.fromEntries(campaigns.map((c) => [c.playId, c.id])));
+        setRevisionByPlay(Object.fromEntries(campaigns.map((c) => [c.playId, c.revision])));
         setRestoredApprovedPlayIds(live.map((c) => c.playId));
         setApprovedForSend(live.filter((c) => c.status === "approved" || c.status === "sent").map((c) => c.playId));
         setAuthorizedPackageIds(live.filter((c) => c.klaviyoCampaignId).map((c) => c.playId));
@@ -1893,36 +1917,86 @@ function App() {
   // its id for later patches.
   const saveCampaignState = useCallback(async (playId, fields) => {
     if (!currentRunId || !playId) return null;
+    setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saving" }));
     try {
-      const { campaign } = await api.saveCampaign({ runId: currentRunId, playId, ...fields });
+      const { campaign } = await api.saveCampaign({
+        runId: currentRunId, playId,
+        // Optimistic check: the server refuses the write if the row moved on
+        // since we last read it, rather than overwriting someone else's edit.
+        expectedRevision: revisionByPlay[playId],
+        ...fields,
+      });
       setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
+      setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
+      setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saved" }));
       return campaign;
-    } catch (_) {
-      // Persistence is best-effort against the UI: a failed write must not block
-      // the merchant mid-flow. The next mutation retries the whole field set.
+    } catch (error) {
+      // A conflict is not a failure to save — it is a save that would have
+      // destroyed a newer edit. Take the server's version as the new baseline so
+      // a retry is against reality, and tell the merchant rather than silently
+      // dropping either copy.
+      if (error.conflict && error.campaign) {
+        setRevisionByPlay((prev) => ({ ...prev, [playId]: error.campaign.revision }));
+        setSaveStateByPlay((prev) => ({ ...prev, [playId]: "conflict" }));
+        showToast({
+          message: error.conflict === "frozen"
+            ? "This campaign has already been sent, so its content can't be changed."
+            : "This campaign changed elsewhere. Reload before editing further.",
+          error: true,
+        });
+        return null;
+      }
+      // Anything else is a real write failure. Surfaced, not swallowed: the
+      // merchant is otherwise editing a draft that is no longer being stored.
+      setSaveStateByPlay((prev) => ({ ...prev, [playId]: "failed" }));
       return null;
     }
-  }, [currentRunId]);
+  }, [currentRunId, revisionByPlay]);
 
   // Copy edits fire on every keystroke, so they are debounced per play — one
   // request per pause, not per character. The whole edit object is sent rather
   // than a delta: "Restore suggested" works by DELETING a key, and a delta could
   // not express that.
   const editSaveTimers = useRef({});
+  const pendingEdits = useRef({});
   const scheduleDraftEditsSave = useCallback((playId, edits) => {
     clearTimeout(editSaveTimers.current[playId]);
+    pendingEdits.current[playId] = edits;
     editSaveTimers.current[playId] = setTimeout(() => {
       delete editSaveTimers.current[playId];
+      delete pendingEdits.current[playId];
       saveCampaignState(playId, { draftEdits: edits });
     }, 600);
   }, [saveCampaignState]);
 
   // Flush any pending edit when the workspace closes or the page unloads, so the
   // last few characters before navigating away are not lost.
-  useEffect(() => {
+  //
+  // This used to only clearTimeout the pending saves, which did the opposite of
+  // what the comment claimed: every debounced edit still in flight at unmount
+  // was discarded rather than written. The pending edits are kept in a ref so
+  // the flush can read them without re-running this effect on every keystroke.
+  const flushPendingEdits = useCallback(() => {
     const timers = editSaveTimers.current;
-    return () => { for (const id of Object.keys(timers)) clearTimeout(timers[id]); };
-  }, []);
+    for (const id of Object.keys(timers)) {
+      clearTimeout(timers[id]);
+      delete timers[id];
+      const edits = pendingEdits.current[id];
+      if (edits !== undefined) {
+        delete pendingEdits.current[id];
+        saveCampaignState(id, { draftEdits: edits });
+      }
+    }
+  }, [saveCampaignState]);
+
+  useEffect(() => {
+    const onHide = () => flushPendingEdits();
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      flushPendingEdits();
+    };
+  }, [flushPendingEdits]);
 
   // O3: auto-start the first-run pipeline once per shop. The localStorage guard
   // prevents a page refresh from re-running a full sync — without it, every
@@ -2325,7 +2399,7 @@ function App() {
         suppression: STANDARD_SUPPRESSIONS_NOTE,
       },
     ]);
-    saveCampaignState(playId, { status: "draft" });
+    saveCampaignState(playId, { status: "draft", displayName: play.play_name || playId });
     showToast({
       message: "Added to Campaigns",
       actionLabel: "Review →",
@@ -2339,9 +2413,24 @@ function App() {
   }
 
   async function createCampaignTemplateInKlaviyo(campaignDraft) {
+    // A handoff has to carry a SAVED revision. Anything still sitting in the
+    // debounce would otherwise be in the email the merchant is looking at but
+    // not in the record of what was approved — and once handed off, that record
+    // is frozen and cannot be corrected.
+    flushPendingEdits();
+    if (saveStateByPlay[campaignDraft.id] === "failed") {
+      showToast({ message: "This campaign's last edit didn't save. Retry before sending.", error: true });
+      return;
+    }
+
     setPublishingCampaignId(campaignDraft.id);
     try {
-      const result = await api.createSendPackage(campaignDraft);
+      const result = await api.createSendPackage({
+        ...campaignDraft,
+        // Identify the campaign so the server resolves the audience from its
+        // ORIGIN run rather than whatever the latest run happens to be.
+        campaignId: campaignIdByPlay[campaignDraft.id],
+      });
       const templateId = result.template?.data?.id;
       const listId = result.list?.data?.id;
       const campaignId = result.klaviyoCampaign?.data?.id;
@@ -2822,6 +2911,8 @@ function App() {
                                 agentCopy={agentCopyByPlay[reviewPlay.id] || null}
                                 copyStatus={copyStatusByPlay[reviewPlay.id] || null}
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
+                                saveState={saveStateByPlay[reviewPlay.id]}
+                                onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
                             ) : (

@@ -616,3 +616,10 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 @media (max-width: 640px) {
   .data-state-banner { flex-direction: column; align-items: stretch; }
 }
+
+/* Ticket B: persistent save state for a campaign draft. A failed write has to
+   stay on screen — a toast that fades leaves the merchant typing into nothing. */
+.save-state { margin-left: 10px; font-size: 12px; color: var(--muted); }
+.save-state.saved { color: #2f7a4d; }
+.save-state.failed, .save-state.conflict { color: #a4402c; font-weight: 600; }
+.save-state .link-btn { margin-left: 6px; }

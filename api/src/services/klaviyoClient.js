@@ -133,19 +133,24 @@ function campaignHtml(campaign) {
 async function createTemplate(privateKey, campaign) {
   const client = createKlaviyoClient(privateKey);
 
+  // Rendered once and returned alongside the response, so the caller can freeze
+  // the EXACT html that was pushed. Re-rendering it afterwards would be a second
+  // call that could differ — which defeats the point of keeping a record of what
+  // was sent.
+  const html = campaignHtml(campaign);
   const payload = {
     data: {
       type: "template",
       attributes: {
         name: campaignTemplateName(campaign),
         editor_type: "CODE",
-        html: campaignHtml(campaign),
+        html,
       },
     },
   };
 
   const response = await client.post("/templates", payload);
-  return response.data;
+  return { ...response.data, html };
 }
 
 async function createList(privateKey, name) {
@@ -270,6 +275,8 @@ async function createCampaignSendPackage(privateKey, campaign, audience) {
 
   return {
     template,
+    // The exact html pushed to Klaviyo, for the campaign record.
+    html: template?.html || null,
     list,
     importJob,
     campaign: klaviyoCampaign,
