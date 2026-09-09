@@ -1,4 +1,4 @@
-const { query } = require("./db");
+const { pool, query } = require("./db");
 
 async function initSchema() {
   await query(`CREATE SCHEMA IF NOT EXISTS raw;`);
@@ -477,132 +477,175 @@ async function initSchema() {
   // So the zone is not assumed. It is recovered per row from that row's own
   // `raw` payload, which retains the original offset. Rows whose payload lacks
   // the field cannot be recovered and are FLAGGED rather than quietly rewritten.
-  const needsTimestamptz = await query(`
-    SELECT data_type FROM information_schema.columns
-     WHERE table_schema = 'clean' AND table_name = 'orders' AND column_name = 'processed_at'
-  `);
-  const migrating = needsTimestamptz.rows[0]?.data_type === "timestamp without time zone";
-
-  if (migrating) {
-    // Back up first. The re-derivation below rewrites values, and a migration
-    // that rewrites dates must leave the originals readable.
-    await query(`
-      CREATE TABLE IF NOT EXISTS clean.orders_date_backup (
-        id TEXT PRIMARY KEY,
-        shop_domain TEXT,
-        created_at_naive TIMESTAMP,
-        processed_at_naive TIMESTAMP,
-        cancelled_at_naive TIMESTAMP,
-        backed_up_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    await query(`
-      INSERT INTO clean.orders_date_backup
-        (id, shop_domain, created_at_naive, processed_at_naive, cancelled_at_naive)
-      SELECT id, shop_domain, created_at, processed_at, cancelled_at FROM clean.orders
-      ON CONFLICT (id) DO NOTHING;
-    `);
-  }
-
-  // AT TIME ZONE 'UTC' here is a PLACEHOLDER, not a claim: it preserves the
-  // stored digits exactly while giving the column a type that can hold an
-  // instant. The re-derivation immediately after is what establishes the true
-  // zone; anything it cannot reach keeps these digits and is flagged.
+  // ATOMIC. Every step below runs on one connection inside one transaction.
+  // Postgres has transactional DDL, so the ALTERs roll back with the data.
   //
-  // Each column is guarded by its CURRENT type, and must be. Run against a
-  // column that is already TIMESTAMPTZ, `x AT TIME ZONE 'UTC'` converts it back
-  // to a naive UTC wall clock and the assignment then re-reads that in the
-  // session's zone — so an unguarded ALTER shifts every date by the server's
-  // offset on every single startup. initSchema runs on every boot.
-  for (const [table, column] of [
-    ["orders", "created_at"],
-    ["orders", "processed_at"],
-    ["orders", "cancelled_at"],
-    ["customers", "created_at"],
-    ["refunds", "created_at"],
-    ["shop", "updated_at"],
-  ]) {
-    const current = await query(
-      `SELECT data_type FROM information_schema.columns
-        WHERE table_schema = 'clean' AND table_name = $1 AND column_name = $2`,
-      [table, column]
-    );
-    if (current.rows[0]?.data_type !== "timestamp without time zone") continue;
-    await query(`
-      ALTER TABLE clean.${table}
-        ALTER COLUMN ${column} TYPE TIMESTAMPTZ
-        USING ${column} AT TIME ZONE 'UTC';
+  // It has to be atomic because the "already migrated?" check keys off the
+  // column TYPE. If the process died after the ALTERs but before the
+  // re-derivation, the columns would be timestamptz holding placeholder digits,
+  // and every subsequent boot would see timestamptz, conclude the migration was
+  // done, and skip the re-derivation forever — silent corruption that a restart
+  // could never repair.
+  const client = await pool.connect();
+  let migrationReport = null;
+  try {
+    await client.query("BEGIN");
+    const q = (text, params) => client.query(text, params);
+
+    const needsTimestamptz = await q(`
+      SELECT data_type FROM information_schema.columns
+       WHERE table_schema = 'clean' AND table_name = 'orders' AND column_name = 'processed_at'
     `);
+    const migrating = needsTimestamptz.rows[0]?.data_type === "timestamp without time zone";
+
+    if (migrating) {
+      // Back up first. The re-derivation below rewrites values, and a migration
+      // that rewrites dates must leave the originals readable.
+      await q(`
+        CREATE TABLE IF NOT EXISTS clean.orders_date_backup (
+          id TEXT PRIMARY KEY,
+          shop_domain TEXT,
+          created_at_naive TIMESTAMP,
+          processed_at_naive TIMESTAMP,
+          cancelled_at_naive TIMESTAMP,
+          backed_up_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      await q(`
+        INSERT INTO clean.orders_date_backup
+          (id, shop_domain, created_at_naive, processed_at_naive, cancelled_at_naive)
+        SELECT id, shop_domain, created_at, processed_at, cancelled_at FROM clean.orders
+        ON CONFLICT (id) DO NOTHING;
+      `);
+    }
+
+    // AT TIME ZONE 'UTC' here is a PLACEHOLDER, not a claim: it preserves the
+    // stored digits exactly while giving the column a type that can hold an
+    // instant. The re-derivation immediately after is what establishes the true
+    // zone; anything it cannot reach keeps these digits and is flagged.
+    //
+    // Each column is guarded by its CURRENT type, and must be. Run against a
+    // column that is already TIMESTAMPTZ, `x AT TIME ZONE 'UTC'` converts it
+    // back to a naive UTC wall clock and the assignment then re-reads that in
+    // the session's zone — so an unguarded ALTER shifts every date by the
+    // server's offset on every single startup. initSchema runs on every boot.
+    for (const [table, column] of [
+      ["orders", "created_at"],
+      ["orders", "processed_at"],
+      ["orders", "cancelled_at"],
+      ["customers", "created_at"],
+      ["refunds", "created_at"],
+      ["shop", "updated_at"],
+    ]) {
+      const current = await q(
+        `SELECT data_type FROM information_schema.columns
+          WHERE table_schema = 'clean' AND table_name = $1 AND column_name = $2`,
+        [table, column]
+      );
+      if (current.rows[0]?.data_type !== "timestamp without time zone") continue;
+      await q(`
+        ALTER TABLE clean.${table}
+          ALTER COLUMN ${column} TYPE TIMESTAMPTZ
+          USING ${column} AT TIME ZONE 'UTC';
+      `);
+    }
+
+    // Which rows carry a date we can stand behind.
+    //   rederived_from_raw     — the offset came from that row's own Shopify payload
+    //   unverified_assumed_utc — no payload field; digits kept, read as UTC, flagged
+    await q(`ALTER TABLE clean.orders ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+    await q(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+
+    if (migrating) {
+      // Ground truth: the row's own payload, offset intact. ::timestamptz honours
+      // that offset, so this yields the instant Shopify actually meant.
+      const orders = await q(`
+        UPDATE clean.orders
+           SET created_at   = CASE WHEN raw ? 'created_at'   AND raw->>'created_at'   IS NOT NULL
+                                   THEN (raw->>'created_at')::timestamptz   ELSE created_at   END,
+               processed_at = CASE WHEN raw ? 'processed_at' AND raw->>'processed_at' IS NOT NULL
+                                   THEN (raw->>'processed_at')::timestamptz ELSE processed_at END,
+               cancelled_at = CASE WHEN raw ? 'cancelled_at' AND raw->>'cancelled_at' IS NOT NULL
+                                   THEN (raw->>'cancelled_at')::timestamptz ELSE cancelled_at END,
+               date_provenance = CASE
+                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                   THEN 'rederived_from_raw'
+                 ELSE 'unverified_assumed_utc'
+               END
+         WHERE date_provenance IS NULL
+         RETURNING date_provenance;
+      `);
+      const customers = await q(`
+        UPDATE clean.customers
+           SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                                 THEN (raw->>'created_at')::timestamptz ELSE created_at END,
+               date_provenance = CASE
+                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                   THEN 'rederived_from_raw'
+                 ELSE 'unverified_assumed_utc'
+               END
+         WHERE date_provenance IS NULL
+         RETURNING date_provenance;
+      `);
+      await q(`
+        UPDATE clean.refunds
+           SET created_at = (raw->>'created_at')::timestamptz
+         WHERE raw ? 'created_at' AND raw->>'created_at' IS NOT NULL;
+      `);
+
+      // Any briefing already produced was computed over the pre-conversion dates,
+      // so its window boundaries may have sat a whole offset out. Those runs are
+      // not deleted — they stay readable as history — but they stop being
+      // sendable until the store is re-analysed, the same rule Ticket A applies
+      // to any recommendation whose input cannot be vouched for.
+      const affectedRuns = await q(`
+        UPDATE clean.engine_run_snapshots
+           SET input_provenance = 'predates_timezone_fix'
+         WHERE input_provenance = 'verified'
+         RETURNING run_id;
+      `);
+
+      // The published input snapshot is FROZEN normalized CSV rows, not a view
+      // over the clean tables — so converting those tables does not touch it.
+      // It still holds the old dates, and getActiveInputSnapshot feeds it
+      // straight to the engine, which would run a "verified" analysis on the
+      // very values this migration exists to correct.
+      //
+      // Rewriting a frozen snapshot in place would be re-deriving an artifact
+      // whose whole purpose is to be immutable. So instead the active pointer is
+      // dropped: the sync_runs rows and their snapshots stay for audit, no sync
+      // is active, and the store must re-sync before it can be analysed again.
+      const droppedPointers = await q(`DELETE FROM clean.active_sync RETURNING shop_domain;`);
+
+      migrationReport = {
+        orders: orders.rowCount,
+        customers: customers.rowCount,
+        unverified: orders.rows.filter((r) => r.date_provenance === "unverified_assumed_utc").length,
+        runs: affectedRuns.rowCount,
+        shops: droppedPointers.rowCount,
+      };
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 
-  // Which rows carry a date we can stand behind.
-  //   rederived_from_raw     — the offset came from that row's own Shopify payload
-  //   unverified_assumed_utc — no payload field; digits kept, read as UTC, flagged
-  await query(`ALTER TABLE clean.orders ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
-  await query(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
-
-  if (migrating) {
-    // Ground truth: the row's own payload, offset intact. ::timestamptz honours
-    // that offset, so this yields the instant Shopify actually meant.
-    const orders = await query(`
-      UPDATE clean.orders
-         SET created_at   = CASE WHEN raw ? 'created_at'   AND raw->>'created_at'   IS NOT NULL
-                                 THEN (raw->>'created_at')::timestamptz   ELSE created_at   END,
-             processed_at = CASE WHEN raw ? 'processed_at' AND raw->>'processed_at' IS NOT NULL
-                                 THEN (raw->>'processed_at')::timestamptz ELSE processed_at END,
-             cancelled_at = CASE WHEN raw ? 'cancelled_at' AND raw->>'cancelled_at' IS NOT NULL
-                                 THEN (raw->>'cancelled_at')::timestamptz ELSE cancelled_at END,
-             date_provenance = CASE
-               WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                 THEN 'rederived_from_raw'
-               ELSE 'unverified_assumed_utc'
-             END
-       WHERE date_provenance IS NULL
-       RETURNING date_provenance;
-    `);
-    const customers = await query(`
-      UPDATE clean.customers
-         SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                               THEN (raw->>'created_at')::timestamptz ELSE created_at END,
-             date_provenance = CASE
-               WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                 THEN 'rederived_from_raw'
-               ELSE 'unverified_assumed_utc'
-             END
-       WHERE date_provenance IS NULL
-       RETURNING date_provenance;
-    `);
-    await query(`
-      UPDATE clean.refunds
-         SET created_at = (raw->>'created_at')::timestamptz
-       WHERE raw ? 'created_at' AND raw->>'created_at' IS NOT NULL;
-    `);
-
-    // Any briefing already produced was computed over the pre-conversion dates,
-    // so its window boundaries may have sat a whole offset out. Those runs are
-    // not deleted — they stay readable as history — but they stop being
-    // sendable until the store is re-analysed, the same rule Ticket A applies
-    // to any recommendation whose input cannot be vouched for.
-    const affectedRuns = await query(`
-      UPDATE clean.engine_run_snapshots
-         SET input_provenance = 'predates_timezone_fix'
-       WHERE input_provenance = 'verified'
-       RETURNING run_id;
-    `);
-
-    const unverified = orders.rows.filter((r) => r.date_provenance === "unverified_assumed_utc").length;
-    if (orders.rowCount || customers.rowCount || affectedRuns.rowCount) {
-      // Loud: this changes dates that recommendations were computed over.
-      console.warn(
-        `[schema] converted order/customer dates to TIMESTAMPTZ. ` +
-        `${orders.rowCount} order row(s), ${customers.rowCount} customer row(s); ` +
-        `${unverified} order row(s) had no original payload date and are flagged ` +
-        `date_provenance='unverified_assumed_utc'. Originals kept in clean.orders_date_backup. ` +
-        `${affectedRuns.rowCount} existing engine run(s) were computed over the pre-conversion ` +
-        `dates and are now marked 'predates_timezone_fix': readable as history, blocked at handoff ` +
-        `until the store is re-synced and re-analysed.`
-      );
-    }
+  // Announced only after the transaction actually commits.
+  if (migrationReport && (migrationReport.orders || migrationReport.customers || migrationReport.runs)) {
+    console.warn(
+      `[schema] converted order/customer dates to TIMESTAMPTZ. ` +
+      `${migrationReport.orders} order row(s), ${migrationReport.customers} customer row(s); ` +
+      `${migrationReport.unverified} order row(s) had no original payload date and are flagged ` +
+      `date_provenance='unverified_assumed_utc'. Originals kept in clean.orders_date_backup. ` +
+      `${migrationReport.runs} existing engine run(s) were computed over the pre-conversion ` +
+      `dates and are now marked 'predates_timezone_fix': readable as history, blocked at handoff. ` +
+      `${migrationReport.shops} shop(s) had their active sync pointer cleared — their published ` +
+      `input snapshots still hold pre-conversion dates, so each must re-sync before a new analysis.`
+    );
   }
 }
 

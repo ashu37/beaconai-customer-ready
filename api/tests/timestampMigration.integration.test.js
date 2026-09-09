@@ -207,3 +207,126 @@ suite("briefings computed before the conversion stop being sendable", async () =
     return true;
   });
 });
+
+suite("a published snapshot from before the conversion cannot back a new analysis", async () => {
+  await db.resetDatabase();
+  await query(`DROP TABLE IF EXISTS clean.orders_date_backup`);
+  await query(`ALTER TABLE clean.orders ALTER COLUMN processed_at TYPE TIMESTAMP USING processed_at AT TIME ZONE 'UTC'`);
+  await query(`ALTER TABLE clean.orders DROP COLUMN IF EXISTS date_provenance`);
+
+  // A sync published BEFORE the conversion. Its input_snapshot is frozen
+  // normalized CSV rows — not a view over the clean tables — so converting
+  // those tables leaves the snapshot holding the old dates.
+  const sync = await query(
+    `INSERT INTO clean.sync_runs (shop_domain, status, input_snapshot)
+     VALUES ($1, 'complete', $2::jsonb) RETURNING id`,
+    [SHOP, JSON.stringify({
+      schemaVersion: "engine-input/1",
+      orderRows: [{ Name: "#9001", "Created at": "2025-11-16T00:15:35.000Z" }],
+      rowCount: 1,
+    })]
+  );
+  await query(
+    `INSERT INTO clean.active_sync (shop_domain, sync_run_id, started_at) VALUES ($1, $2, NOW())`,
+    [SHOP, sync.rows[0].id]
+  );
+  await query(
+    `INSERT INTO clean.orders (id, shop_domain, created_at, processed_at, total_price, raw)
+     VALUES ('s1', $1, '2025-11-15T16:15:35-08:00', '2025-11-15T16:15:35-08:00', 10,
+             '{"created_at":"2025-11-15T16:15:35-08:00"}'::jsonb)`,
+    [SHOP]
+  );
+
+  const { getActiveInputSnapshot, getSyncStatus, assertReadyForAnalysis } = require("../src/services/syncService");
+  assert.ok(await getActiveInputSnapshot(SHOP), "it was servable before the migration");
+
+  await initSchema();
+
+  // Without this the engine would run a "verified" analysis on exactly the
+  // values the migration exists to correct.
+  assert.equal(await getActiveInputSnapshot(SHOP), null, "no active input to serve");
+  const status = await getSyncStatus(SHOP);
+  assert.equal(status.ready, false, "a fresh sync is required");
+  assert.equal(status.active, null);
+  await assert.rejects(() => assertReadyForAnalysis(SHOP), { name: "SyncNotReadyError" });
+
+  // The run and its snapshot are kept for audit; only the pointer is dropped.
+  const kept = await query(
+    `SELECT status, input_snapshot IS NOT NULL AS has_snapshot FROM clean.sync_runs WHERE id = $1`,
+    [sync.rows[0].id]
+  );
+  assert.equal(kept.rows[0].status, "complete");
+  assert.equal(kept.rows[0].has_snapshot, true);
+});
+
+suite("a migration that fails partway leaves the database untouched", async () => {
+  await db.resetDatabase();
+  await query(`DROP TABLE IF EXISTS clean.orders_date_backup`);
+  await query(`ALTER TABLE clean.orders ALTER COLUMN processed_at TYPE TIMESTAMP USING processed_at AT TIME ZONE 'UTC'`);
+  await query(`ALTER TABLE clean.orders ALTER COLUMN created_at TYPE TIMESTAMP USING created_at AT TIME ZONE 'UTC'`);
+  await query(`ALTER TABLE clean.orders DROP COLUMN IF EXISTS date_provenance`);
+
+  await query(
+    `INSERT INTO clean.orders (id, shop_domain, created_at, processed_at, total_price, raw)
+     VALUES ('ok1', $1, '2025-11-15T16:15:35-08:00', '2025-11-15T16:15:35-08:00', 10,
+             '{"created_at":"2025-11-15T16:15:35-08:00"}'::jsonb)`,
+    [SHOP]
+  );
+  // A payload date Postgres cannot cast. The re-derivation UPDATE errors — after
+  // the ALTERs have already converted the columns.
+  await query(
+    `INSERT INTO clean.orders (id, shop_domain, created_at, processed_at, total_price, raw)
+     VALUES ('bad1', $1, '2025-11-15T16:15:35', '2025-11-15T16:15:35', 10,
+             '{"created_at":"the fifteenth of November"}'::jsonb)`,
+    [SHOP]
+  );
+  const sync = await query(
+    `INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete') RETURNING id`, [SHOP]
+  );
+  await query(`INSERT INTO clean.active_sync (shop_domain, sync_run_id, started_at) VALUES ($1, $2, NOW())`,
+    [SHOP, sync.rows[0].id]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run, sync_run_id, input_provenance)
+     VALUES ('run-partial', $1, 'store', '{}'::jsonb, $2, 'verified')`,
+    [SHOP, sync.rows[0].id]
+  );
+
+  await assert.rejects(() => initSchema(), /invalid input syntax for type timestamp/);
+
+  // The half-migrated state is the dangerous one: converted columns with the
+  // re-derivation skipped would look "already migrated" on every later boot and
+  // the placeholder digits would never be corrected.
+  const types = await query(
+    `SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_schema = 'clean' AND table_name = 'orders'
+        AND column_name IN ('created_at','processed_at')
+      ORDER BY column_name`
+  );
+  assert.deepEqual(types.rows.map((r) => r.data_type),
+    ["timestamp without time zone", "timestamp without time zone"],
+    "the ALTERs rolled back with the failed UPDATE");
+
+  const provenance = await query(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'clean' AND table_name = 'orders' AND column_name = 'date_provenance'`
+  );
+  assert.equal(provenance.rowCount, 0, "no half-applied column");
+
+  const backup = await query(
+    `SELECT to_regclass('clean.orders_date_backup') IS NOT NULL AS present`
+  );
+  assert.equal(backup.rows[0].present, false, "the backup table rolled back too");
+
+  const run = await query(`SELECT input_provenance FROM clean.engine_run_snapshots WHERE run_id = 'run-partial'`);
+  assert.equal(run.rows[0].input_provenance, "verified", "runs were not flagged");
+  const active = await query(`SELECT count(*)::int AS n FROM clean.active_sync WHERE shop_domain = $1`, [SHOP]);
+  assert.equal(active.rows[0].n, 1, "the active pointer was not dropped");
+
+  // Fix the offending row and the migration completes normally — a failure
+  // leaves a retryable state, not a wedged one.
+  await query(`UPDATE clean.orders SET raw = '{}'::jsonb WHERE id = 'bad1'`);
+  await initSchema();
+  const after = await query(`SELECT id, date_provenance FROM clean.orders ORDER BY id`);
+  assert.deepEqual(after.rows.map((r) => r.date_provenance),
+    ["unverified_assumed_utc", "rederived_from_raw"]);
+});
