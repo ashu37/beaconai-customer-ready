@@ -55,7 +55,11 @@ const {
 } = require("./services/measurementService");
 const {
   CampaignFrozen,
+  CampaignHandoffInProgress,
   CampaignRevisionConflict,
+  CampaignRevisionRequired,
+  releaseHandoffReservation,
+  reserveCampaignForHandoff,
   upsertCampaign,
   recordRecipients,
   cacheCopyOnCampaign,
@@ -70,6 +74,18 @@ const {
 // changed this" from "this has already been sent" and recover rather than
 // retrying blindly. 409, never 500: neither is a server fault.
 function campaignConflictResponse(res, error) {
+  if (error instanceof CampaignRevisionRequired) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "revision_required", campaign: error.campaign,
+    });
+    return true;
+  }
+  if (error instanceof CampaignHandoffInProgress) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "handoff_in_progress", campaign: error.campaign,
+    });
+    return true;
+  }
   if (error instanceof CampaignRevisionConflict) {
     res.status(409).json({
       ok: false, error: error.message, conflict: "revision",
@@ -584,29 +600,48 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         expectedRevision: req.body.expectedRevision,
       });
 
-      // A campaign already handed off cannot be handed off again. Sending a
-      // changed version is a new campaign; re-running this one would rewrite the
-      // record of an email that has already gone out.
-      if (campaignRow.frozen) {
-        throw new CampaignFrozen(campaignRow, ["handoff"]);
-      }
+      // Claim the campaign BEFORE anything external happens. Reading `frozen`
+      // here and calling Klaviyo afterwards left a window in which two requests
+      // both passed the check and both created a draft. The reservation is one
+      // conditional UPDATE, so exactly one can hold it — and it requires the
+      // revision the merchant reviewed, so a campaign edited since approval
+      // cannot be handed off as if it had been signed off.
+      campaignRow = await reserveCampaignForHandoff(campaignRow.id, req.body.expectedRevision);
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
       // fails we must not send: a campaign whose split was never recorded can
       // never be measured, and an unmeasurable send is worse than a late one.
       await recordRecipients(campaignRow.id, split);
-      await updateCampaign(campaignRow.id, {
+      // Quotes the revision the reservation just returned. This route holds the
+      // campaign, so it is not guessing — but it still names what it is writing
+      // over, the same rule every other caller follows.
+      campaignRow = await updateCampaign(campaignRow.id, {
         audienceSize: split.treated.length + split.holdout.length,
         holdoutSize: split.holdout.length,
         holdoutPct: split.holdoutPct,
+        expectedRevision: campaignRow.revision,
       });
     }
 
     // Only the treated arm goes to Klaviyo. The holdout is, by definition, the
     // group that receives nothing.
     const sendAudience = { ...audience, recipients: split.treated, count: split.treated.length };
-    const packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
+    let packageResult;
+    try {
+      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
+    } catch (providerError) {
+      // Hand the reservation back ONLY when nothing can have been created at the
+      // provider. `template` is the first call in the package, so a failure
+      // carrying no template means we never got that far and a retry is safe.
+      // Otherwise a draft may exist, releasing would let a second handoff create
+      // a duplicate, and the campaign is left reserved for reconciliation
+      // (Ticket D owns that path).
+      if (campaignRow && !providerError.partialPackage) {
+        await releaseHandoffReservation(campaignRow.id).catch(() => {});
+      }
+      throw providerError;
+    }
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
 
     // Freeze what was actually sent: the approved copy, the exact HTML that went

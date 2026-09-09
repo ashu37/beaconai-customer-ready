@@ -290,6 +290,11 @@ async function initSchema() {
 
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;`);
 
+  // Claimed at the START of a handoff, before any provider call. Two
+  // simultaneous sends cannot both hold it, which is what stops a duplicate
+  // draft being created while the first request is still in flight.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS handoff_reserved_at TIMESTAMPTZ;`);
+
   // Set at handoff. After this the approved content and audience are immutable:
   // editing them would rewrite the record of an email that has already left.
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ;`);

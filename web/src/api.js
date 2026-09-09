@@ -89,8 +89,11 @@ export const api = {
   // `campaign.campaignId`, when present, tells the server which existing
   // campaign this is — so the audience is resolved from that campaign's origin
   // run rather than the latest one.
-  createSendPackage: ({ campaignId, ...campaign } = {}) =>
-    request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaignId, campaign }) }),
+  createSendPackage: ({ campaignId, expectedRevision, ...campaign } = {}) =>
+    request("/klaviyo/campaigns/from-engine", {
+      method: "POST",
+      body: JSON.stringify({ shopDomain, campaignId, expectedRevision, campaign }),
+    }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
   generateCopy: ({ playId, templateId, regenerate, lockedSlots, steer } = {}) =>

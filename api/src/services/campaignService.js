@@ -38,6 +38,34 @@ class CampaignRevisionConflict extends Error {
  * change what the recipients got — it would only make the record disagree with
  * it. Sending again is a new campaign, not a mutation of this one.
  */
+/**
+ * An update to an existing campaign that did not say which revision it was
+ * based on. Refused rather than applied: a caller that has not read the row
+ * cannot know what it is about to overwrite.
+ */
+/**
+ * A handoff that arrived while another one for the same campaign was still in
+ * flight. Refused rather than queued: the other request may already have created
+ * a provider draft.
+ */
+class CampaignHandoffInProgress extends Error {
+  constructor(campaign) {
+    super("A send for this campaign is already in progress. Wait for it to finish before trying again.");
+    this.name = "CampaignHandoffInProgress";
+    this.statusCode = 409;
+    this.campaign = campaign;
+  }
+}
+
+class CampaignRevisionRequired extends Error {
+  constructor(campaign) {
+    super("This campaign already exists; saving it requires the revision you last read.");
+    this.name = "CampaignRevisionRequired";
+    this.statusCode = 409;
+    this.campaign = campaign;
+  }
+}
+
 class CampaignFrozen extends Error {
   constructor(campaign, fields) {
     super(
@@ -97,6 +125,7 @@ function rowToCampaign(row) {
     audienceRef: row.audience_ref,
     audienceHash: row.audience_hash,
     reviewedAt: row.reviewed_at,
+    handoffReservedAt: row.handoff_reserved_at,
     frozenAt: row.frozen_at,
     frozen: Boolean(row.frozen_at),
     approvedAt: row.approved_at,
@@ -111,10 +140,15 @@ function rowToCampaign(row) {
 // COALESCE on the optional columns so a partial upsert never blanks a field that
 // was already set — a later call carrying only a status must not erase the copy.
 //
-// `expectedRevision`, when given, makes the write conditional: it applies only
-// if the row still reads as the caller last saw it. Two people editing one
-// campaign, or one person with a stale tab, previously produced a last-write-
-// wins overwrite with nothing recording that an edit had been lost.
+// ONE statement. The revision and frozen checks are predicates on the write
+// itself, not a SELECT beforehand: with a separate check, two saves quoting the
+// same revision both read it, both pass, and both write — the later one silently
+// destroying the earlier. `ON CONFLICT ... DO UPDATE ... WHERE` makes the
+// database decide, so exactly one of any number of concurrent writers wins.
+//
+// An UPDATE therefore REQUIRES expectedRevision. A caller with no revision has
+// not read the row, so it cannot know what it is about to overwrite. Inserts
+// need none — there is nothing there to lose.
 async function upsertCampaign({
   shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
   holdoutPct, displayName, expectedRevision,
@@ -124,11 +158,8 @@ async function upsertCampaign({
   if (!playId) throw new Error("playId is required");
   if (status && !STATUSES.has(status)) throw new Error(`Unknown status: ${status}`);
 
-  const existing = await findCampaign({ shopDomain, runId, playId });
-  if (existing) {
-    assertRevision(existing, expectedRevision);
-    assertNotFrozen(existing, { templateId, copy, draftEdits, holdoutPct });
-  }
+  const expected = normalizeRevision(expectedRevision);
+  const touchesFrozen = touchedFrozenFields({ templateId, copy, draftEdits, holdoutPct });
 
   const { rows } = await query(
     `INSERT INTO clean.campaigns
@@ -163,6 +194,11 @@ async function upsertCampaign({
                        THEN NOW() ELSE clean.campaigns.sent_at
                      END,
        updated_at  = NOW()
+     -- $11 NULL fails this comparison, which is what refuses a revision-less
+     -- update. $12 lets delivery bookkeeping through on a frozen campaign while
+     -- refusing any write that touches what was sent.
+     WHERE clean.campaigns.revision = $11
+       AND (NOT $12 OR clean.campaigns.frozen_at IS NULL)
      RETURNING *`,
     [shopDomain, runId, playId, status || null, templateId || null,
      copy ? JSON.stringify(copy) : null,
@@ -170,27 +206,43 @@ async function upsertCampaign({
      klaviyoCampaignId || null,
      // NOT `|| null` — holdoutPct 0 means "send to everyone" and must survive.
      holdoutPct === undefined || holdoutPct === null ? null : Number(holdoutPct),
-     displayName || null]
+     displayName || null,
+     expected,
+     touchesFrozen]
   );
-  return rowToCampaign(rows[0]);
+
+  if (rows.length) return rowToCampaign(rows[0]);
+
+  // No row came back: the conflict target matched but the WHERE refused it.
+  // Read the row to say WHY — the caller needs to tell "someone else changed
+  // this" from "this has already been sent".
+  const current = await findCampaign({ shopDomain, runId, playId });
+  if (!current) throw new Error("Campaign write affected no row and none exists");
+  throw conflictFor(current, expected, touchesFrozen, { templateId, copy, draftEdits, holdoutPct });
 }
 
-function assertRevision(campaign, expectedRevision) {
-  if (expectedRevision === undefined || expectedRevision === null) return;
-  const expected = Number(expectedRevision);
-  if (!Number.isFinite(expected)) return;
-  if (campaign.revision !== expected) throw new CampaignRevisionConflict(campaign, expected);
+function normalizeRevision(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-// Refuses only the fields that describe what was sent, and only the ones this
-// write actually carries — so recording a Klaviyo id or a send failure against a
-// frozen campaign still works.
-function assertNotFrozen(campaign, patch) {
-  if (!campaign.frozenAt) return;
-  const touched = Object.keys(patch).filter(
-    (key) => patch[key] !== undefined && FROZEN_FIELDS.has(key)
-  );
-  if (touched.length) throw new CampaignFrozen(campaign, touched);
+function touchedFrozenFields(patch) {
+  return Object.keys(patch).some((key) => patch[key] !== undefined && FROZEN_FIELDS.has(key));
+}
+
+// Which of the two refusals applies. Frozen is reported first: "this has already
+// been sent" is the more actionable answer, and a stale revision against a
+// frozen campaign is not something a reload would fix.
+function conflictFor(current, expected, touchesFrozen, patch) {
+  if (touchesFrozen && current.frozenAt) {
+    return new CampaignFrozen(
+      current,
+      Object.keys(patch).filter((key) => patch[key] !== undefined && FROZEN_FIELDS.has(key))
+    );
+  }
+  if (expected === null) return new CampaignRevisionRequired(current);
+  return new CampaignRevisionConflict(current, expected);
 }
 
 async function findCampaign({ shopDomain, runId, playId }) {
@@ -211,16 +263,8 @@ async function findCampaign({ shopDomain, runId, playId }) {
  * who it went to cannot change.
  */
 async function freezeCampaignAtHandoff(id, {
-  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds, expectedRevision,
+  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds,
 }) {
-  const current = await getCampaign(id);
-  if (!current) return null;
-  assertRevision(current, expectedRevision);
-  // Re-freezing an already-frozen campaign is refused rather than ignored: it
-  // means a second handoff is being attempted against a record that already
-  // describes a completed one.
-  if (current.frozenAt) throw new CampaignFrozen(current, ["frozen_at"]);
-
   const { rows } = await query(
     `UPDATE clean.campaigns
         SET approved_copy    = COALESCE($2::jsonb, approved_copy, copy),
@@ -232,7 +276,10 @@ async function freezeCampaignAtHandoff(id, {
             frozen_at        = NOW(),
             revision         = revision + 1,
             updated_at       = NOW()
-      WHERE id = $1
+      -- Refuses a second freeze in the statement itself: a campaign already
+      -- frozen describes a completed handoff, and re-freezing would overwrite
+      -- the record of what actually went out.
+      WHERE id = $1 AND frozen_at IS NULL
       RETURNING *`,
     [
       id,
@@ -243,7 +290,11 @@ async function freezeCampaignAtHandoff(id, {
       hashAudience(customerIds),
     ]
   );
-  return rows.length ? rowToCampaign(rows[0]) : null;
+  if (rows.length) return rowToCampaign(rows[0]);
+
+  const current = await getCampaign(id);
+  if (!current) return null;
+  throw new CampaignFrozen(current, ["frozen_at"]);
 }
 
 // Every campaign for a shop, across every run — newest first. The point of the
@@ -284,10 +335,8 @@ async function updateCampaign(id, patch = {}) {
     throw new Error(`Unknown status: ${patch.status}`);
   }
 
-  const current = await getCampaign(id);
-  if (!current) return null;
-  assertRevision(current, patch.expectedRevision);
-  assertNotFrozen(current, patch);
+  const expected = normalizeRevision(patch.expectedRevision);
+  const touchesFrozen = touchedFrozenFields(patch);
 
   const sets = [];
   const values = [id];
@@ -306,9 +355,83 @@ async function updateCampaign(id, patch = {}) {
   sets.push("revision = revision + 1");
   sets.push("updated_at = NOW()");
 
+  // The guards are predicates on this UPDATE, not a SELECT before it. A write
+  // that touches what was sent requires the campaign to be unfrozen, and a write
+  // that touches content requires the caller to name the revision it read.
+  // Delivery bookkeeping — status, the Klaviyo id, measured counts — needs
+  // neither: it records what happened TO a send and must work afterwards.
+  const guards = [];
+  if (touchesFrozen) {
+    values.push(expected);
+    guards.push(`revision = $${values.length}`);
+    guards.push("frozen_at IS NULL");
+  } else if (expected !== null) {
+    values.push(expected);
+    guards.push(`revision = $${values.length}`);
+  }
+
   const { rows } = await query(
-    `UPDATE clean.campaigns SET ${sets.join(", ")} WHERE id = $1 RETURNING *`,
+    `UPDATE clean.campaigns SET ${sets.join(", ")}
+      WHERE id = $1${guards.length ? ` AND ${guards.join(" AND ")}` : ""}
+      RETURNING *`,
     values
+  );
+  if (rows.length) return rowToCampaign(rows[0]);
+
+  const current = await getCampaign(id);
+  if (!current) return null;
+  throw conflictFor(current, expected, touchesFrozen, patch);
+}
+
+/**
+ * Claim a campaign for handoff, atomically, BEFORE any external work.
+ *
+ * Reserving is a single conditional UPDATE, so two simultaneous handoffs cannot
+ * both proceed to create a provider draft. Checking `frozen` in JavaScript and
+ * then calling Klaviyo left a window in which both requests passed the check and
+ * both sent.
+ *
+ * The reservation also requires the revision the merchant reviewed: handing off
+ * a campaign whose content changed since they approved it would freeze a record
+ * of something nobody signed off.
+ */
+async function reserveCampaignForHandoff(id, expectedRevision) {
+  const expected = normalizeRevision(expectedRevision);
+  const { rows } = await query(
+    `UPDATE clean.campaigns
+        SET handoff_reserved_at = NOW(), revision = revision + 1, updated_at = NOW()
+      WHERE id = $1
+        AND frozen_at IS NULL
+        AND handoff_reserved_at IS NULL
+        AND ($2::int IS NULL OR revision = $2)
+      RETURNING *`,
+    [id, expected]
+  );
+  if (rows.length) return rowToCampaign(rows[0]);
+
+  const current = await getCampaign(id);
+  if (!current) return null;
+  if (current.frozenAt) throw new CampaignFrozen(current, ["handoff"]);
+  if (current.handoffReservedAt) {
+    throw new CampaignHandoffInProgress(current);
+  }
+  throw new CampaignRevisionConflict(current, expected);
+}
+
+/**
+ * Give the reservation back so the merchant can retry.
+ *
+ * ONLY safe when nothing was created at the provider. If a draft may exist,
+ * releasing would let a second handoff create a duplicate — so the caller keeps
+ * the reservation and the campaign is left needing reconciliation (Ticket D).
+ */
+async function releaseHandoffReservation(id) {
+  const { rows } = await query(
+    `UPDATE clean.campaigns
+        SET handoff_reserved_at = NULL, revision = revision + 1, updated_at = NOW()
+      WHERE id = $1 AND frozen_at IS NULL
+      RETURNING *`,
+    [id]
   );
   return rows.length ? rowToCampaign(rows[0]) : null;
 }
@@ -380,6 +503,10 @@ async function recordRecipients(campaignId, { treated = [], holdout = [] }) {
 module.exports = {
   CampaignFrozen,
   CampaignRevisionConflict,
+  CampaignHandoffInProgress,
+  CampaignRevisionRequired,
+  releaseHandoffReservation,
+  reserveCampaignForHandoff,
   findCampaign,
   freezeCampaignAtHandoff,
   hashAudience,

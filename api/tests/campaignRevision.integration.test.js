@@ -9,6 +9,8 @@ const { startApi } = require("./helpers/httpApp");
 const { runSync } = require("../src/services/syncService");
 const {
   freezeCampaignAtHandoff,
+  releaseHandoffReservation,
+  reserveCampaignForHandoff,
   getCampaign,
   hashAudience,
   listCampaigns,
@@ -80,7 +82,10 @@ suite("a campaign missing from the latest slate keeps its name", async () => {
     "history does not become nameless because a later slate omits the play");
 
   // And a later write that does not carry the name must not blank it.
-  const patched = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "sent" });
+  const patched = await upsertCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "sent",
+    expectedRevision: campaign.revision,
+  });
   assert.equal(patched.displayName, "Win back lapsed buyers");
 });
 
@@ -130,14 +135,131 @@ suite("the conflict reaches the client as a recoverable 409", async () => {
   assert.equal(response.body.campaign.revision, created.revision + 1);
 });
 
-suite("a save with no expected revision still works", async () => {
+suite("an insert needs no revision, but an update does", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+
+  // First greenlight: nothing exists, so there is nothing to overwrite.
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+  assert.equal(created.revision, 1);
+
+  // A second write with no revision is refused. A caller that has not read the
+  // row cannot know what it is about to destroy — and this is the shape a stale
+  // tab takes after a reload elsewhere.
+  await assert.rejects(
+    () => upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" }),
+    (error) => {
+      assert.equal(error.name, "CampaignRevisionRequired");
+      assert.equal(error.campaign.revision, 1);
+      return true;
+    }
+  );
+
+  const unchanged = await getCampaign(created.id);
+  assert.equal(unchanged.status, "draft", "the revision-less write applied nothing");
+
+  const updated = await upsertCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved",
+    expectedRevision: created.revision,
+  });
+  assert.equal(updated.revision, 2);
+  assert.equal(updated.status, "approved");
+});
+
+suite("only one of many concurrent writers wins", async () => {
   await db.resetDatabase();
   await seedRun("run-1");
   const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
-  // First greenlight and any caller that has not read a revision yet.
-  const again = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" });
-  assert.equal(again.revision, created.revision + 1);
-  assert.equal(again.status, "approved");
+
+  // The check used to be a SELECT before the write, so writers quoting the same
+  // revision all read it, all passed, and all wrote — the last one silently
+  // destroying the rest. The guard is now a predicate on the write itself, so
+  // the database picks exactly one.
+  const writers = 12;
+  const results = await Promise.allSettled(
+    Array.from({ length: writers }, (_, i) =>
+      upsertCampaign({
+        shopDomain: SHOP, runId: "run-1", playId: PLAY,
+        draftEdits: { subject: `writer-${i}` },
+        expectedRevision: created.revision,
+      })
+    )
+  );
+
+  const winners = results.filter((r) => r.status === "fulfilled");
+  assert.equal(winners.length, 1, `exactly one write applies, got ${winners.length}`);
+  for (const loser of results.filter((r) => r.status === "rejected")) {
+    assert.equal(loser.reason.name, "CampaignRevisionConflict");
+  }
+
+  const final = await getCampaign(created.id);
+  assert.equal(final.revision, created.revision + 1, "one increment, not twelve");
+  assert.deepEqual(final.draftEdits, winners[0].value.draftEdits,
+    "the row holds exactly what the winner wrote");
+});
+
+suite("only one of two simultaneous handoffs may proceed", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+
+  // Reserving is what makes this safe: it happens BEFORE any provider call, so
+  // two clicks cannot both reach Klaviyo and create two drafts.
+  const results = await Promise.allSettled([
+    reserveCampaignForHandoff(created.id, created.revision),
+    reserveCampaignForHandoff(created.id, created.revision),
+  ]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  const rejected = results.find((r) => r.status === "rejected");
+  assert.ok(["CampaignHandoffInProgress", "CampaignRevisionConflict"].includes(rejected.reason.name));
+
+  // A third attempt, arriving later with a correct revision, is still refused
+  // while the first is in flight.
+  const reserved = await getCampaign(created.id);
+  await assert.rejects(
+    () => reserveCampaignForHandoff(created.id, reserved.revision),
+    (error) => {
+      assert.equal(error.name, "CampaignHandoffInProgress");
+      return true;
+    }
+  );
+});
+
+suite("a handoff of a campaign edited since approval is refused", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+  // The merchant approved revision 1; an edit landed afterwards.
+  await upsertCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY,
+    draftEdits: { subject: "changed after approval" }, expectedRevision: created.revision,
+  });
+
+  await assert.rejects(
+    () => reserveCampaignForHandoff(created.id, created.revision),
+    (error) => {
+      assert.equal(error.name, "CampaignRevisionConflict");
+      return true;
+    }
+  );
+  const after = await getCampaign(created.id);
+  assert.equal(after.handoffReservedAt, null, "no reservation was taken");
+});
+
+suite("a released reservation can be retried", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+
+  const reserved = await reserveCampaignForHandoff(created.id, created.revision);
+  assert.ok(reserved.handoffReservedAt);
+
+  // Released only when nothing can have reached the provider.
+  const released = await releaseHandoffReservation(created.id);
+  assert.equal(released.handoffReservedAt, null);
+
+  const again = await reserveCampaignForHandoff(created.id, released.revision);
+  assert.ok(again.handoffReservedAt);
 });
 
 suite("a sent campaign's record cannot be rewritten", async () => {
