@@ -80,5 +80,8 @@ export const api = {
     request("/copy/generate", { method: "POST", body: JSON.stringify({ shopDomain, playId, templateId, regenerate, lockedSlots, steer }) }),
   sendCampaign: (campaignId) => request("/klaviyo/campaigns/send", { method: "POST", body: JSON.stringify({ shopDomain, campaignId }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
+  // Measured results: the program-level holdout comparison plus every sent
+  // campaign, across every run.
+  getResults: () => request(`/results/${encodeURIComponent(shopDomain)}`),
   getStatsSeries: (weeks = 12) => request(`/stats/series/${encodeURIComponent(shopDomain)}?weeks=${weeks}`),
 };

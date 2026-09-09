@@ -220,6 +220,93 @@ async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {})
   };
 }
 
+// The program-level number: everyone who received ANY campaign in the period,
+// against everyone held out of all of them.
+//
+// This is the only comparison here that is reliably well-powered, because it
+// pools every send. A single campaign's holdout may be a few hundred people; the
+// program's is every held-out customer across the quarter. It is also the number
+// that answers the question a merchant actually renews on — "is this software
+// making me money" — rather than "did campaign #3 work".
+//
+// It is valid only because the holdout is GLOBAL and STABLE (see
+// holdoutService): a customer is on the same side of the line in every campaign,
+// so the two groups stay clean when pooled. A customer who somehow appears on
+// both sides is counted as treated — the conservative direction, since it can
+// only shrink the measured lift.
+async function summarizeProgram(shopDomain, { sinceDays = 90 } = {}) {
+  const since = new Date(Date.now() - sinceDays * 86400000).toISOString();
+
+  const { rows } = await query(
+    `WITH members AS (
+       SELECT r.customer_id,
+              BOOL_OR(r.arm = 'treated') AS ever_treated
+         FROM clean.campaign_recipients r
+         JOIN clean.campaigns c ON c.id = r.campaign_id
+        WHERE c.shop_domain = $1
+          AND c.sent_at IS NOT NULL
+          AND c.sent_at >= $2
+        GROUP BY r.customer_id
+     ),
+     revenue AS (
+       SELECT m.customer_id,
+              m.ever_treated,
+              COALESCE(SUM(
+                GREATEST(
+                  COALESCE(o.total_price, 0)
+                  - COALESCE((SELECT SUM(f.transaction_amount)
+                                FROM clean.refunds f
+                               WHERE f.shop_domain = o.shop_domain
+                                 AND f.order_id = o.id), 0),
+                  0
+                )
+              ), 0) AS revenue
+         FROM members m
+         LEFT JOIN clean.orders o
+           ON (o.customer_id = m.customer_id OR o.email = m.customer_id)
+          AND o.shop_domain = $1
+          AND o.processed_at >= $2
+          AND o.cancelled_at IS NULL
+          AND COALESCE(o.test, false) = false
+        GROUP BY m.customer_id, m.ever_treated
+     )
+     SELECT ever_treated,
+            COUNT(*)::int        AS n_customers,
+            SUM(revenue)         AS revenue,
+            SUM(revenue*revenue) AS revenue_sq
+       FROM revenue
+      GROUP BY ever_treated`,
+    [shopDomain, since]
+  );
+
+  const pick = (everTreated) => {
+    const row = rows.find((r) => r.ever_treated === everTreated);
+    if (!row) return null;
+    return {
+      n_customers: Number(row.n_customers),
+      revenue: Number(row.revenue) || 0,
+      revenue_sq: Number(row.revenue_sq) || 0,
+      n_orders: 0,
+    };
+  };
+
+  const treated = pick(true);
+  const holdout = pick(false);
+  const { rows: campaignRows } = await query(
+    `SELECT COUNT(*)::int AS n FROM clean.campaigns
+      WHERE shop_domain = $1 AND sent_at IS NOT NULL AND sent_at >= $2`,
+    [shopDomain, since]
+  );
+
+  return {
+    sinceDays,
+    campaigns: Number(campaignRows[0]?.n || 0),
+    treated,
+    holdout,
+    comparison: compareArms(treated, holdout),
+  };
+}
+
 // Campaigns whose stored measurement has gone stale — sent, and either never
 // measured or last measured over a day ago. At this volume that is cheap enough
 // to run on read; it does not need a scheduler.
@@ -242,6 +329,7 @@ async function staleCampaignIds(shopDomain, { olderThanHours = 24 } = {}) {
 
 module.exports = {
   measureCampaign,
+  summarizeProgram,
   summarizeCampaign,
   staleCampaignIds,
   compareArms,

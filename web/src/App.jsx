@@ -1086,42 +1086,229 @@ function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFini
   );
 }
 
-function ResultsPage({ campaigns }) {
-  const sent = campaigns.filter((item) => item.status === "created" || item.klaviyoSendJobId);
-  const tracked = sent.length ? sent : campaigns;
-  if (!tracked.length) {
+function money(value, { cents = false } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const digits = cents || abs < 10 ? 2 : 0;
+  return `${n < 0 ? "-" : ""}$${abs.toLocaleString("en-US", {
+    minimumFractionDigits: digits, maximumFractionDigits: digits,
+  })}`;
+}
+
+// A range, drawn to scale, with the estimate marked and zero shown. The point of
+// the chart is that an interval crossing zero LOOKS like it crosses zero — the
+// reader should not have to parse small grey text under a large green number to
+// learn that the result is uncertain.
+function IntervalBar({ low, high, point, tone = "null" }) {
+  const span = Math.max(Math.abs(low), Math.abs(high), 1e-9) * 1.25;
+  const pos = (v) => `${((v + span) / (2 * span)) * 100}%`;
+  return (
+    <div className={`interval interval-${tone}`}>
+      <div className="interval-track">
+        <span className="interval-axis" />
+        <span className="interval-range" style={{ left: pos(low), width: `calc(${pos(high)} - ${pos(low)})` }} />
+        <span className="interval-zero" style={{ left: pos(0) }} />
+        <span className="interval-point" style={{ left: pos(point) }} />
+      </div>
+      <div className="interval-labels">
+        <span>{money(low)}</span>
+        <span>{money(high)}</span>
+      </div>
+    </div>
+  );
+}
+
+// The verdict vocabulary is deliberately small. "Worked" is claimed only when the
+// interval excludes zero; everything else says what is actually known.
+const VERDICTS = {
+  worked:          { label: "Worked",            tone: "pos" },
+  hurt:            { label: "Cost you money",    tone: "neg" },
+  no_effect_found: { label: "No effect found",   tone: "null" },
+  measuring:       { label: "Measuring",         tone: "warn" },
+  too_small:       { label: "Too small to tell", tone: "null" },
+  no_holdout:      { label: "Not measurable",    tone: "null" },
+  not_measured:    { label: "Not measured yet",  tone: "null" },
+};
+
+function VerdictChip({ verdict }) {
+  const v = VERDICTS[verdict] || VERDICTS.not_measured;
+  return <span className={`verdict verdict-${v.tone}`}><span className="verdict-dot" />{v.label}</span>;
+}
+
+// Program band: everyone who received any campaign against everyone held out of
+// all of them. The only comparison here that is reliably well-powered, because
+// it pools every send — and the one that answers "is this software making me
+// money" rather than "did campaign #3 work".
+function ProgramBand({ program }) {
+  const c = program?.comparison;
+  if (!program?.treated || !program?.holdout) return null;
+
+  if (!c) {
     return (
-      <div className="empty-panel">
-        Results appear here after your first campaign goes out. BeaconAI tracks the customers each campaign targeted and reports what they did over the following 30 days.
+      <div className="program-band">
+        <span className="program-label">Program to date · {program.campaigns} campaigns</span>
+        <p className="program-note">
+          Not enough customers in both groups yet to compare. This fills in as more campaigns go out.
+        </p>
       </div>
     );
   }
+
+  const positive = c.perCustomer.low > 0;
   return (
-    <div className="results-list">
-      {tracked.map((item) => {
-        const base = item.sentAt || item.approvedAt || item.builtAt;
-        const parsed = base ? new Date(base) : new Date();
-        const reportDate = new Date(parsed.getTime());
-        reportDate.setDate(reportDate.getDate() + 30);
-        const reportLabel = reportDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-        const sentLabel = base ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Pending send";
-        // D3: measurement progress — days elapsed of 30.
-        const daysElapsed = Math.max(0, (Date.now() - parsed.getTime()) / 86400000);
-        const progress = Math.min(1, daysElapsed / 30) * 100;
-        return (
-          <div key={item.id} className="results-row">
-            <div className="results-head">
-              <span className="results-icon"><Icon name="mail" size={18} /></span>
-              <div className="results-head-body">
-                <h3>{item.playTitle}</h3>
-                <span>{sentLabel} · {formatAudience(item.customers)} customers</span>
+    <div className="program-band">
+      <div className="program-top">
+        <div>
+          <span className="program-label">
+            Program to date · {program.campaigns} campaign{program.campaigns === 1 ? "" : "s"} · last {program.sinceDays} days
+          </span>
+          <div className={`program-figure ${positive ? "pos" : ""}`}>
+            {c.incremental.total >= 0 ? "+" : ""}{money(c.incremental.total)}
+          </div>
+          <div className="program-range">range {money(c.incremental.low)} to {money(c.incremental.high)}</div>
+        </div>
+        <IntervalBar
+          low={c.incremental.low} high={c.incremental.high} point={c.incremental.total}
+          tone={c.significant ? (c.perCustomer.difference > 0 ? "pos" : "neg") : "null"}
+        />
+      </div>
+      <p className="program-note">
+        Customers held out of every campaign earned you {money(c.perCustomer.holdout, { cents: true })} each.
+        Customers who received them earned {money(c.perCustomer.treated, { cents: true })}. The difference is what BeaconAI added.
+        {c.significant ? "" : " The range still crosses zero, so this isn't yet a difference we'd stand behind."}
+      </p>
+      <dl className="program-stats">
+        <div><dt>Received campaigns</dt><dd>{formatAudience(program.treated.n_customers)}</dd></div>
+        <div><dt>Held out</dt><dd>{formatAudience(program.holdout.n_customers)}</dd></div>
+        <div><dt>Per customer</dt><dd>{c.perCustomer.difference >= 0 ? "+" : ""}{money(c.perCustomer.difference, { cents: true })}</dd></div>
+      </dl>
+    </div>
+  );
+}
+
+function ResultRow({ result, playTitle, expanded, onToggle }) {
+  const w = (result.windows || []).find((x) => x.windowDays === 30) || (result.windows || [])[0];
+  const [windowDays, setWindowDays] = useState(30);
+  const shown = (result.windows || []).find((x) => x.windowDays === windowDays) || w;
+  if (!w) return null;
+
+  const c = shown.comparison;
+  const sentLabel = new Date(result.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const tone = VERDICTS[w.verdict]?.tone || "null";
+
+  return (
+    <>
+      <button type="button" className={`result-row ${expanded ? "open" : ""}`} onClick={onToggle}>
+        <span className="result-name">
+          <strong>{playTitle}</strong>
+          <span>
+            {sentLabel} · {formatAudience(result.audienceSize ?? w.treated?.n_customers)} sent
+            {result.holdoutSize ? ` · ${formatAudience(result.holdoutSize)} held` : ""}
+          </span>
+        </span>
+        <VerdictChip verdict={w.verdict} />
+        <span className="result-money">
+          {w.verdict === "measuring" ? (
+            <>—<small>day {w.daysElapsed} of {w.windowDays}</small></>
+          ) : c ? (
+            <>{c.incremental.total >= 0 ? "+" : ""}{money(c.incremental.total)}
+              <small>{money(c.incremental.low)} – {money(c.incremental.high)}</small></>
+          ) : <>—<small>no comparison</small></>}
+        </span>
+        {c ? (
+          <IntervalBar low={c.incremental.low} high={c.incremental.high} point={c.incremental.total} tone={tone} />
+        ) : <span />}
+      </button>
+
+      {expanded ? (
+        <div className="result-drawer">
+          {shown.treated && shown.holdout ? (
+            <div className="arms">
+              <div className="arm">
+                <span className="arm-name">Received</span>
+                <span className="arm-val">{money(shown.treated.revenue / Math.max(1, shown.treated.n_customers), { cents: true })}</span>
+                <span className="arm-sub">per customer · {shown.treated.n_orders} orders · {formatAudience(shown.treated.n_customers)} people</span>
+              </div>
+              <div className="arm held">
+                <span className="arm-name">Held out</span>
+                <span className="arm-val">{money(shown.holdout.revenue / Math.max(1, shown.holdout.n_customers), { cents: true })}</span>
+                <span className="arm-sub">per customer · {shown.holdout.n_orders} orders · {formatAudience(shown.holdout.n_customers)} people</span>
+              </div>
+              <div className="arm">
+                <span className="arm-name">Difference</span>
+                <span className={`arm-val ${c && c.significant ? (c.perCustomer.difference > 0 ? "pos" : "neg") : ""}`}>
+                  {c ? `${c.perCustomer.difference >= 0 ? "+" : ""}${money(c.perCustomer.difference, { cents: true })}` : "—"}
+                </span>
+                <span className="arm-sub">
+                  {c ? `95% range ${money(c.perCustomer.low, { cents: true })} to ${money(c.perCustomer.high, { cents: true })}` : "not comparable"}
+                </span>
               </div>
             </div>
-            <div className="results-progress"><span style={{ width: `${progress}%` }} /></div>
-            <p className="results-status">Measurement in progress — first report {reportLabel}.</p>
+          ) : null}
+
+          <div className="drawer-sect">
+            <h6>Measurement window</h6>
+            <div className="windows">
+              {(result.windows || []).map((x) => (
+                <button
+                  key={x.windowDays}
+                  type="button"
+                  className={`window ${x.windowDays === windowDays ? "on" : ""}`}
+                  onClick={() => setWindowDays(x.windowDays)}
+                >
+                  {x.windowDays} days{x.complete ? "" : " (open)"}
+                </button>
+              ))}
+            </div>
           </div>
-        );
-      })}
+
+          <p className="drawer-note">
+            {shown.verdict === "no_holdout"
+              ? "No group was held back for this send, so we can show what these customers did afterwards but not how much of it the campaign caused."
+              : shown.verdict === "measuring"
+                ? `Day ${shown.daysElapsed} of ${shown.windowDays}. We report a result once the window closes — a partial window would read as a verdict it hasn't earned.`
+                : shown.verdict === "no_effect_found"
+                  ? "The two groups are close enough that the difference could be chance. That's a real answer, not a missing one."
+                  : "Revenue is net of refunds and excludes cancelled and test orders. It is not profit — product costs aren't connected."}
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function ResultsPage({ results, program, loading, error, playTitleFor }) {
+  const [openId, setOpenId] = useState(null);
+
+  if (loading && !results) return <div className="empty-panel">Loading results…</div>;
+  if (error) return <div className="empty-panel">Couldn't load results. {error}</div>;
+  if (!results?.length) {
+    return (
+      <div className="empty-panel">
+        Results appear here after your first campaign goes out. For each one we compare the customers who
+        received it against the customers we held back — that difference is what the campaign earned.
+      </div>
+    );
+  }
+
+  return (
+    <div className="results-page">
+      <ProgramBand program={program} />
+      <div className="ledger-head">
+        <span className="program-label">Every campaign · nothing is removed</span>
+      </div>
+      <div className="ledger">
+        {results.map((result) => (
+          <ResultRow
+            key={result.campaignId}
+            result={result}
+            playTitle={playTitleFor(result.playId)}
+            expanded={openId === result.campaignId}
+            onToggle={() => setOpenId(openId === result.campaignId ? null : result.campaignId)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1313,6 +1500,9 @@ function App() {
   const pipelineHydratedRef = useRef(false);
   // playId -> campaigns.id, so a mutation can patch the row it already has.
   const [campaignIdByPlay, setCampaignIdByPlay] = useState({});
+  const [resultsData, setResultsData] = useState(null);
+  const [resultsLoading, setResultsLoading] = useState(false);
+  const [resultsError, setResultsError] = useState("");
 
   const counts = sync?.synced || {};
   const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
@@ -1526,6 +1716,21 @@ function App() {
     const stillPresent = selectableRows.some((row) => row.play.play_id === selectedBriefingPlayId);
     if (!stillPresent) setSelectedBriefingPlayId(selectableRows[0].play.play_id);
   }, [selectableRows, selectedBriefingPlayId]);
+
+  // Load measured results when the Results page is opened. The server
+  // recomputes anything stale on read, so this is also what refreshes the
+  // numbers as windows mature.
+  useEffect(() => {
+    if (activePage !== "results" || !shopDomain) return;
+    let cancelled = false;
+    setResultsLoading(true);
+    setResultsError("");
+    api.getResults()
+      .then((data) => { if (!cancelled) setResultsData(data); })
+      .catch((err) => { if (!cancelled) setResultsError(err.message); })
+      .finally(() => { if (!cancelled) setResultsLoading(false); });
+    return () => { cancelled = true; };
+  }, [activePage, shopDomain]);
 
   // Rehydrate pipeline state from the database once the run is known.
   //
@@ -2638,7 +2843,16 @@ function App() {
           )}
 
           {activePage === "results" && (
-            <ResultsPage campaigns={finalCampaigns} />
+            <ResultsPage
+              results={resultsData?.results}
+              program={resultsData?.program}
+              loading={resultsLoading}
+              error={resultsError}
+              playTitleFor={(playId) =>
+                workflowPlays.find((p) => (p.play_id || p.id) === playId)?.play_name
+                || finalCampaigns.find((c) => c.id === playId)?.playTitle
+                || titleizeId(playId)}
+            />
           )}
 
           {activePage === "setup" && (
