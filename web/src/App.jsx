@@ -1070,6 +1070,10 @@ function DataStateBanner({ syncStatus, busy, onSync }) {
     tone = "warn";
     title = "This is a sample briefing";
     detail = "It was generated from demo data, not from your store. Campaigns from it cannot be sent.";
+  } else if (analysis?.provenance === "predates_timezone_fix") {
+    tone = "warn";
+    title = "This briefing needs refreshing";
+    detail = "It was computed over order dates stored without a time zone, so its analysis windows may be shifted by up to a day. Refresh the briefing before sending anything from it.";
   } else if (analysis?.provenance === "legacy_unverified") {
     tone = "warn";
     title = "This briefing's data can't be verified";

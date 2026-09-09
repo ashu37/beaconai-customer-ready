@@ -1,6 +1,6 @@
 Name,Created at,Lineitem name,Lineitem quantity,Lineitem price,Lineitem discount,Financial Status,Fulfillment Status,Subtotal,Total Discount,Shipping,Taxes,Total,Currency,Customer Email,customer_id,Billing Name,Shipping Province,Shipping Country
-#1001,2026-01-04T09:30:00.000Z,"Serum ""Pro""",1,50,5,paid,fulfilled,80,5,7,6.4,88.4,USD,ada@example.com,cust-1,Ada Lovelace,NY,US
-#1001,2026-01-04T09:30:00.000Z,Cleanser,2,15,0,paid,fulfilled,80,5,7,6.4,88.4,USD,ada@example.com,cust-1,Ada Lovelace,NY,US
-"#1002, deluxe",2026-04-14T18:05:00.000Z,"Moisturizer
+#1001,2026-01-04T04:30:00,"Serum ""Pro""",1,50,5,paid,fulfilled,80,5,7,6.4,88.4,USD,ada@example.com,cust-1,Ada Lovelace,NY,US
+#1001,2026-01-04T04:30:00,Cleanser,2,15,0,paid,fulfilled,80,5,7,6.4,88.4,USD,ada@example.com,cust-1,Ada Lovelace,NY,US
+"#1002, deluxe",2026-04-14T14:05:00,"Moisturizer
 Travel",1,40,0,paid,,40,0,0,0,40,USD,grace@example.com,cust-2,Grace,,
-#1003,2026-06-01T12:00:00.000Z,Order,1,22.5,0,refunded,,22.5,0,0,0,22.5,USD,ada@example.com,cust-1,,,
+#1003,2026-06-01T08:00:00,Order,1,22.5,0,refunded,,22.5,0,0,0,22.5,USD,ada@example.com,cust-1,,,

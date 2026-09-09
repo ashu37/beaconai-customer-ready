@@ -400,15 +400,26 @@ async function reconcileGeneration(shopDomain, generation, client) {
 
 // D6b: weekly order counts + weekly first-time-customer counts for sparklines.
 // Read-only. A customer's first-time week is the week of their earliest order.
+//
+// Buckets in the SHOP's time zone. created_at is TIMESTAMPTZ, and
+// date_trunc('week', <timestamptz>) resolves in the session's TimeZone — so
+// without an explicit AT TIME ZONE the week an order falls into would depend on
+// where the API process happens to run. A merchant's week is their store's week.
 async function getWeeklySeries(shopDomain, weeks = 12) {
   const span = Math.max(1, Math.min(52, Number(weeks) || 12));
+  const zoneRow = await query(
+    `SELECT iana_timezone FROM clean.shop WHERE shop_domain = $1`, [shopDomain]
+  );
+  const zone = zoneRow.rows[0]?.iana_timezone || "UTC";
   const result = await query(
     `WITH bounded AS (
        SELECT id, customer_id, created_at,
-              date_trunc('week', created_at) AS week
+              date_trunc('week', created_at AT TIME ZONE $3) AS week
        FROM clean.orders
        WHERE shop_domain = $1
-         AND created_at >= date_trunc('week', now()) - ($2::int - 1) * interval '1 week'
+         AND created_at >= (
+               date_trunc('week', now() AT TIME ZONE $3) - ($2::int - 1) * interval '1 week'
+             ) AT TIME ZONE $3
          AND (test IS NULL OR test = false)
          AND cancelled_at IS NULL
      ),
@@ -431,7 +442,7 @@ async function getWeeklySeries(shopDomain, weeks = 12) {
      LEFT JOIN first_order fo ON fo.customer_id = b.customer_id
      GROUP BY b.week
      ORDER BY b.week ASC`,
-    [shopDomain, span]
+    [shopDomain, span, zone]
   );
   return result.rows.map((row) => ({
     week: row.week,

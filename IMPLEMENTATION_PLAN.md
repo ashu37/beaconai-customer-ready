@@ -33,6 +33,7 @@ Also defer billing automation, automatic re-sends, subscription LTV/profit, addi
 ## Delivery sequence
 
 1. **P0: reconcile current state and protect real data.** Diagnose the reported partial-sync incident; verify deployment access boundaries; add isolated fixtures.
+   **Status: OPEN.** Ticket A did not diagnose the incident and does not claim to have prevented its recurrence. What it does is contain the fallout: a sync now publishes whole or not at all, and every run predating verified sync — including any the incident produced — is `legacy_unverified`, readable as history and refused at handoff until the store is re-synced and re-analysed. The cause remains unestablished, and establishing it from logs and data is still required before the pilot. Until then, no recommendation produced before Ticket A may be sent.
 2. **P1: make one campaign trustworthy and sendable.** Sync publication, durable campaign state, branded email, clear evidence, and Klaviyo handoff. Fix essential layout along the way.
 3. **P2: make measurement valid from the first send.** Settle the program measurement protocol and record required assignments/timestamps. Correct existing Results semantics before exposure to merchants.
 4. **Launch the assisted pilot when the first-send gate passes.** P2 data collection must be ready; elaborate reporting need not be.
@@ -166,7 +167,7 @@ Log IDs, statuses, revisions and failure reasons needed to diagnose a run withou
 ## First-send acceptance gate
 
 - Merchant store access is isolated; demo and live data cannot be confused.
-- Order dates survive the database without a timezone shift. `clean.orders.created_at` / `processed_at` are `TIMESTAMP WITHOUT TIME ZONE`, so a stored date comes back offset by the server's zone and can move an order across an L7/L28/L56/L90 or week boundary. Found during Ticket A, out of its scope, and a blocker before a merchant sees a live recommendation because it changes the windows recommendations are computed over. Existing values must have their intended zone established — preferably re-derived from `raw.shopify_events` — not reinterpreted on assumption.
+- Order dates survive the database without a timezone shift, and analysis windows do not depend on where the API process runs. *(Satisfied. The clean date columns were `TIMESTAMP WITHOUT TIME ZONE`, so Postgres discarded Shopify's offset and the value was re-read in the reader's zone — moving orders across day, week and L7/L28/L56/L90 boundaries. Now `TIMESTAMPTZ`, with each existing row's zone recovered from its own stored payload and anything unrecoverable flagged rather than guessed. Briefings computed before the conversion are marked `predates_timezone_fix` and blocked at handoff.)*
 - Complete verified sync produces the briefing; induced partial failure cannot do so.
 - Merchant recognizes and approves the actual branded email.
 - Copy/audience/template survive refresh and new analysis.

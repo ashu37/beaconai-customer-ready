@@ -51,10 +51,43 @@ function money(value, fallback = "0") {
   return Number.isFinite(parsed) ? String(parsed) : fallback;
 }
 
-function dateValue(value) {
+// Format an instant as NAIVE WALL CLOCK in the shop's own time zone —
+// "2025-11-15T16:06:00", the shape a Shopify orders CSV export has and the
+// shape engine/tests/fixtures/synthetic/healthy_beauty_240d_orders.csv uses.
+//
+// The engine buckets these into days, weeks and L7/L28/L56/L90 windows, and a
+// merchant's "day" is their store's day. Emitting UTC instead would push every
+// late-afternoon order in a US store into tomorrow, moving orders across the
+// window boundaries the recommendations are computed on.
+//
+// Falls back to UTC when the shop has no recorded zone. That is a stated
+// assumption, not a silent one: buildEngineInputSnapshot records which was used.
+function shopLocalNaive(value, timeZone) {
   if (!value) return "";
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timeZone || "UTC",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+function isValidTimeZone(timeZone) {
+  if (!timeZone) return false;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone });
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function shippingAmount(order) {
@@ -107,13 +140,13 @@ function orderCreatedAt(order) {
   return order.processed_at || order.shopify_order_created_at || order.created_at;
 }
 
-function orderRows(input) {
+function orderRows(input, timeZone) {
   const rows = [];
   for (const order of input.orders || []) {
     for (const item of lineItemsForOrder(input, order)) {
       rows.push({
         "Name": order.name || order.id,
-        "Created at": dateValue(orderCreatedAt(order)),
+        "Created at": shopLocalNaive(orderCreatedAt(order), timeZone),
         "Lineitem name": item.title || item.raw?.title || item.raw?.name || "Product",
         "Lineitem quantity": item.quantity || item.raw?.quantity || 1,
         "Lineitem price": money(item.price || item.raw?.price),
@@ -137,7 +170,7 @@ function orderRows(input) {
   return rows;
 }
 
-// Coverage over a list of date strings. `known: false` when none is parseable:
+// Coverage over a list of instants. `known: false` when none is parseable:
 // unknown coverage is not verified coverage, and must never be reported as zero
 // days.
 function coverageFromDates(dates) {
@@ -190,9 +223,22 @@ function fetchedOrderCoverage(orders) {
 }
 
 function buildEngineInputSnapshot(input) {
-  const rows = orderRows(input);
+  const declared = input?.shop?.iana_timezone || null;
+  const timeZone = isValidTimeZone(declared) ? declared : "UTC";
+  const rows = orderRows(input, timeZone);
+
+  // Coverage is measured on the INSTANTS, never by re-parsing the CSV strings.
+  // Those strings are deliberately zone-less, so Date.parse would read them in
+  // whatever zone the process happens to run in and the covered period would
+  // depend on the server rather than the store.
+  const coverage = coverageFromDates((input.orders || []).map(orderCreatedAt));
+
   return {
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    // Which zone the CSV wall-clock is expressed in, and whether the shop
+    // actually declared it or we fell back.
+    timeZone,
+    timeZoneSource: isValidTimeZone(declared) ? "shop" : declared ? "invalid_fallback_utc" : "missing_fallback_utc",
     shop: input?.shop
       ? {
           shop_domain: input.shop.shop_domain || null,
@@ -206,7 +252,7 @@ function buildEngineInputSnapshot(input) {
     orderCount: (input.orders || []).length,
     customerCount: (input.customers || []).length,
     productCount: (input.products || []).length,
-    coverage: observedCoverage(rows),
+    coverage,
   };
 }
 
@@ -226,5 +272,6 @@ module.exports = {
   fetchedOrderCoverage,
   observedCoverage,
   orderRows,
+  shopLocalNaive,
   snapshotToCsv,
 };

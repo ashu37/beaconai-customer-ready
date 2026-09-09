@@ -484,8 +484,8 @@ async function getSyncStatus(shopDomain) {
 
   const analysisProvenance = !latestRun
     ? null
-    : latestRun.input_provenance === "fixture"
-      ? "fixture"
+    : latestRun.input_provenance === "fixture" || latestRun.input_provenance === "predates_timezone_fix"
+      ? latestRun.input_provenance
       : latestRun.sync_run_id == null
         ? "legacy_unverified"
         : active && latestRun.sync_run_id === active.id
@@ -554,8 +554,8 @@ async function getRunProvenance(runId) {
 
   const row = rows[0];
   const provenance =
-    row.input_provenance === "fixture"
-      ? "fixture"
+    row.input_provenance === "fixture" || row.input_provenance === "predates_timezone_fix"
+      ? row.input_provenance
       : row.sync_run_id == null
         ? "legacy_unverified"
         : row.active_sync_run_id === row.sync_run_id
@@ -593,6 +593,7 @@ async function getRunProvenance(runId) {
 const BLOCKED_HANDOFF_PROVENANCE = {
   fixture: "This recommendation was generated from sample data, not from this store. It cannot be sent to real customers.",
   legacy_unverified: "This recommendation was built from store data that predates verified sync, so its input cannot be confirmed as complete. Re-sync and refresh the briefing before sending.",
+  predates_timezone_fix: "This recommendation was computed over order dates that were stored without a time zone, so its analysis windows may be shifted by up to a day. Refresh the briefing before sending.",
   unknown_run: "The engine run behind this campaign is not on record, so the data it used cannot be confirmed. Refresh the briefing before sending.",
   foreign_run: "The engine run behind this campaign belongs to a different store. Refresh the briefing before sending.",
 };

@@ -448,6 +448,162 @@ async function initSchema() {
     ALTER TABLE clean.engine_run_snapshots
       ADD COLUMN IF NOT EXISTS input_provenance TEXT;
   `);
+
+  // ---------------------------------------------------------------------------
+  // Order/customer/refund dates: TIMESTAMP WITHOUT TIME ZONE -> TIMESTAMPTZ
+  //
+  // WHAT WAS WRONG. These columns were declared without a time zone, and
+  // Postgres IGNORES the offset when casting into such a column: both
+  // '2025-11-15T16:15:35-08:00' and '2025-11-15T16:15:35Z' stored the identical
+  // naked value 2025-11-15 16:15:35. node-postgres then read that back
+  // interpreted in the READER's zone, so the same row produced a different
+  // instant depending on where the process ran.
+  //
+  // Why it mattered: engineInputSnapshot projects these columns into the orders
+  // CSV the engine buckets into L7/L28/L56/L90 windows, getWeeklySeries buckets
+  // them by week, and measurementService compares processed_at against
+  // campaign sent_at (already TIMESTAMPTZ) — so a naive value was being
+  // silently coerced through the session zone on every attribution query. A
+  // whole-offset shift moves an order across a day, week, or window boundary.
+  //
+  // WHAT THE STORED DIGITS MEAN. The corruption was on READ, not write: the
+  // digits are the wall clock exactly as Shopify sent it, which for order
+  // timestamps is the SHOP's local time. Nothing was destroyed. But the digits
+  // alone cannot say which zone they belong to — a row written from a
+  // Z-suffixed string (seeds, fixtures) has UTC digits, one written from a real
+  // Shopify payload has shop-local digits. Guessing one rule for both would
+  // rewrite real history on an assumption.
+  //
+  // So the zone is not assumed. It is recovered per row from that row's own
+  // `raw` payload, which retains the original offset. Rows whose payload lacks
+  // the field cannot be recovered and are FLAGGED rather than quietly rewritten.
+  const needsTimestamptz = await query(`
+    SELECT data_type FROM information_schema.columns
+     WHERE table_schema = 'clean' AND table_name = 'orders' AND column_name = 'processed_at'
+  `);
+  const migrating = needsTimestamptz.rows[0]?.data_type === "timestamp without time zone";
+
+  if (migrating) {
+    // Back up first. The re-derivation below rewrites values, and a migration
+    // that rewrites dates must leave the originals readable.
+    await query(`
+      CREATE TABLE IF NOT EXISTS clean.orders_date_backup (
+        id TEXT PRIMARY KEY,
+        shop_domain TEXT,
+        created_at_naive TIMESTAMP,
+        processed_at_naive TIMESTAMP,
+        cancelled_at_naive TIMESTAMP,
+        backed_up_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await query(`
+      INSERT INTO clean.orders_date_backup
+        (id, shop_domain, created_at_naive, processed_at_naive, cancelled_at_naive)
+      SELECT id, shop_domain, created_at, processed_at, cancelled_at FROM clean.orders
+      ON CONFLICT (id) DO NOTHING;
+    `);
+  }
+
+  // AT TIME ZONE 'UTC' here is a PLACEHOLDER, not a claim: it preserves the
+  // stored digits exactly while giving the column a type that can hold an
+  // instant. The re-derivation immediately after is what establishes the true
+  // zone; anything it cannot reach keeps these digits and is flagged.
+  //
+  // Each column is guarded by its CURRENT type, and must be. Run against a
+  // column that is already TIMESTAMPTZ, `x AT TIME ZONE 'UTC'` converts it back
+  // to a naive UTC wall clock and the assignment then re-reads that in the
+  // session's zone — so an unguarded ALTER shifts every date by the server's
+  // offset on every single startup. initSchema runs on every boot.
+  for (const [table, column] of [
+    ["orders", "created_at"],
+    ["orders", "processed_at"],
+    ["orders", "cancelled_at"],
+    ["customers", "created_at"],
+    ["refunds", "created_at"],
+    ["shop", "updated_at"],
+  ]) {
+    const current = await query(
+      `SELECT data_type FROM information_schema.columns
+        WHERE table_schema = 'clean' AND table_name = $1 AND column_name = $2`,
+      [table, column]
+    );
+    if (current.rows[0]?.data_type !== "timestamp without time zone") continue;
+    await query(`
+      ALTER TABLE clean.${table}
+        ALTER COLUMN ${column} TYPE TIMESTAMPTZ
+        USING ${column} AT TIME ZONE 'UTC';
+    `);
+  }
+
+  // Which rows carry a date we can stand behind.
+  //   rederived_from_raw     — the offset came from that row's own Shopify payload
+  //   unverified_assumed_utc — no payload field; digits kept, read as UTC, flagged
+  await query(`ALTER TABLE clean.orders ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+  await query(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+
+  if (migrating) {
+    // Ground truth: the row's own payload, offset intact. ::timestamptz honours
+    // that offset, so this yields the instant Shopify actually meant.
+    const orders = await query(`
+      UPDATE clean.orders
+         SET created_at   = CASE WHEN raw ? 'created_at'   AND raw->>'created_at'   IS NOT NULL
+                                 THEN (raw->>'created_at')::timestamptz   ELSE created_at   END,
+             processed_at = CASE WHEN raw ? 'processed_at' AND raw->>'processed_at' IS NOT NULL
+                                 THEN (raw->>'processed_at')::timestamptz ELSE processed_at END,
+             cancelled_at = CASE WHEN raw ? 'cancelled_at' AND raw->>'cancelled_at' IS NOT NULL
+                                 THEN (raw->>'cancelled_at')::timestamptz ELSE cancelled_at END,
+             date_provenance = CASE
+               WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                 THEN 'rederived_from_raw'
+               ELSE 'unverified_assumed_utc'
+             END
+       WHERE date_provenance IS NULL
+       RETURNING date_provenance;
+    `);
+    const customers = await query(`
+      UPDATE clean.customers
+         SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                               THEN (raw->>'created_at')::timestamptz ELSE created_at END,
+             date_provenance = CASE
+               WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                 THEN 'rederived_from_raw'
+               ELSE 'unverified_assumed_utc'
+             END
+       WHERE date_provenance IS NULL
+       RETURNING date_provenance;
+    `);
+    await query(`
+      UPDATE clean.refunds
+         SET created_at = (raw->>'created_at')::timestamptz
+       WHERE raw ? 'created_at' AND raw->>'created_at' IS NOT NULL;
+    `);
+
+    // Any briefing already produced was computed over the pre-conversion dates,
+    // so its window boundaries may have sat a whole offset out. Those runs are
+    // not deleted — they stay readable as history — but they stop being
+    // sendable until the store is re-analysed, the same rule Ticket A applies
+    // to any recommendation whose input cannot be vouched for.
+    const affectedRuns = await query(`
+      UPDATE clean.engine_run_snapshots
+         SET input_provenance = 'predates_timezone_fix'
+       WHERE input_provenance = 'verified'
+       RETURNING run_id;
+    `);
+
+    const unverified = orders.rows.filter((r) => r.date_provenance === "unverified_assumed_utc").length;
+    if (orders.rowCount || customers.rowCount || affectedRuns.rowCount) {
+      // Loud: this changes dates that recommendations were computed over.
+      console.warn(
+        `[schema] converted order/customer dates to TIMESTAMPTZ. ` +
+        `${orders.rowCount} order row(s), ${customers.rowCount} customer row(s); ` +
+        `${unverified} order row(s) had no original payload date and are flagged ` +
+        `date_provenance='unverified_assumed_utc'. Originals kept in clean.orders_date_backup. ` +
+        `${affectedRuns.rowCount} existing engine run(s) were computed over the pre-conversion ` +
+        `dates and are now marked 'predates_timezone_fix': readable as history, blocked at handoff ` +
+        `until the store is re-synced and re-analysed.`
+      );
+    }
+  }
 }
 
 module.exports = { initSchema };
