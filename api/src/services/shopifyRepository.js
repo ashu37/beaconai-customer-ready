@@ -4,9 +4,24 @@ function json(value) {
   return value == null ? null : JSON.stringify(value);
 }
 
-async function saveRawShopifyData(shopDomain, data) {
+// Every write below goes through an injected executor rather than the pool
+// directly. Passing a pg client makes the whole import one transaction, which
+// is what lets a failure halfway through an order import roll back instead of
+// leaving the clean tables half-updated and readable as if they were whole.
+// Omitting it keeps the old autocommit behaviour for read paths and callers
+// that have no transaction of their own.
+function executor(client) {
+  if (!client) return query;
+  return (text, params) => client.query(text, params);
+}
+
+async function saveRawShopifyData(shopDomain, data, client) {
+  const run = executor(client);
+  // `resources` is fetch metadata, not a Shopify resource; it belongs on the
+  // sync_runs row, not in the raw event log.
   for (const [resourceType, payload] of Object.entries(data)) {
-    await query(
+    if (resourceType === "resources") continue;
+    await run(
       `
       INSERT INTO raw.shopify_events (shop_domain, resource_type, payload)
       VALUES ($1, $2, $3)
@@ -16,8 +31,8 @@ async function saveRawShopifyData(shopDomain, data) {
   }
 }
 
-async function upsertShop(shopDomain, shop) {
-  await query(
+async function upsertShop(shopDomain, shop, client) {
+  await executor(client)(
     `
     INSERT INTO clean.shop
     (shop_domain, iana_timezone, currency, plan_name, raw, updated_at)
@@ -39,9 +54,10 @@ async function upsertShop(shopDomain, shop) {
   );
 }
 
-async function upsertCustomers(shopDomain, customers) {
+async function upsertCustomers(shopDomain, customers, client) {
+  const run = executor(client);
   for (const customer of customers || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.customers
       (id, shop_domain, email, created_at, state, email_marketing_consent, tags, raw)
@@ -68,9 +84,10 @@ async function upsertCustomers(shopDomain, customers) {
   }
 }
 
-async function upsertProducts(shopDomain, products) {
+async function upsertProducts(shopDomain, products, client) {
+  const run = executor(client);
   for (const product of products || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.products
       (id, shop_domain, title, product_type, tags, status, raw)
@@ -94,7 +111,7 @@ async function upsertProducts(shopDomain, products) {
     );
 
     for (const variant of product.variants || []) {
-      await query(
+      await run(
         `
         INSERT INTO clean.product_variants
         (id, shop_domain, product_id, sku, price, inventory_item_id, inventory_quantity, raw)
@@ -121,9 +138,10 @@ async function upsertProducts(shopDomain, products) {
   }
 }
 
-async function upsertOrders(shopDomain, orders) {
+async function upsertOrders(shopDomain, orders, client) {
+  const run = executor(client);
   for (const order of orders || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.orders
       (
@@ -174,7 +192,7 @@ async function upsertOrders(shopDomain, orders) {
     );
 
     for (const item of order.line_items || []) {
-      await query(
+      await run(
         `
         INSERT INTO clean.order_line_items
         (id, shop_domain, order_id, product_id, variant_id, sku, title, quantity, price, total_discount, raw)
@@ -205,11 +223,12 @@ async function upsertOrders(shopDomain, orders) {
       );
     }
 
-    await upsertRefundsFromOrder(shopDomain, order);
+    await upsertRefundsFromOrder(shopDomain, order, client);
   }
 }
 
-async function upsertRefundsFromOrder(shopDomain, order) {
+async function upsertRefundsFromOrder(shopDomain, order, client) {
+  const run = executor(client);
   for (const refund of order.refunds || []) {
     const transactionAmount = (refund.transactions || []).reduce(
       (sum, txn) => sum + Number(txn.amount || 0),
@@ -217,15 +236,28 @@ async function upsertRefundsFromOrder(shopDomain, order) {
     );
 
     for (const refundItem of refund.refund_line_items || []) {
-      await query(
+      // Unlike every other clean table this one has no natural primary key, so
+      // a re-sync used to append a second copy of every refund and quietly
+      // double the store's refund total. Shopify's own refund id plus the line
+      // item it applies to is that key; the NOT EXISTS guard (rather than ON
+      // CONFLICT) enforces it without a unique index, which cannot be created
+      // over rows an earlier sync already duplicated. Publication is serialized
+      // per shop, so there is no concurrent writer to race with.
+      await run(
         `
         INSERT INTO clean.refunds
-        (shop_domain, order_id, created_at, line_item_id, quantity, transaction_amount, raw)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        (shop_domain, order_id, refund_id, created_at, line_item_id, quantity, transaction_amount, raw)
+        SELECT $1,$2,$3,$4,$5,$6,$7,$8
+        WHERE $3::text IS NULL OR NOT EXISTS (
+          SELECT 1 FROM clean.refunds
+           WHERE shop_domain = $1 AND refund_id = $3
+             AND line_item_id IS NOT DISTINCT FROM $5
+        )
         `,
         [
           shopDomain,
           String(order.id),
+          refund.id ? String(refund.id) : null,
           refund.created_at || null,
           refundItem.line_item_id ? String(refundItem.line_item_id) : null,
           refundItem.quantity || null,
@@ -237,28 +269,29 @@ async function upsertRefundsFromOrder(shopDomain, order) {
   }
 }
 
-async function upsertAllShopifyData(shopDomain, data) {
-  await upsertShop(shopDomain, data.shop);
-  await upsertProducts(shopDomain, data.products);
-  await upsertCustomers(shopDomain, data.customers);
-  await upsertOrders(shopDomain, data.orders);
+async function upsertAllShopifyData(shopDomain, data, client) {
+  await upsertShop(shopDomain, data.shop, client);
+  await upsertProducts(shopDomain, data.products, client);
+  await upsertCustomers(shopDomain, data.customers, client);
+  await upsertOrders(shopDomain, data.orders, client);
 }
 
-async function getEngineInput(shopDomain) {
+async function getEngineInput(shopDomain, client) {
+  const run = executor(client);
   const [shop, orders, orderLineItems, customers, products, productVariants, refunds] =
     await Promise.all([
-      query(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
-      query(
+      run(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
+      run(
         `SELECT clean.orders.*, clean.orders.created_at AS shopify_order_created_at
          FROM clean.orders
          WHERE shop_domain = $1
          ORDER BY created_at DESC`,
         [shopDomain]
       ),
-      query(`SELECT * FROM clean.order_line_items WHERE shop_domain = $1`, [shopDomain]),
-      query(`SELECT * FROM clean.customers WHERE shop_domain = $1`, [shopDomain]),
-      query(`SELECT * FROM clean.products WHERE shop_domain = $1 AND status = 'active'`, [shopDomain]),
-      query(
+      run(`SELECT * FROM clean.order_line_items WHERE shop_domain = $1`, [shopDomain]),
+      run(`SELECT * FROM clean.customers WHERE shop_domain = $1`, [shopDomain]),
+      run(`SELECT * FROM clean.products WHERE shop_domain = $1 AND status = 'active'`, [shopDomain]),
+      run(
         `SELECT pv.*
          FROM clean.product_variants pv
          JOIN clean.products p
@@ -268,7 +301,7 @@ async function getEngineInput(shopDomain) {
            AND p.status = 'active'`,
         [shopDomain]
       ),
-      query(`SELECT * FROM clean.refunds WHERE shop_domain = $1`, [shopDomain]),
+      run(`SELECT * FROM clean.refunds WHERE shop_domain = $1`, [shopDomain]),
     ]);
 
   return {

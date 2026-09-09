@@ -30,6 +30,13 @@ const {
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
 const {
+  assertReadyForAnalysis,
+  getActiveInputSnapshot,
+  getSyncStatus,
+  runSync,
+  SyncNotReadyError,
+} = require("./services/syncService");
+const {
   applyBrandVoiceToCampaign,
   buildBeaconTemplates,
   buildBrandContext,
@@ -318,26 +325,69 @@ router.post("/sync/shopify", async (req, res) => {
   try {
     const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
     // No default cap: undefined limit paginates every resource to completion.
-    // A caller may still pass an explicit numeric limit to bound the sync.
+    // A caller may still pass an explicit numeric limit to bound the sync — and
+    // if that limit stops a resource mid-stream, the sync is recorded as
+    // INCOMPLETE and never published. A bounded fetch is a diagnostic, not
+    // store data.
     const limit = req.body.limit;
+    const connection = await getConnectionStatus(shopDomain).catch(() => null);
 
-    const data = await fetchShopifyData({ shopDomain, accessToken, limit });
+    const result = await runSync({
+      shopDomain,
+      accessToken,
+      limit,
+      shopifyScope: connection?.shopify?.scopes || null,
+    });
 
-    await saveRawShopifyData(shopDomain, data);
-    await upsertAllShopifyData(shopDomain, data);
+    if (!result.published) {
+      // 200, not 500: the fetch worked, and the honest answer is that what came
+      // back is not usable. The body says which, so the UI can say so too.
+      res.status(200).json({
+        ok: true,
+        published: false,
+        shopDomain,
+        syncRunId: result.syncRunId,
+        status: result.status,
+        validationFailures: result.validationFailures || [],
+        resources: result.resourceManifest || null,
+        coverage: result.declaredCoverage || null,
+      });
+      return;
+    }
 
     res.json({
       ok: true,
+      published: true,
       shopDomain,
+      syncRunId: result.syncRunId,
+      status: result.status,
+      coverage: result.declaredCoverage,
+      resources: result.resourceManifest,
       synced: {
-        shop: Boolean(data.shop),
-        products: data.products.length,
-        customers: data.customers.length,
-        orders: data.orders.length,
+        shop: result.counts.shop,
+        products: result.counts.products,
+        customers: result.counts.customers,
+        orders: result.counts.orders,
       },
     });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+    res.status(500).json({
+      ok: false,
+      syncRunId: error.syncRunId || null,
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+// What this store's data actually is: which sync the clean tables represent,
+// how much history it covers, whether a new analysis may run, and whether the
+// briefing on screen was built from the current input.
+router.get("/sync/status/:shopDomain", async (req, res) => {
+  try {
+    const status = await getSyncStatus(req.params.shopDomain);
+    res.json({ ok: true, ...status });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
@@ -364,11 +414,30 @@ router.get("/stats/series/:shopDomain", async (req, res) => {
 router.post("/engine/atul/run", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const useFixture = Boolean(req.body.useFixture);
+
+    // The gate lives here, not on a disabled button. A fixture run is exempt
+    // because it reads none of the merchant's data — it is labelled `fixture`
+    // on the run row so it can never be mistaken for their briefing.
+    let snapshot = null;
+    let syncRunId = null;
+    if (!useFixture) {
+      await assertReadyForAnalysis(shopDomain);
+      const active = await getActiveInputSnapshot(shopDomain);
+      if (!active) {
+        throw new SyncNotReadyError({
+          ready: false,
+          reasons: [{ code: "no_input_snapshot", message: "The active sync has no stored input snapshot. Re-sync before running an analysis." }],
+        });
+      }
+      snapshot = active.snapshot;
+      syncRunId = active.syncRunId;
+    }
+
+    // getEngineInput still supplies brand/product context; the ORDERS the
+    // engine reads come from `snapshot`.
     const input = await getEngineInput(shopDomain);
-    const result = await runAtulEngine(input, {
-      shopDomain,
-      useFixture: Boolean(req.body.useFixture),
-    });
+    const result = await runAtulEngine(input, { shopDomain, useFixture, snapshot, syncRunId });
     let narration = null;
     try {
       narration = await narrateAtulRun(result);
@@ -386,8 +455,14 @@ router.post("/engine/atul/run", async (req, res) => {
       presentedRun,
       narration,
       manifest: result.manifest,
+      syncRunId: result.syncRunId,
+      inputProvenance: result.inputProvenance,
     });
   } catch (error) {
+    if (error instanceof SyncNotReadyError) {
+      res.status(409).json({ ok: false, error: error.message, readiness: error.readiness });
+      return;
+    }
     res.status(500).json({
       ok: false,
       error: error.message,
@@ -410,7 +485,13 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
     // on refresh — same run → same prose. null when a run predates persistence,
     // in which case the presenter renders data chips (no templated prose).
     const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null);
-    res.json({ ok: true, found: true, presentedRun });
+    res.json({
+      ok: true,
+      found: true,
+      presentedRun,
+      syncRunId: latest.syncRunId,
+      inputProvenance: latest.inputProvenance,
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

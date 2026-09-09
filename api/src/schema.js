@@ -296,6 +296,81 @@ async function initSchema() {
     ALTER TABLE clean.campaign_measurements
       ADD COLUMN IF NOT EXISTS revenue_sq NUMERIC(18,4) NOT NULL DEFAULT 0;
   `);
+
+  await query(`ALTER TABLE clean.refunds ADD COLUMN IF NOT EXISTS refund_id TEXT;`);
+  await query(`
+    CREATE INDEX IF NOT EXISTS refunds_by_refund_id
+      ON clean.refunds (shop_domain, refund_id, line_item_id);
+  `);
+
+  // One row per attempt to pull a store into the clean tables. The reason this
+  // exists: a sync that stops early still returns 200 OK and still leaves rows
+  // behind, so "we have data" and "we have the store's data" were previously
+  // the same observation. This table is what separates them.
+  //
+  // status:
+  //   running    — fetching or publishing; no claim about completeness yet
+  //   failed     — the attempt errored; nothing was published
+  //   incomplete — the fetch succeeded but is known-partial (a cap truncated a
+  //                resource, or coverage is too short to analyse); NOT published
+  //   complete   — fetched whole, validated, and published in one transaction
+  //
+  // Only `complete` rows are ever published, and only a published row can back
+  // an analysis. Rows are never deleted: a failed sync is evidence.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.sync_runs (
+      id SERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provenance TEXT NOT NULL DEFAULT 'verified',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
+      schema_version TEXT,
+      requested_limit TEXT,
+      resource_manifest JSONB,
+      declared_coverage JSONB,
+      validation_failures JSONB NOT NULL DEFAULT '[]'::jsonb,
+      input_snapshot JSONB,
+      input_snapshot_ref TEXT,
+      failure_reason TEXT
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS sync_runs_by_shop
+      ON clean.sync_runs (shop_domain, started_at DESC);
+  `);
+
+  // The active sync pointer: which published sync the clean tables currently
+  // represent. Separate from sync_runs so the swap is a single row update
+  // inside the publishing transaction, and so "latest attempt" can never be
+  // mistaken for "what analysis may read".
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.active_sync (
+      shop_domain TEXT PRIMARY KEY,
+      sync_run_id INTEGER NOT NULL REFERENCES clean.sync_runs(id),
+      published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_at TIMESTAMPTZ
+    );
+  `);
+
+  // Which verified input a briefing was built from. Nullable: runs that predate
+  // this column keep a null, which reads as unknown provenance — not as
+  // verified. Never backfilled.
+  await query(`
+    ALTER TABLE clean.engine_run_snapshots
+      ADD COLUMN IF NOT EXISTS sync_run_id INTEGER REFERENCES clean.sync_runs(id);
+  `);
+
+  // 'verified' | 'fixture' | 'legacy_unverified'. Fixture runs are demo data and
+  // must never be mistaken for a merchant's own; legacy runs are the ones whose
+  // input nothing vouches for. Existing rows keep a null, which the status API
+  // reports as legacy_unverified rather than assuming anything.
+  await query(`
+    ALTER TABLE clean.engine_run_snapshots
+      ADD COLUMN IF NOT EXISTS input_provenance TEXT;
+  `);
 }
 
 module.exports = { initSchema };

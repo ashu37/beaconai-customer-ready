@@ -64,6 +64,9 @@ export const api = {
   testKlaviyo: () => request("/connections/klaviyo/test", { method: "POST", body: JSON.stringify({}) }),
   // No limit by default → backend paginates the whole store. Pass a number to bound the sync.
   syncShopify: (limit) => request("/sync/shopify", { method: "POST", body: JSON.stringify({ shopDomain: requireShopDomain(), ...(limit != null ? { limit } : {}) }) }),
+  // Which sync the store data comes from, how much history it covers, and
+  // whether a new analysis is allowed to run.
+  syncStatus: () => request(`/sync/status/${encodeURIComponent(shopDomain)}`),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
   getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),
   getKlaviyoTemplates: () => request(`/klaviyo/templates?shopDomain=${encodeURIComponent(shopDomain)}`),

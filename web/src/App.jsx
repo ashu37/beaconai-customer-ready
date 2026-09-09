@@ -1980,8 +1980,25 @@ function App() {
     try {
       const result = await runStep("Shopify sync", () => api.syncShopify());
       setSync(result);
+
+      // A sync that came back partial is NOT a synced store. It publishes
+      // nothing, so the previous good data is still what is on screen — say
+      // which, rather than showing a success toast over unchanged numbers.
+      if (result?.published === false) {
+        const reason = result.validationFailures?.[0]?.message
+          || "Shopify returned an incomplete copy of the store.";
+        showToast({
+          message: `Store not updated: ${reason}`,
+          error: true,
+          actionLabel: "Retry",
+          onAction: () => { setToast(null); syncShopify(); },
+        });
+        return result;
+      }
+
       await preloadStoreSnapshot();
-      showToast({ message: "Store synced" });
+      const days = result?.coverage?.daysCovered;
+      showToast({ message: days ? `Store synced · ${days} days of history` : "Store synced" });
       return result;
     } catch (err) {
       setError(""); // P-C1: surface this via toast, not the page-level error-box.
@@ -2109,6 +2126,17 @@ function App() {
       try {
         const result = await api.syncShopify();
         setSync(result);
+        // Partial data must not flow into a first briefing — that briefing is
+        // the merchant's first impression of whether this product can be
+        // trusted with their store.
+        if (result?.published === false) {
+          setFirstRunError({
+            phase: "sync",
+            message: result.validationFailures?.[0]?.message
+              || "Shopify returned an incomplete copy of the store. Retry the sync.",
+          });
+          return;
+        }
         syncCounts = result.synced || {};
         await preloadStoreSnapshot();
       } catch (err) {
