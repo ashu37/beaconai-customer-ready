@@ -189,21 +189,6 @@ function fetchedOrderCoverage(orders) {
   );
 }
 
-// Rows in the published input that fall outside what this fetch reached. They
-// are real rows the engine will read, and no current sync vouches for them.
-function residualRowsOutsideFetch(rows, fetched) {
-  if (!fetched || fetched.known !== true) return null;
-  const from = Date.parse(fetched.earliestOrderAt);
-  const to = Date.parse(fetched.latestOrderAt);
-  let outside = 0;
-  for (const row of rows) {
-    const at = Date.parse(row["Created at"]);
-    if (!Number.isFinite(at)) continue;
-    if (at < from || at > to) outside += 1;
-  }
-  return outside;
-}
-
 function buildEngineInputSnapshot(input) {
   const rows = orderRows(input);
   return {
@@ -241,6 +226,5 @@ module.exports = {
   fetchedOrderCoverage,
   observedCoverage,
   orderRows,
-  residualRowsOutsideFetch,
   snapshotToCsv,
 };

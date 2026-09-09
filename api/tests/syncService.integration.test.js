@@ -292,12 +292,12 @@ suite("residue from an earlier sync cannot vouch for a short one", async () => {
   assert.equal(active.syncRunId, first.syncRunId, "the good input is still active");
 });
 
-suite("declared coverage keeps the fetch and the published input apart", async () => {
+suite("declared coverage separates the fetch, the published input and the rest", async () => {
   await db.resetDatabase();
   await syncWith(db.shopifyPayload({ orders: db.ordersSpanning(300) }));
-  // A second, narrower-but-still-valid fetch: 120 days, under its own order
-  // ids. The published tables still hold the 300-day rows, and both numbers
-  // must be visible and distinct.
+  // A second, narrower-but-still-valid fetch under its own order ids. The
+  // 300-day rows stay in the clean tables and must NOT be counted as part of
+  // what this sync verified.
   const narrow = await syncWith(db.shopifyPayload({ orders: db.ordersSpanning(120, 4, 6000) }));
   assert.equal(narrow.published, true);
 
@@ -305,21 +305,25 @@ suite("declared coverage keeps the fetch and the published input apart", async (
   assert.equal(coverage.fetched.daysCovered, 120, "what this sync reached");
   assert.equal(coverage.fetched.datedRows, 4);
 
-  // The published span is asserted RELATIVE to the fetch rather than as an
-  // exact 300. clean.orders.created_at/processed_at are TIMESTAMP WITHOUT TIME
-  // ZONE, so a date round-tripped through the table comes back shifted by the
-  // server's UTC offset and the span can land a day either side. That is a
-  // pre-existing property of those columns, not of this code; pinning an exact
-  // number here would make this test fail on a machine in another time zone.
-  assert.equal(coverage.published.datedRows, 8, "both syncs' rows are in the published input");
-  assert.ok(
-    coverage.published.daysCovered > coverage.fetched.daysCovered + 150,
-    `published span (${coverage.published.daysCovered}) must far exceed the fetch (${coverage.fetched.daysCovered})`
-  );
-  assert.equal(coverage.residualRowsOutsideFetch, 4, "the older sync's rows are counted as unreached");
+  // Published is now the same generation as the fetch, by construction. The two
+  // are still reported separately: if they ever disagree, the read-back lost or
+  // gained rows and that is worth seeing rather than averaging away.
+  assert.equal(coverage.published.datedRows, 4, "only this fetch's rows are published");
   assert.equal(coverage.policy, "pilot_min_coverage_days");
   assert.equal(coverage.meetsRequired, true);
   assert.equal(coverage.meetsPreferred, false, "120 days is under the 180-day preference");
+
+  // The older sync's rows are named as history, not absorbed into the verified
+  // input and not silently dropped either.
+  assert.equal(coverage.residual.orders, 4);
+  assert.ok(coverage.residual.earliestOrderAt, "and their range is recorded");
+
+  const active = await getActiveInputSnapshot(SHOP);
+  assert.equal(active.snapshot.orderCount, 4);
+  assert.ok(
+    active.snapshot.orderRows.every((row) => row.Name.startsWith("#6")),
+    "the published input holds only the newest fetch's orders"
+  );
 });
 
 suite("handoff is refused for input nothing vouches for", async () => {
@@ -402,6 +406,77 @@ suite("sync status returns everything the persistent banner renders", async () =
   assert.equal(status.active.coverage.daysCovered, 120);
   assert.equal(status.active.coverage.meetsRequired, true);
   assert.equal(status.active.coverage.meetsPreferred, false);
-  assert.equal(typeof status.active.coverage.residualRowsOutsideFetch, "number");
+  assert.equal(typeof status.active.coverage.residual.orders, "number");
   assert.ok(Array.isArray(status.latest.validationFailures));
+});
+
+suite("the published input is the fetched generation, not the union", async () => {
+  await db.resetDatabase();
+  const first = await syncWith(db.shopifyPayload({ orders: db.ordersSpanning(200) }));
+  assert.equal(first.published, true);
+  assert.equal(first.counts.orders, 4);
+
+  // Shopify stops returning order 5001 — deleted, or no longer visible. It sits
+  // in the MIDDLE of the fetched date range, so no range check can see that it
+  // is gone: this is the case a date-based residual counter reported as 0.
+  const orders = db.ordersSpanning(200).filter((order) => order.id !== 5001);
+  assert.equal(orders.length, 3);
+  const second = await syncWith(db.shopifyPayload({ orders }));
+  assert.equal(second.published, true);
+
+  // The row is still in the clean tables — upserts never prune.
+  const stillThere = await query(
+    `SELECT count(*)::int AS n FROM clean.orders WHERE shop_domain = $1 AND id = '5001'`, [SHOP]
+  );
+  assert.equal(stillThere.rows[0].n, 1);
+
+  // But it is NOT in the published input, and it is counted by membership.
+  assert.equal(second.counts.orders, 3, "the snapshot holds only what this fetch returned");
+  assert.equal(second.declaredCoverage.residual.orders, 1);
+  assert.equal(second.declaredCoverage.residual.lineItems, 1);
+
+  const active = await getActiveInputSnapshot(SHOP);
+  assert.equal(active.snapshot.orderCount, 3);
+  const names = active.snapshot.orderRows.map((row) => row.Name);
+  assert.ok(!names.includes("#5001"), "the record this sync never saw is not in the verified input");
+  assert.deepEqual(names.sort(), ["#5000", "#5002", "#5003"]);
+});
+
+suite("a line item removed from an order leaves the published input", async () => {
+  await db.resetDatabase();
+  const orders = db.ordersSpanning(200, 2);
+  orders[0].line_items = [
+    { id: 70001, title: "Serum", quantity: 1, price: "30.00", total_discount: "0" },
+    { id: 70002, title: "Cleanser", quantity: 1, price: "20.00", total_discount: "0" },
+  ];
+  const first = await syncWith(db.shopifyPayload({ orders }));
+  assert.equal(first.counts.orderRows, 3, "two line items on order one, one on order two");
+
+  // The merchant edits the order down to a single line. The dropped line item
+  // is inside every date range that matters and belongs to an order that IS in
+  // the fetch — invisible to anything but a membership check.
+  const edited = db.ordersSpanning(200, 2);
+  edited[0].line_items = [{ id: 70001, title: "Serum", quantity: 1, price: "30.00", total_discount: "0" }];
+  const second = await syncWith(db.shopifyPayload({ orders: edited }));
+
+  assert.equal(second.declaredCoverage.residual.orders, 0, "no order is missing");
+  assert.equal(second.declaredCoverage.residual.lineItems, 1, "but a line item is");
+
+  const active = await getActiveInputSnapshot(SHOP);
+  const titles = active.snapshot.orderRows.map((row) => row["Lineitem name"]);
+  assert.ok(!titles.includes("Cleanser"), "the removed line is not billed to the verified input");
+});
+
+suite("a clean sync reports no residual at all", async () => {
+  await db.resetDatabase();
+  const payload = db.shopifyPayload({ orders: db.ordersSpanning(200) });
+  await syncWith(payload);
+  const again = await syncWith(payload);
+
+  assert.equal(again.declaredCoverage.residual.orders, 0);
+  assert.equal(again.declaredCoverage.residual.lineItems, 0);
+  assert.equal(again.declaredCoverage.residual.earliestOrderAt, null);
+  // Published coverage is the fetch's own coverage now that they are the same
+  // generation; a divergence here would mean the read-back lost or gained rows.
+  assert.equal(again.declaredCoverage.published.datedRows, again.declaredCoverage.fetched.datedRows);
 });

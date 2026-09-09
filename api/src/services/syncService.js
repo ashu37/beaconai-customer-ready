@@ -4,13 +4,31 @@ const {
   saveRawShopifyData,
   upsertAllShopifyData,
   getEngineInput,
+  reconcileGeneration,
 } = require("./shopifyRepository");
 const {
   buildEngineInputSnapshot,
   fetchedOrderCoverage,
-  residualRowsOutsideFetch,
   SNAPSHOT_SCHEMA_VERSION,
 } = require("./engineInputSnapshot");
+
+// The record ids ONE fetch returned. Read back under exactly these ids, the
+// clean tables yield that fetch's generation rather than the union of every
+// sync that ever ran.
+function generationOf(data) {
+  const orderIds = [];
+  const lineItemIds = [];
+  for (const order of data.orders || []) {
+    orderIds.push(String(order.id));
+    for (const item of order.line_items || []) lineItemIds.push(String(item.id));
+  }
+  return {
+    orderIds,
+    lineItemIds,
+    customerIds: (data.customers || []).map((c) => String(c.id)),
+    productIds: (data.products || []).map((p) => String(p.id)),
+  };
+}
 
 // PILOT POLICY, not an engine requirement. The distinction matters, because
 // stating it the other way round would be a false claim about the engine.
@@ -137,25 +155,27 @@ function validateCoverage(coverage, shopifyScope) {
   return failures;
 }
 
-// Both numbers, kept apart on purpose.
+// Coverage, plus what was deliberately left out of the published input.
 //
-//   fetched   — what THIS sync reached. The only thing validation may judge.
-//   published — what the engine will read: the accumulated clean tables, which
-//               can run earlier than any single fetch because rows from
-//               previous syncs stay behind when Shopify stops returning them.
-//
-// Collapsing these two is the bug that lets a store with 30 days of reachable
-// history keep passing a 90-day check forever on the strength of rows nothing
-// has re-verified since.
-function declaredCoverage(fetched, shopifyScope, published = null, residualRows = null) {
+//   fetched   — what THIS sync reached, straight off the Shopify payload. The
+//               only thing validation may judge.
+//   published — the coverage of the snapshot actually published, which is now
+//               the same generation. They agree by construction; both are kept
+//               because a future divergence between them is a bug worth seeing.
+//   residual  — records in the clean tables this fetch did NOT return. Counted
+//               by membership, not by date: a record missing from the middle of
+//               the fetched period sits inside the covered range and no range
+//               check would ever notice it. Reported, never folded in.
+function declaredCoverage(fetched, shopifyScope, published = null, residual = null) {
   const scopes = String(shopifyScope || "").split(/[,\s]+/).filter(Boolean);
   return {
     ...fetched,
     fetched,
     published,
-    // Rows the engine will read that this sync did not reach. Not an error —
-    // but not verified by this sync either, and the merchant is owed the count.
-    residualRowsOutsideFetch: residualRows,
+    // Historical records kept in the clean tables but NOT part of the published
+    // input. Not an error — stores really do delete orders — but nothing this
+    // sync can vouch for, so they are named and excluded rather than absorbed.
+    residual,
     requiredDays: PILOT_MIN_COVERAGE_DAYS,
     preferredDays: PILOT_PREFERRED_COVERAGE_DAYS,
     policy: "pilot_min_coverage_days",
@@ -263,12 +283,22 @@ async function runSync({ shopDomain, accessToken, limit, shopifyScope, fetchData
     await saveRawShopifyData(shopDomain, data, client);
     await upsertAllShopifyData(shopDomain, data, client);
 
-    const input = await getEngineInput(shopDomain, client);
+    // Read back ONLY what this fetch wrote. The clean tables are upserted and
+    // never pruned, so an unscoped read returns the union of every sync that
+    // ever ran — orders Shopify has since deleted, line items removed from an
+    // order, products archived. Publishing that union as the verified input
+    // would attach this sync's verification to records it never saw.
+    //
+    // Reading it back (rather than projecting the Shopify payload directly)
+    // keeps ONE mapping from Shopify to the engine's columns: the upserts
+    // above. A second projection here would be free to drift from them.
+    const generation = generationOf(data);
+    const input = await getEngineInput(shopDomain, client, generation);
     const snapshot = buildEngineInputSnapshot(input);
 
     // Judge the FETCH, not the accumulated tables. See declaredCoverage.
     const fetched = fetchedOrderCoverage(data.orders);
-    const residual = residualRowsOutsideFetch(snapshot.orderRows, fetched);
+    const residual = await reconcileGeneration(shopDomain, generation, client);
     const coverage = declaredCoverage(fetched, shopifyScope, snapshot.coverage, residual);
     const coverageFailures = validateCoverage(fetched, shopifyScope);
 
@@ -564,12 +594,22 @@ const BLOCKED_HANDOFF_PROVENANCE = {
   fixture: "This recommendation was generated from sample data, not from this store. It cannot be sent to real customers.",
   legacy_unverified: "This recommendation was built from store data that predates verified sync, so its input cannot be confirmed as complete. Re-sync and refresh the briefing before sending.",
   unknown_run: "The engine run behind this campaign is not on record, so the data it used cannot be confirmed. Refresh the briefing before sending.",
+  foreign_run: "The engine run behind this campaign belongs to a different store. Refresh the briefing before sending.",
 };
 
-async function assertInputVerifiedForHandoff(runId) {
+/**
+ * @param {string} runId       the run whose provenance is being checked
+ * @param {string} shopDomain  the shop the send is FOR. Required: run ids arrive
+ *   from the request body, so without this check a caller could quote a
+ *   verified run belonging to another store and have it authorize this send.
+ */
+async function assertInputVerifiedForHandoff(runId, shopDomain) {
   const run = await getRunProvenance(runId);
   if (!run) {
     throw new UnverifiedInputError("unknown_run", { runId, message: BLOCKED_HANDOFF_PROVENANCE.unknown_run });
+  }
+  if (shopDomain && run.shopDomain !== shopDomain) {
+    throw new UnverifiedInputError("foreign_run", { runId, message: BLOCKED_HANDOFF_PROVENANCE.foreign_run });
   }
   const blocked = BLOCKED_HANDOFF_PROVENANCE[run.provenance];
   if (blocked) throw new UnverifiedInputError(run.provenance, { ...run, message: blocked });

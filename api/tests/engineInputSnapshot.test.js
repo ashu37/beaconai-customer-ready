@@ -7,7 +7,6 @@ const {
   buildEngineInputSnapshot,
   fetchedOrderCoverage,
   observedCoverage,
-  residualRowsOutsideFetch,
   snapshotToCsv,
 } = require("../src/services/engineInputSnapshot");
 
@@ -81,27 +80,8 @@ test("a fetch of undated orders is unknown coverage", () => {
   assert.equal(fetchedOrderCoverage([]).known, false);
 });
 
-test("rows the fetch did not reach are counted, not absorbed", () => {
-  // Regression: the published input runs Jan–Jun because earlier syncs left
-  // rows behind; this fetch only reached May–Jun. Judging coverage on the union
-  // lets stale residue vouch for a fetch that reached nowhere near that far.
-  const rows = [
-    { "Created at": "2026-01-04T00:00:00.000Z" },
-    { "Created at": "2026-02-04T00:00:00.000Z" },
-    { "Created at": "2026-05-10T00:00:00.000Z" },
-    { "Created at": "2026-06-01T00:00:00.000Z" },
-  ];
-  const fetched = fetchedOrderCoverage([
-    { processed_at: "2026-05-10T00:00:00.000Z" },
-    { processed_at: "2026-06-01T00:00:00.000Z" },
-  ]);
-
-  assert.equal(observedCoverage(rows).daysCovered, 149, "the published input does span Jan-Jun");
-  assert.equal(fetched.daysCovered, 23, "but this fetch reached 23 days");
-  assert.equal(residualRowsOutsideFetch(rows, fetched), 2);
-});
-
-test("residual count is null when the fetch reached nothing datable", () => {
-  const rows = [{ "Created at": "2026-01-04T00:00:00.000Z" }];
-  assert.equal(residualRowsOutsideFetch(rows, fetchedOrderCoverage([])), null);
-});
+// Residual records are no longer detected by date. A record absent from the
+// fetch but dated inside the covered period is invisible to any range check, so
+// the reconciliation is a membership query against the clean tables — see
+// "the published input is the fetched generation, not the union" in
+// syncService.integration.test.js.

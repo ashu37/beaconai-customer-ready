@@ -166,6 +166,7 @@ Log IDs, statuses, revisions and failure reasons needed to diagnose a run withou
 ## First-send acceptance gate
 
 - Merchant store access is isolated; demo and live data cannot be confused.
+- Order dates survive the database without a timezone shift. `clean.orders.created_at` / `processed_at` are `TIMESTAMP WITHOUT TIME ZONE`, so a stored date comes back offset by the server's zone and can move an order across an L7/L28/L56/L90 or week boundary. Found during Ticket A, out of its scope, and a blocker before a merchant sees a live recommendation because it changes the windows recommendations are computed over. Existing values must have their intended zone established — preferably re-derived from `raw.shopify_events` — not reinterpreted on assumption.
 - Complete verified sync produces the briefing; induced partial failure cannot do so.
 - Merchant recognizes and approves the actual branded email.
 - Copy/audience/template survive refresh and new analysis.

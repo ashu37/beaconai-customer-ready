@@ -106,24 +106,38 @@ async function hydrateEmails(shopDomain, customerIds) {
 
 /**
  * Resolve the send audience for a campaign from the ENGINE's materialized CSV.
+ *
+ * `options.runId` pins the audience to ONE run. Callers that verify a run
+ * before sending MUST pass it: without it this falls back to the newest run,
+ * so the run whose provenance was checked and the run the membership comes from
+ * can be two different runs. That also means re-sending an older campaign would
+ * silently pick up today's membership.
+ *
+ * The pinned run is used as given and never falls back to the latest — a
+ * missing pinned run is an error, not an invitation to substitute another.
+ *
  * @param {string} shopDomain
  * @param {object} campaign  the draft; campaign.id is the play_id.
+ * @param {{runId?: string}} options
  * @returns {Promise<{count, recipients, materialized, status, reason?, audienceDefinitionId?}>}
  */
-async function resolveCampaignAudience(shopDomain, campaign = {}) {
+async function resolveCampaignAudience(shopDomain, campaign = {}, options = {}) {
   const playId = campaign.play_id || campaign.id || null;
   if (!playId) {
     return { count: 0, recipients: [], materialized: false, status: null, reason: "no_play_id" };
   }
 
-  const latest = await readLatestRun({ shopDomain });
-  if (!latest?.runId) {
+  let runId = options.runId || null;
+  if (!runId) {
+    runId = (await readLatestRun({ shopDomain }))?.runId || null;
+  }
+  if (!runId) {
     return { count: 0, recipients: [], materialized: false, status: null, reason: "no_run" };
   }
 
-  const entry = await audienceEntryForPlay(latest.runId, playId);
+  const entry = await audienceEntryForPlay(runId, playId);
   if (!entry) {
-    return { count: 0, recipients: [], materialized: false, status: null, reason: "no_audience_for_play" };
+    return { count: 0, recipients: [], materialized: false, runId, status: null, reason: "no_audience_for_play" };
   }
 
   // R1: only a sendable (MATERIALIZED or MATERIALIZED_UNRANKED) audience yields
@@ -134,6 +148,7 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
       count: 0,
       recipients: [],
       materialized: false,
+      runId,
       status: entry.status,
       audienceDefinitionId: entry.audienceDefinitionId,
       reason: "not_materialized",
@@ -150,7 +165,7 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
     count: recipients.length,
     recipients,
     materialized: true,
-    runId: latest.runId,
+    runId,
     status: entry.status,
     audienceDefinitionId: entry.audienceDefinitionId,
     memberCount: customerIds.length,

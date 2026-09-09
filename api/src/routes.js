@@ -512,15 +512,21 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
     const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
-    const audience = await resolveCampaignAudience(shopDomain, campaign);
+    // ONE run, resolved once, then used for everything: the provenance check,
+    // the audience, and the campaign row. Verifying one run while the audience
+    // came from another would let a verified run id authorize membership from a
+    // different, unverified one — and would silently re-send an older campaign
+    // to today's audience. Falling back to the latest run happens HERE, before
+    // the check, never inside audience resolution afterwards.
+    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
 
     // Nothing built on input we cannot vouch for reaches a real customer. This
-    // runs BEFORE the audience is split or anything is written, so a blocked
+    // runs BEFORE the audience is resolved or anything is written, so a blocked
     // handoff leaves no half-made campaign behind. Every run predating verified
     // sync — including anything the partial-sync incident produced — is
     // legacy_unverified and stops here until the store is re-synced.
-    const runId = campaign.run_id || req.body.runId || audience.runId;
-    const provenance = await assertInputVerifiedForHandoff(runId);
+    const provenance = await assertInputVerifiedForHandoff(runId, shopDomain);
+    const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
     // what turns "these customers bought $X" into "this campaign earned $X".
@@ -528,8 +534,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
     let campaignRow = null;
 
-    if (audience.materialized && audience.runId && playId) {
-      campaignRow = await upsertCampaign({ shopDomain, runId: audience.runId, playId });
+    if (audience.materialized && playId) {
+      campaignRow = await upsertCampaign({ shopDomain, runId, playId });
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
@@ -724,7 +730,8 @@ router.post("/campaigns/audience/preview", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
     const campaign = req.body.campaign || {};
-    const audience = await resolveCampaignAudience(shopDomain, campaign);
+    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
+    const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Show the merchant the same split the send will actually perform, computed
     // by the same function — so the number on screen is a promise, not an
@@ -732,15 +739,15 @@ router.post("/campaigns/audience/preview", async (req, res) => {
     let holdout = null;
     if (audience.materialized) {
       const playId = campaign.play_id || campaign.id;
-      const existing = audience.runId && playId
-        ? (await listCampaigns(shopDomain, { runId: audience.runId })).find((c) => c.playId === playId)
+      const existing = runId && playId
+        ? (await listCampaigns(shopDomain, { runId })).find((c) => c.playId === playId)
         : null;
       const split = splitAudience(shopDomain, audience.recipients, existing?.holdoutPct ?? 0.1);
       holdout = { treated: split.treated.length, held: split.holdout.length, pct: split.holdoutPct };
     }
 
-    const runId = campaign.run_id || req.body.runId || audience.runId;
     const provenance = runId ? await getRunProvenance(runId) : null;
+    const foreign = Boolean(provenance && provenance.shopDomain !== shopDomain);
     res.json({
       ok: true,
       shopDomain,
@@ -748,8 +755,9 @@ router.post("/campaigns/audience/preview", async (req, res) => {
       holdout,
       // So the UI can say why a send is blocked before the merchant clicks it,
       // rather than only after.
-      inputProvenance: provenance?.provenance || (runId ? "unknown_run" : null),
-      sendable: provenance ? !["fixture", "legacy_unverified"].includes(provenance.provenance) : false,
+      runId,
+      inputProvenance: foreign ? "foreign_run" : provenance?.provenance || (runId ? "unknown_run" : null),
+      sendable: Boolean(provenance) && !foreign && !["fixture", "legacy_unverified"].includes(provenance.provenance),
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });

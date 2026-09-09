@@ -276,8 +276,33 @@ async function upsertAllShopifyData(shopDomain, data, client) {
   await upsertOrders(shopDomain, data.orders, client);
 }
 
-async function getEngineInput(shopDomain, client) {
+/**
+ * The engine's input, read out of the clean tables.
+ *
+ * `generation`, when given, restricts the read to the exact records ONE fetch
+ * returned — `{ orderIds, lineItemIds, customerIds, productIds }`. Without it
+ * the read is the accumulated tables: everything ever synced, including records
+ * Shopify has since stopped returning.
+ *
+ * That distinction is the whole point. The clean tables are upserted, never
+ * pruned, so they are a union of every sync rather than a picture of the store.
+ * An order deleted in Shopify, a line item removed from an order, a product
+ * archived — all of them stay. Publishing that union as "the verified input"
+ * would attach a verification to records this sync never saw, and no date range
+ * catches it: a record missing from the middle of the fetched period sits
+ * inside the covered dates and looks accounted for.
+ *
+ * Unscoped reads remain correct for brand context and previews, which want
+ * whatever is known about the store rather than one fetch's contents.
+ */
+async function getEngineInput(shopDomain, client, generation = null) {
   const run = executor(client);
+  const ids = (values) => (generation ? (values || []).map(String) : null);
+  const orderIds = ids(generation?.orderIds);
+  const lineItemIds = ids(generation?.lineItemIds);
+  const customerIds = ids(generation?.customerIds);
+  const productIds = ids(generation?.productIds);
+
   const [shop, orders, orderLineItems, customers, products, productVariants, refunds] =
     await Promise.all([
       run(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
@@ -285,12 +310,28 @@ async function getEngineInput(shopDomain, client) {
         `SELECT clean.orders.*, clean.orders.created_at AS shopify_order_created_at
          FROM clean.orders
          WHERE shop_domain = $1
+           AND ($2::text[] IS NULL OR id = ANY($2))
          ORDER BY created_at DESC`,
-        [shopDomain]
+        [shopDomain, orderIds]
       ),
-      run(`SELECT * FROM clean.order_line_items WHERE shop_domain = $1`, [shopDomain]),
-      run(`SELECT * FROM clean.customers WHERE shop_domain = $1`, [shopDomain]),
-      run(`SELECT * FROM clean.products WHERE shop_domain = $1 AND status = 'active'`, [shopDomain]),
+      run(
+        `SELECT * FROM clean.order_line_items
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, lineItemIds]
+      ),
+      run(
+        `SELECT * FROM clean.customers
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, customerIds]
+      ),
+      run(
+        `SELECT * FROM clean.products
+          WHERE shop_domain = $1 AND status = 'active'
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, productIds]
+      ),
       run(
         `SELECT pv.*
          FROM clean.product_variants pv
@@ -298,10 +339,16 @@ async function getEngineInput(shopDomain, client) {
            ON p.shop_domain = pv.shop_domain
           AND p.id = pv.product_id
          WHERE pv.shop_domain = $1
-           AND p.status = 'active'`,
-        [shopDomain]
+           AND p.status = 'active'
+           AND ($2::text[] IS NULL OR p.id = ANY($2))`,
+        [shopDomain, productIds]
       ),
-      run(`SELECT * FROM clean.refunds WHERE shop_domain = $1`, [shopDomain]),
+      run(
+        `SELECT * FROM clean.refunds
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR order_id = ANY($2))`,
+        [shopDomain, orderIds]
+      ),
     ]);
 
   return {
@@ -312,6 +359,42 @@ async function getEngineInput(shopDomain, client) {
     products: products.rows,
     product_variants: productVariants.rows,
     refunds: refunds.rows,
+  };
+}
+
+/**
+ * What the clean tables hold for this shop that the given fetch did NOT return.
+ *
+ * Membership, not dates. A record absent from the fetch but sitting inside the
+ * fetched date range is invisible to any range check, and that is exactly the
+ * case that matters: an order cancelled and removed in Shopify last week is
+ * still in clean.orders, still dated inside the covered period, and still read
+ * by anything that treats the accumulated tables as the store.
+ */
+async function reconcileGeneration(shopDomain, generation, client) {
+  const run = executor(client);
+  const orderIds = (generation?.orderIds || []).map(String);
+  const lineItemIds = (generation?.lineItemIds || []).map(String);
+
+  const { rows } = await run(
+    `SELECT
+       (SELECT count(*)::int FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS orders,
+       (SELECT count(*)::int FROM clean.order_line_items
+         WHERE shop_domain = $1 AND NOT (id = ANY($3))) AS line_items,
+       (SELECT min(COALESCE(processed_at, created_at)) FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS earliest,
+       (SELECT max(COALESCE(processed_at, created_at)) FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS latest`,
+    [shopDomain, orderIds, lineItemIds]
+  );
+
+  const row = rows[0];
+  return {
+    orders: row.orders,
+    lineItems: row.line_items,
+    earliestOrderAt: row.earliest ? new Date(row.earliest).toISOString() : null,
+    latestOrderAt: row.latest ? new Date(row.latest).toISOString() : null,
   };
 }
 
@@ -362,4 +445,5 @@ module.exports = {
   upsertAllShopifyData,
   getEngineInput,
   getWeeklySeries,
+  reconcileGeneration,
 };

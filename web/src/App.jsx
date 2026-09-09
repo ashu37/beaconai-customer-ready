@@ -1103,8 +1103,8 @@ function DataStateBanner({ syncStatus, busy, onSync }) {
           <span className="data-state-meta">
             Analysing {coverage.daysCovered} days of order history
             {coverage.meetsPreferred ? "" : coverage.meetsRequired ? " (under 180 days, so yearly figures are extrapolated)" : ""}
-            {typeof coverage.residualRowsOutsideFetch === "number" && coverage.residualRowsOutsideFetch > 0
-              ? ` · ${coverage.residualRowsOutsideFetch} older rows the last sync did not re-reach`
+            {coverage.residual?.orders > 0
+              ? ` · ${coverage.residual.orders} older order${coverage.residual.orders === 1 ? "" : "s"} held as history, not analysed`
               : ""}
           </span>
         )}
