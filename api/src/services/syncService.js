@@ -5,16 +5,38 @@ const {
   upsertAllShopifyData,
   getEngineInput,
 } = require("./shopifyRepository");
-const { buildEngineInputSnapshot, SNAPSHOT_SCHEMA_VERSION } = require("./engineInputSnapshot");
+const {
+  buildEngineInputSnapshot,
+  fetchedOrderCoverage,
+  residualRowsOutsideFetch,
+  SNAPSHOT_SCHEMA_VERSION,
+} = require("./engineInputSnapshot");
 
-// How much order history the ENGINE needs, taken from the engine, not invented
-// here. engine/src/profile/builder.py::_annualized_gmv_from_orders returns
-// `insufficient_history` below 90 days and annualizes from L90/L180/TTM above
-// it; engine/src/utils.py's window policy tops out at L90. So 90 days is the
-// point below which the engine cannot characterise the store at all, and 180 is
-// the point where it stops extrapolating a quarter into a year.
-const REQUIRED_COVERAGE_DAYS = 90;
-const PREFERRED_COVERAGE_DAYS = 180;
+// PILOT POLICY, not an engine requirement. The distinction matters, because
+// stating it the other way round would be a false claim about the engine.
+//
+// What the engine actually does below 90 days: it still runs. Only
+// engine/src/profile/builder.py::_annualized_gmv_from_orders declines — it
+// returns `insufficient_history`, which forces annualized GMV to 0.0 and the
+// store's stage to STARTUP regardless of its real size, and surfaces downstream
+// as COLD_START_INSUFFICIENT_DATA (engine/src/decide.py). Above 90 days it
+// annualizes from L90 (x4), above 180 from L180 (x2), and above 360 from
+// trailing twelve months. Separately, the window policy in engine/src/utils.py
+// tops out at L90, so no analysis window needs more than 90 days of data.
+//
+// So 90 days is the point below which the engine can no longer size the store
+// it is advising, and 180 is where it stops multiplying a quarter by four. We
+// refuse to publish below 90 as a PILOT choice: a briefing built on a
+// mis-sized store is not one to put in front of the first paying merchant. A
+// later release may well decide a 60-day store deserves a narrower briefing
+// rather than none — that is a product decision, and it is not this one.
+const PILOT_MIN_COVERAGE_DAYS = 90;
+const PILOT_PREFERRED_COVERAGE_DAYS = 180;
+
+// Retained as the old names for callers/tests that still speak in terms of a
+// requirement; they refer to the same pilot policy above.
+const REQUIRED_COVERAGE_DAYS = PILOT_MIN_COVERAGE_DAYS;
+const PREFERRED_COVERAGE_DAYS = PILOT_PREFERRED_COVERAGE_DAYS;
 
 // Shopify hides orders older than 60 days from apps without `read_all_orders`.
 // A store with exactly ~60 days of visible history has almost certainly hit
@@ -23,6 +45,16 @@ const PREFERRED_COVERAGE_DAYS = 180;
 // the data and have opposite remedies.
 const SHOPIFY_DEFAULT_ORDER_WINDOW_DAYS = 60;
 const ALL_ORDERS_SCOPE = "read_all_orders";
+
+class UnverifiedInputError extends Error {
+  constructor(provenance, detail) {
+    super(detail.message);
+    this.name = "UnverifiedInputError";
+    this.statusCode = 409;
+    this.provenance = provenance;
+    this.detail = detail;
+  }
+}
 
 class SyncNotReadyError extends Error {
   constructor(readiness) {
@@ -75,7 +107,7 @@ function validateCoverage(coverage, shopifyScope) {
 
   if (!coverage || coverage.known !== true) {
     // Unknown coverage is not verified coverage. It is emphatically not zero.
-    failures.push(fail("coverage_unknown", "No order in this sync carries a readable date, so the covered period is unknown."));
+    failures.push(fail("coverage_unknown", "No order this sync fetched carries a readable date, so the period it covers is unknown."));
     return failures;
   }
 
@@ -89,11 +121,12 @@ function validateCoverage(coverage, shopifyScope) {
       fail(
         "coverage_below_required",
         looksLikeScopeCeiling
-          ? `Only ${coverage.daysCovered} days of orders are visible, which is the ceiling Shopify applies without the ${ALL_ORDERS_SCOPE} scope. The engine needs ${REQUIRED_COVERAGE_DAYS}.`
-          : `Only ${coverage.daysCovered} days of order history are available; the engine needs ${REQUIRED_COVERAGE_DAYS}.`,
+          ? `This sync reached only ${coverage.daysCovered} days of orders, which is the ceiling Shopify applies without the ${ALL_ORDERS_SCOPE} scope. The pilot requires ${PILOT_MIN_COVERAGE_DAYS} days, below which the engine cannot size the store.`
+          : `This sync reached only ${coverage.daysCovered} days of order history; the pilot requires ${PILOT_MIN_COVERAGE_DAYS} days, below which the engine cannot size the store.`,
         {
           daysCovered: coverage.daysCovered,
-          requiredDays: REQUIRED_COVERAGE_DAYS,
+          requiredDays: PILOT_MIN_COVERAGE_DAYS,
+          policy: "pilot_min_coverage_days",
           likelyScopeCeiling: looksLikeScopeCeiling,
           missingScope: looksLikeScopeCeiling ? ALL_ORDERS_SCOPE : null,
         }
@@ -104,14 +137,30 @@ function validateCoverage(coverage, shopifyScope) {
   return failures;
 }
 
-function declaredCoverage(coverage, shopifyScope) {
+// Both numbers, kept apart on purpose.
+//
+//   fetched   — what THIS sync reached. The only thing validation may judge.
+//   published — what the engine will read: the accumulated clean tables, which
+//               can run earlier than any single fetch because rows from
+//               previous syncs stay behind when Shopify stops returning them.
+//
+// Collapsing these two is the bug that lets a store with 30 days of reachable
+// history keep passing a 90-day check forever on the strength of rows nothing
+// has re-verified since.
+function declaredCoverage(fetched, shopifyScope, published = null, residualRows = null) {
   const scopes = String(shopifyScope || "").split(/[,\s]+/).filter(Boolean);
   return {
-    ...coverage,
-    requiredDays: REQUIRED_COVERAGE_DAYS,
-    preferredDays: PREFERRED_COVERAGE_DAYS,
-    meetsRequired: coverage?.known === true && coverage.daysCovered >= REQUIRED_COVERAGE_DAYS,
-    meetsPreferred: coverage?.known === true && coverage.daysCovered >= PREFERRED_COVERAGE_DAYS,
+    ...fetched,
+    fetched,
+    published,
+    // Rows the engine will read that this sync did not reach. Not an error —
+    // but not verified by this sync either, and the merchant is owed the count.
+    residualRowsOutsideFetch: residualRows,
+    requiredDays: PILOT_MIN_COVERAGE_DAYS,
+    preferredDays: PILOT_PREFERRED_COVERAGE_DAYS,
+    policy: "pilot_min_coverage_days",
+    meetsRequired: fetched?.known === true && fetched.daysCovered >= PILOT_MIN_COVERAGE_DAYS,
+    meetsPreferred: fetched?.known === true && fetched.daysCovered >= PILOT_PREFERRED_COVERAGE_DAYS,
     // What we were ALLOWED to request, recorded so a short history can later be
     // attributed to permission rather than to the store.
     grantedAllOrdersScope: scopes.length ? scopes.includes(ALL_ORDERS_SCOPE) : null,
@@ -216,8 +265,12 @@ async function runSync({ shopDomain, accessToken, limit, shopifyScope, fetchData
 
     const input = await getEngineInput(shopDomain, client);
     const snapshot = buildEngineInputSnapshot(input);
-    const coverage = declaredCoverage(snapshot.coverage, shopifyScope);
-    const coverageFailures = validateCoverage(snapshot.coverage, shopifyScope);
+
+    // Judge the FETCH, not the accumulated tables. See declaredCoverage.
+    const fetched = fetchedOrderCoverage(data.orders);
+    const residual = residualRowsOutsideFetch(snapshot.orderRows, fetched);
+    const coverage = declaredCoverage(fetched, shopifyScope, snapshot.coverage, residual);
+    const coverageFailures = validateCoverage(fetched, shopifyScope);
 
     if (coverageFailures.length) {
       throw Object.assign(new Error(coverageFailures[0].message), {
@@ -447,6 +500,82 @@ async function getSyncStatus(shopDomain) {
   };
 }
 
+/**
+ * Provenance of the input behind ONE engine run, by run id.
+ *
+ * Separate from getSyncStatus, which answers about the newest run. A merchant
+ * can be sending a campaign from a run that is not the newest, and the question
+ * at handoff is about the input behind THAT run.
+ */
+async function getRunProvenance(runId) {
+  if (!runId) return null;
+  const { rows } = await query(
+    `SELECT r.run_id, r.shop_domain, r.sync_run_id, r.input_provenance, r.created_at,
+            s.status AS sync_status,
+            s.declared_coverage,
+            a.sync_run_id AS active_sync_run_id
+       FROM clean.engine_run_snapshots r
+       LEFT JOIN clean.sync_runs s ON s.id = r.sync_run_id
+       LEFT JOIN clean.active_sync a ON a.shop_domain = r.shop_domain
+      WHERE r.run_id = $1`,
+    [runId]
+  );
+  if (!rows.length) return null;
+
+  const row = rows[0];
+  const provenance =
+    row.input_provenance === "fixture"
+      ? "fixture"
+      : row.sync_run_id == null
+        ? "legacy_unverified"
+        : row.active_sync_run_id === row.sync_run_id
+          ? "verified"
+          : "verified_stale";
+
+  return {
+    runId: row.run_id,
+    shopDomain: row.shop_domain,
+    syncRunId: row.sync_run_id,
+    provenance,
+    coverage: row.declared_coverage,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Refuse to hand a campaign to Klaviyo when the recommendation behind it was
+ * built on input nothing vouches for.
+ *
+ * Two cases are blocked outright:
+ *   fixture            — demo data. Sending a synthetic briefing's audience to
+ *                        real customers is the worst outcome this file exists
+ *                        to prevent.
+ *   legacy_unverified  — no sync run backs the input. Every run made before
+ *                        Ticket A is in this state, INCLUDING any produced by
+ *                        the partial-sync incident, which has not yet been
+ *                        diagnosed. They stay readable as history and cannot be
+ *                        sent. Re-sync and re-run to clear it.
+ *
+ * `verified_stale` is allowed through: it was verified when it ran, and the
+ * merchant may legitimately send a campaign from last month's briefing. It is
+ * returned to the caller so the UI can say so.
+ */
+const BLOCKED_HANDOFF_PROVENANCE = {
+  fixture: "This recommendation was generated from sample data, not from this store. It cannot be sent to real customers.",
+  legacy_unverified: "This recommendation was built from store data that predates verified sync, so its input cannot be confirmed as complete. Re-sync and refresh the briefing before sending.",
+  unknown_run: "The engine run behind this campaign is not on record, so the data it used cannot be confirmed. Refresh the briefing before sending.",
+};
+
+async function assertInputVerifiedForHandoff(runId) {
+  const run = await getRunProvenance(runId);
+  if (!run) {
+    throw new UnverifiedInputError("unknown_run", { runId, message: BLOCKED_HANDOFF_PROVENANCE.unknown_run });
+  }
+  const blocked = BLOCKED_HANDOFF_PROVENANCE[run.provenance];
+  if (blocked) throw new UnverifiedInputError(run.provenance, { ...run, message: blocked });
+  return run;
+}
+
 // The gate itself. Called by the engine-run endpoint, not only by a disabled
 // button — a button is a suggestion, and this is the thing that has to hold.
 async function assertReadyForAnalysis(shopDomain) {
@@ -457,10 +586,15 @@ async function assertReadyForAnalysis(shopDomain) {
 
 module.exports = {
   ALL_ORDERS_SCOPE,
+  PILOT_MIN_COVERAGE_DAYS,
+  PILOT_PREFERRED_COVERAGE_DAYS,
   PREFERRED_COVERAGE_DAYS,
   REQUIRED_COVERAGE_DAYS,
   SyncNotReadyError,
+  UnverifiedInputError,
+  assertInputVerifiedForHandoff,
   assertReadyForAnalysis,
+  getRunProvenance,
   declaredCoverage,
   getActiveInputSnapshot,
   getActiveSync,

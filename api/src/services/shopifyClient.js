@@ -40,8 +40,13 @@ function nextPagePath(linkHeader, resource) {
 //
 //   paginationExhausted — Shopify stopped offering a next page. This is the
 //                         only evidence that the resource was read to the end.
-//   truncated           — we stopped early because `totalLimit` was reached
-//                         while a next page was still on offer.
+//   truncated           — rows exist that this fetch did not return. TWO ways
+//                         that happens, and both must count: we stopped while a
+//                         next page was still on offer, OR the final page
+//                         overshot `totalLimit` and the slice below discarded
+//                         the overshoot. The second case reaches the end of
+//                         pagination, so `paginationExhausted` alone reports it
+//                         as a complete read of a store it silently trimmed.
 async function fetchPaginatedResource(client, resource, params, totalLimit) {
   const items = [];
   let path = `/${resource}.json?limit=${Math.min(totalLimit, 250)}${params ? `&${params}` : ""}`;
@@ -62,12 +67,11 @@ async function fetchPaginatedResource(client, resource, params, totalLimit) {
     meta: {
       resource,
       fetched: capped ? totalLimit : items.length,
+      discardedByCap: capped ? items.length - totalLimit : 0,
       pages,
       paginationExhausted,
       requestedCap: Number.isFinite(totalLimit) ? totalLimit : null,
-      // A next page was still on offer when we stopped: rows exist that this
-      // sync did not see.
-      truncated: !paginationExhausted,
+      truncated: !paginationExhausted || capped,
     },
   };
 }

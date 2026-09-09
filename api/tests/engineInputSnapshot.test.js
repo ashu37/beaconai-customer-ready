@@ -5,7 +5,9 @@ const path = require("node:path");
 
 const {
   buildEngineInputSnapshot,
+  fetchedOrderCoverage,
   observedCoverage,
+  residualRowsOutsideFetch,
   snapshotToCsv,
 } = require("../src/services/engineInputSnapshot");
 
@@ -59,4 +61,47 @@ test("an empty store is unknown coverage, not a zero-day store", () => {
   assert.equal(snapshot.rowCount, 0);
   assert.equal(snapshot.coverage.known, false);
   assert.equal(snapshotToCsv(snapshot).trim().split("\n").length, 1, "header only");
+});
+
+test("fetched coverage measures one fetch, not the accumulated tables", () => {
+  // Same processed_at-first precedence as the normalized projection, so the two
+  // numbers are directly comparable.
+  const coverage = fetchedOrderCoverage([
+    { processed_at: "2026-05-01T00:00:00.000Z", created_at: "2026-09-01T00:00:00.000Z" },
+    { processed_at: "2026-05-30T00:00:00.000Z", created_at: "2026-09-01T00:00:00.000Z" },
+    { created_at: "2026-05-15T00:00:00.000Z" },
+  ]);
+  assert.equal(coverage.known, true);
+  assert.equal(coverage.earliestOrderAt, "2026-05-01T00:00:00.000Z");
+  assert.equal(coverage.daysCovered, 30);
+});
+
+test("a fetch of undated orders is unknown coverage", () => {
+  assert.equal(fetchedOrderCoverage([{ id: 1 }, { id: 2 }]).known, false);
+  assert.equal(fetchedOrderCoverage([]).known, false);
+});
+
+test("rows the fetch did not reach are counted, not absorbed", () => {
+  // Regression: the published input runs Jan–Jun because earlier syncs left
+  // rows behind; this fetch only reached May–Jun. Judging coverage on the union
+  // lets stale residue vouch for a fetch that reached nowhere near that far.
+  const rows = [
+    { "Created at": "2026-01-04T00:00:00.000Z" },
+    { "Created at": "2026-02-04T00:00:00.000Z" },
+    { "Created at": "2026-05-10T00:00:00.000Z" },
+    { "Created at": "2026-06-01T00:00:00.000Z" },
+  ];
+  const fetched = fetchedOrderCoverage([
+    { processed_at: "2026-05-10T00:00:00.000Z" },
+    { processed_at: "2026-06-01T00:00:00.000Z" },
+  ]);
+
+  assert.equal(observedCoverage(rows).daysCovered, 149, "the published input does span Jan-Jun");
+  assert.equal(fetched.daysCovered, 23, "but this fetch reached 23 days");
+  assert.equal(residualRowsOutsideFetch(rows, fetched), 2);
+});
+
+test("residual count is null when the fetch reached nothing datable", () => {
+  const rows = [{ "Created at": "2026-01-04T00:00:00.000Z" }];
+  assert.equal(residualRowsOutsideFetch(rows, fetchedOrderCoverage([])), null);
 });

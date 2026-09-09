@@ -297,7 +297,84 @@ async function initSchema() {
       ADD COLUMN IF NOT EXISTS revenue_sq NUMERIC(18,4) NOT NULL DEFAULT 0;
   `);
 
+  // clean.refunds has no natural key, so before this every re-sync appended a
+  // second copy of every refund and doubled the store's refund total. The fix
+  // needs three steps, and the first two are what make the third work at all.
   await query(`ALTER TABLE clean.refunds ADD COLUMN IF NOT EXISTS refund_id TEXT;`);
+
+  // 1. Backfill Shopify's own refund id onto rows written before the column
+  //    existed. Without this every legacy row keeps refund_id NULL, the
+  //    NOT EXISTS guard in shopifyRepository has nothing to match on, and the
+  //    very next sync appends yet another copy alongside them.
+  await query(`
+    UPDATE clean.refunds
+       SET refund_id = raw->>'id'
+     WHERE refund_id IS NULL
+       AND raw ? 'id'
+       AND raw->>'id' IS NOT NULL;
+  `);
+
+  // 2. Move pre-existing duplicates OUT rather than deleting them. Quarantine
+  //    is the non-destructive form of this migration: the rows are still
+  //    readable and restorable, they simply stop being counted twice. Keeping
+  //    them in place was not an option — a doubled refund total is a number the
+  //    merchant would act on.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.refunds_quarantine (
+      LIKE clean.refunds INCLUDING DEFAULTS
+    );
+  `);
+  await query(`
+    ALTER TABLE clean.refunds_quarantine
+      ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  `);
+  await query(`
+    ALTER TABLE clean.refunds_quarantine
+      ADD COLUMN IF NOT EXISTS quarantine_reason TEXT;
+  `);
+
+  // Keep the earliest row of each (shop, refund, line item) group; quarantine
+  // the rest. Rows with no refund_id (Shopify sent no id) are left alone: they
+  // cannot be grouped safely, and guessing would be worse than the duplicate.
+  const deduped = await query(`
+    WITH ranked AS (
+      SELECT id,
+             row_number() OVER (
+               PARTITION BY shop_domain, refund_id, line_item_id
+               ORDER BY id ASC
+             ) AS copy_number
+        FROM clean.refunds
+       WHERE refund_id IS NOT NULL
+    ),
+    extra AS (
+      SELECT id FROM ranked WHERE copy_number > 1
+    ),
+    moved AS (
+      INSERT INTO clean.refunds_quarantine
+        (id, shop_domain, order_id, created_at, line_item_id, quantity,
+         transaction_amount, raw, refund_id, quarantine_reason)
+      SELECT r.id, r.shop_domain, r.order_id, r.created_at, r.line_item_id,
+             r.quantity, r.transaction_amount, r.raw, r.refund_id,
+             'duplicate_from_resync_before_refund_id'
+        FROM clean.refunds r
+        JOIN extra e ON e.id = r.id
+      RETURNING id
+    )
+    DELETE FROM clean.refunds
+     WHERE id IN (SELECT id FROM moved)
+    RETURNING id;
+  `);
+
+  if (deduped.rowCount > 0) {
+    // Loud on purpose: this changes a number the merchant may already have been
+    // shown, and the count is what makes it auditable afterwards.
+    console.warn(
+      `[schema] quarantined ${deduped.rowCount} duplicate refund row(s) into clean.refunds_quarantine ` +
+      `(re-sync duplicates predating refund_id). Refund totals for affected shops change accordingly.`
+    );
+  }
+
+  // 3. Only now can the guard's lookup index exist over clean data.
   await query(`
     CREATE INDEX IF NOT EXISTS refunds_by_refund_id
       ON clean.refunds (shop_domain, refund_id, line_item_id);

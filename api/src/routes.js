@@ -32,9 +32,12 @@ const { resolveCampaignAudience } = require("./services/campaignAudienceService"
 const {
   assertReadyForAnalysis,
   getActiveInputSnapshot,
+  assertInputVerifiedForHandoff,
+  getRunProvenance,
   getSyncStatus,
   runSync,
   SyncNotReadyError,
+  UnverifiedInputError,
 } = require("./services/syncService");
 const {
   applyBrandVoiceToCampaign,
@@ -511,6 +514,14 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
     const audience = await resolveCampaignAudience(shopDomain, campaign);
 
+    // Nothing built on input we cannot vouch for reaches a real customer. This
+    // runs BEFORE the audience is split or anything is written, so a blocked
+    // handoff leaves no half-made campaign behind. Every run predating verified
+    // sync — including anything the partial-sync incident produced — is
+    // legacy_unverified and stops here until the store is re-synced.
+    const runId = campaign.run_id || req.body.runId || audience.runId;
+    const provenance = await assertInputVerifiedForHandoff(runId);
+
     // Split the audience before anything reaches Klaviyo. The held-out arm is
     // what turns "these customers bought $X" into "this campaign earned $X".
     const playId = campaign.play_id || campaign.id;
@@ -561,6 +572,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
+      inputProvenance: provenance.provenance,
+      syncRunId: provenance.syncRunId,
       template: packageResult.template,
       list: packageResult.list,
       importJob: packageResult.importJob,
@@ -569,6 +582,15 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       assignment: packageResult.assignment,
     });
   } catch (error) {
+    if (error instanceof UnverifiedInputError) {
+      res.status(409).json({
+        ok: false,
+        error: error.message,
+        inputProvenance: error.provenance,
+        blocked: "unverified_input",
+      });
+      return;
+    }
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
@@ -717,7 +739,18 @@ router.post("/campaigns/audience/preview", async (req, res) => {
       holdout = { treated: split.treated.length, held: split.holdout.length, pct: split.holdoutPct };
     }
 
-    res.json({ ok: true, shopDomain, audience, holdout });
+    const runId = campaign.run_id || req.body.runId || audience.runId;
+    const provenance = runId ? await getRunProvenance(runId) : null;
+    res.json({
+      ok: true,
+      shopDomain,
+      audience,
+      holdout,
+      // So the UI can say why a send is blocked before the merchant clicks it,
+      // rather than only after.
+      inputProvenance: provenance?.provenance || (runId ? "unknown_run" : null),
+      sendable: provenance ? !["fixture", "legacy_unverified"].includes(provenance.provenance) : false,
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

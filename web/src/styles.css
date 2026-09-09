@@ -601,3 +601,18 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
   .result-row { grid-template-columns: minmax(0,1fr) 130px; row-gap: 10px; }
   .result-row .interval { grid-column: 1 / -1; }
 }
+
+/* Persistent data-provenance state. Sits above the briefing because it changes
+   how everything below it should be read. */
+.data-state-banner { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between;
+  border: 1px solid var(--rule); border-radius: var(--radius-card); padding: 12px 14px; margin-bottom: 14px; }
+.data-state-banner.warn { background: #fdf6ee; border-color: #e6d3b8; }
+.data-state-banner.info { background: #f4f6fa; border-color: #d4dbe6; }
+.data-state-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.data-state-main strong { font-size: 13px; }
+.data-state-main span { font-size: 12.5px; color: var(--muted); }
+.data-state-meta { font-variant-numeric: tabular-nums; }
+.data-state-banner .btn { flex: none; }
+@media (max-width: 640px) {
+  .data-state-banner { flex-direction: column; align-items: stretch; }
+}

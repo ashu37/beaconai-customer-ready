@@ -1049,6 +1049,75 @@ function Sparkline({ points, tone = "accent" }) {
   );
 }
 
+// PERSISTENT data-provenance state. Deliberately not a toast: a toast says
+// "this went wrong" once and then the screen looks normal again, which is
+// exactly wrong for a briefing that is still on screen and no longer trustworthy.
+// This stays up until the underlying state changes.
+function DataStateBanner({ syncStatus, busy, onSync }) {
+  if (!syncStatus) return null;
+
+  const { ready, reasons = [], active, latest, analysis } = syncStatus;
+  const blocking = reasons[0] || null;
+
+  // Ordered by what the merchant most needs to know. A stale or unverifiable
+  // briefing outranks a failed sync, because the briefing is the thing they are
+  // currently reading.
+  let tone = null;
+  let title = null;
+  let detail = null;
+
+  if (analysis?.provenance === "fixture") {
+    tone = "warn";
+    title = "This is a sample briefing";
+    detail = "It was generated from demo data, not from your store. Campaigns from it cannot be sent.";
+  } else if (analysis?.provenance === "legacy_unverified") {
+    tone = "warn";
+    title = "This briefing's data can't be verified";
+    detail = "It predates verified sync, so we can't confirm the store data behind it was complete. Re-sync and refresh the briefing before sending anything from it.";
+  } else if (analysis?.provenance === "verified_stale") {
+    tone = "info";
+    title = "This briefing is from an earlier sync";
+    detail = "Your store has been synced again since. Refresh the briefing to analyse the newer data.";
+  } else if (!ready && blocking) {
+    tone = "warn";
+    title = blocking.code === "sync_running" ? "Sync in progress" : "Store data needs attention";
+    detail = blocking.message;
+  }
+
+  const failures = latest?.validationFailures || [];
+  const coverage = active?.coverage;
+
+  if (!tone && !failures.length) return null;
+  if (!tone) {
+    tone = "warn";
+    title = "Last sync came back incomplete";
+    detail = failures[0].message;
+  }
+
+  return (
+    <div className={`data-state-banner ${tone}`} role="status">
+      <div className="data-state-main">
+        <strong>{title}</strong>
+        <span>{detail}</span>
+        {coverage?.known && (
+          <span className="data-state-meta">
+            Analysing {coverage.daysCovered} days of order history
+            {coverage.meetsPreferred ? "" : coverage.meetsRequired ? " (under 180 days, so yearly figures are extrapolated)" : ""}
+            {typeof coverage.residualRowsOutsideFetch === "number" && coverage.residualRowsOutsideFetch > 0
+              ? ` · ${coverage.residualRowsOutsideFetch} older rows the last sync did not re-reach`
+              : ""}
+          </span>
+        )}
+      </div>
+      {onSync && blocking?.code !== "sync_running" ? (
+        <button className="btn small" onClick={onSync} disabled={busy}>
+          {busy ? "Syncing…" : "Re-sync store"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFinish, busy = false, onConnectShopify, onSyncShopify, onConnectKlaviyo, onLoadTemplates, onFinish }) {
   const steps = [
     { label: "Shopify", done: Boolean(status.shopify && hasStoreSnapshot) },
@@ -1450,6 +1519,9 @@ function App() {
   const [shopDomainDraft, setShopDomainDraft] = useState(api.shopDomain);
   const [status, setStatus] = useState({ api: false, shopify: false, klaviyo: false, shopifySource: "none", klaviyoSource: "none" });
   const [sync, setSync] = useState(null);
+  // Which sync the store data comes from, and whether the briefing on screen
+  // was built from it. Drives DataStateBanner.
+  const [syncStatus, setSyncStatus] = useState(null);
   const [engineInput, setEngineInput] = useState(null);
   const [brandContext, setBrandContext] = useState(null);
   const [atulEngineResult, setAtulEngineResult] = useState(null);
@@ -1934,6 +2006,18 @@ function App() {
     }
   }
 
+  async function loadSyncStatus() {
+    if (!api.shopDomain) return null;
+    try {
+      const result = await api.syncStatus();
+      setSyncStatus(result);
+      return result;
+    } catch (_) {
+      // Provenance is additive to the page; never block a render on it.
+      return null;
+    }
+  }
+
   async function checkConnections() {
     setLoading(true);
     setError("");
@@ -1985,6 +2069,7 @@ function App() {
       // nothing, so the previous good data is still what is on screen — say
       // which, rather than showing a success toast over unchanged numbers.
       if (result?.published === false) {
+        await loadSyncStatus();
         const reason = result.validationFailures?.[0]?.message
           || "Shopify returned an incomplete copy of the store.";
         showToast({
@@ -1997,6 +2082,7 @@ function App() {
       }
 
       await preloadStoreSnapshot();
+      await loadSyncStatus();
       const days = result?.coverage?.daysCovered;
       showToast({ message: days ? `Store synced · ${days} days of history` : "Store synced" });
       return result;
@@ -2035,6 +2121,7 @@ function App() {
     try {
       const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
       applyEngineResult(result);
+      await loadSyncStatus();
       return result;
     } finally {
       setRefreshingBriefing(false);
@@ -2069,6 +2156,7 @@ function App() {
     setRehydrating(true);
     try {
       const result = await api.getLatestEngineRun();
+      loadSyncStatus();
       setLatestRunErrored(false);
       if (result.found) {
         // Server has a (possibly fresher) run — reconcile + refresh the cache.
@@ -2502,6 +2590,11 @@ function App() {
                   <button className="btn small" onClick={() => setSparseInterstitialDismissed(true)}>Dismiss</button>
                 </div>
               ) : null}
+              <DataStateBanner
+                syncStatus={syncStatus}
+                busy={loading}
+                onSync={syncShopify}
+              />
               {!onboardingHidden ? (
                 <OnboardingBanner
                   status={status}

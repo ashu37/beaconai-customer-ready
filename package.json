@@ -11,7 +11,8 @@
     "db:init": "npm --prefix api run db:init",
     "install:all": "npm install --prefix api && npm install --prefix web",
     "engine:setup": "cd engine && python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt",
-    "test:api": "npm --prefix api test"
+    "test:api": "npm --prefix api test",
+    "test:api:db": "npm --prefix api run test:db"
   },
   "workspaces": [
     "api",

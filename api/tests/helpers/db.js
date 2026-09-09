@@ -18,6 +18,7 @@ const TABLES = [
   "clean.engine_run_snapshots",
   "clean.sync_runs",
   "clean.refunds",
+  "clean.refunds_quarantine",
   "clean.order_line_items",
   "clean.orders",
   "clean.customers",
@@ -60,19 +61,27 @@ function shopifyPayload({ orders = [], products = [], customers = [], truncated 
   };
 }
 
-// `daySpread` days of order history ending today, one order per step.
-function ordersSpanning(daySpread, count = 4) {
+// Orders covering EXACTLY `days` of history, ending today. Coverage is an
+// inclusive span, so the oldest order sits `days - 1` back: ordersSpanning(90)
+// produces a store whose declared coverage is 90, not 91.
+// `idOffset` gives a fetch its own order ids. Reusing ids makes the next sync
+// UPSERT over the same rows, which is the wrong shape for testing residue:
+// residual rows are orders Shopify has STOPPED returning, so they necessarily
+// carry ids the current fetch does not.
+function ordersSpanning(days, count = 4, idOffset = 5000) {
   const now = Date.now();
+  const span = Math.max(days - 1, 0);
   return Array.from({ length: count }, (_, i) => {
-    const ageDays = Math.round((daySpread * (count - 1 - i)) / Math.max(count - 1, 1));
+    const ageDays = Math.round((span * (count - 1 - i)) / Math.max(count - 1, 1));
     const at = new Date(now - ageDays * 86400000).toISOString();
+    const id = idOffset + i;
     return {
-      id: 5000 + i, name: `#${5000 + i}`,
+      id, name: `#${id}`,
       created_at: at, processed_at: at,
       customer: { id: `cust-${i}` }, email: `c${i}@example.com`, currency: "USD",
       subtotal_price: "50.00", total_discounts: "0", total_price: "50.00", total_tax: "0",
       financial_status: "paid", test: false,
-      line_items: [{ id: 9000 + i, title: "Serum", quantity: 1, price: "50.00", total_discount: "0" }],
+      line_items: [{ id: idOffset * 10 + i, title: "Serum", quantity: 1, price: "50.00", total_discount: "0" }],
     };
   });
 }

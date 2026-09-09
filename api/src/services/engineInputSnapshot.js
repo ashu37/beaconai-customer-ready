@@ -137,17 +137,16 @@ function orderRows(input) {
   return rows;
 }
 
-// Order-level date coverage, computed from the SAME projection the engine reads
-// — so the coverage a merchant is shown is the coverage the analysis had.
-// `known: false` when no row carries a parseable date: unknown coverage is not
-// verified coverage, and must not be reported as zero days.
-function observedCoverage(rows) {
+// Coverage over a list of date strings. `known: false` when none is parseable:
+// unknown coverage is not verified coverage, and must never be reported as zero
+// days.
+function coverageFromDates(dates) {
   let earliest = null;
   let latest = null;
   let dated = 0;
 
-  for (const row of rows) {
-    const parsed = Date.parse(row["Created at"]);
+  for (const value of dates) {
+    const parsed = Date.parse(value);
     if (!Number.isFinite(parsed)) continue;
     dated += 1;
     if (earliest == null || parsed < earliest) earliest = parsed;
@@ -166,6 +165,43 @@ function observedCoverage(rows) {
     daysCovered: Math.floor((latest - earliest) / 86400000) + 1,
     datedRows: dated,
   };
+}
+
+// Coverage of the PUBLISHED input — every clean row for the shop, which is what
+// the engine will read. Computed from the same projection the engine consumes.
+function observedCoverage(rows) {
+  return coverageFromDates(rows.map((row) => row["Created at"]));
+}
+
+// Coverage of what ONE fetch actually reached, straight off the Shopify
+// payload. This is deliberately not the same number as observedCoverage: the
+// clean tables accumulate, so they hold rows earlier syncs wrote that Shopify
+// no longer returns. Validating "did this sync reach far enough back?" against
+// the accumulated tables lets residue from a previous sync vouch for a fetch
+// that in fact reached nowhere near that far — which is exactly how a
+// truncated sync passes for a healthy one.
+//
+// Same date precedence as the normalized projection (processed_at first), so
+// the two numbers are comparable.
+function fetchedOrderCoverage(orders) {
+  return coverageFromDates(
+    (orders || []).map((order) => order.processed_at || order.created_at)
+  );
+}
+
+// Rows in the published input that fall outside what this fetch reached. They
+// are real rows the engine will read, and no current sync vouches for them.
+function residualRowsOutsideFetch(rows, fetched) {
+  if (!fetched || fetched.known !== true) return null;
+  const from = Date.parse(fetched.earliestOrderAt);
+  const to = Date.parse(fetched.latestOrderAt);
+  let outside = 0;
+  for (const row of rows) {
+    const at = Date.parse(row["Created at"]);
+    if (!Number.isFinite(at)) continue;
+    if (at < from || at > to) outside += 1;
+  }
+  return outside;
 }
 
 function buildEngineInputSnapshot(input) {
@@ -201,7 +237,10 @@ module.exports = {
   SNAPSHOT_SCHEMA_VERSION,
   ORDER_CSV_HEADERS,
   buildEngineInputSnapshot,
+  coverageFromDates,
+  fetchedOrderCoverage,
   observedCoverage,
   orderRows,
+  residualRowsOutsideFetch,
   snapshotToCsv,
 };
