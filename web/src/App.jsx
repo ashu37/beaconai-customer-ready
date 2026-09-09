@@ -2054,7 +2054,13 @@ function App() {
       setError("Create the Klaviyo send package before sending.");
       return null;
     }
-    const confirmed = window.confirm(`Send this campaign now in Klaviyo to ${campaignDraft.klaviyoAudience?.count || "the matched"} recipients?`);
+    const holdoutPreview = audiencePreviewsByCampaign[campaignDraft.id]?.holdout;
+    const heldNote = holdoutPreview?.held
+      ? `\n\n${holdoutPreview.held.toLocaleString()} customers are held back and will receive nothing, so Results can measure what this earned.`
+      : "";
+    const confirmed = window.confirm(
+      `Send this campaign now in Klaviyo to ${campaignDraft.klaviyoAudience?.count || "the matched"} recipients?${heldNote}`
+    );
     if (!confirmed) return null;
 
     setSendingCampaignId(campaignDraft.id);
@@ -2078,11 +2084,19 @@ function App() {
     }
   }
 
+  // The merchant's holdout choice. Persisted on the campaign, then the preview
+  // is re-run so the counts on screen are the ones the send will actually use.
+  async function changeHoldout(playId, pct) {
+    await saveCampaignState(playId, { holdoutPct: pct });
+    const draft = finalCampaignById.get(playId) || campaignPackages.find((c) => c.id === playId);
+    if (draft) await previewCampaignAudience(draft).catch(() => {});
+  }
+
   async function previewCampaignAudience(campaignDraft) {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
-      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: result.audience }));
+      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: { ...result.audience, holdout: result.holdout || null } }));
       return result;
     } finally {
       setPreviewingCampaignId("");
@@ -2487,6 +2501,51 @@ function App() {
                                 <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
                                 <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
                               </div>
+                              {/* The holdout is stated before the send, never
+                                  discovered after it. A merchant who chooses to
+                                  hold a group back trusts the result; one who
+                                  finds out later does not. */}
+                              {preview?.holdout ? (
+                                <div className="holdout-note">
+                                  <strong>
+                                    {formatAudience(preview.holdout.treated)} of {formatAudience(preview.holdout.treated + preview.holdout.held)} customers will receive this.
+                                  </strong>
+                                  {preview.holdout.held > 0 ? (
+                                    <span>
+                                      We hold back {formatAudience(preview.holdout.held)} and send them nothing. In 30 days we compare the
+                                      two groups — it's the only way to tell you what this campaign earned, instead of what those
+                                      customers would have bought anyway.
+                                    </span>
+                                  ) : (
+                                    <span>
+                                      Everyone matched will receive this. Because no group is held back, Results can show what these
+                                      customers did afterwards, but not how much of it this campaign caused.
+                                    </span>
+                                  )}
+                                  <div className="holdout-controls">
+                                    <label>
+                                      Hold back
+                                      <select
+                                        value={String(preview.holdout.pct)}
+                                        onChange={(event) => changeHoldout(selectedCampaign.id, Number(event.target.value))}
+                                      >
+                                        <option value="0.05">5%</option>
+                                        <option value="0.1">10%</option>
+                                        <option value="0.15">15%</option>
+                                      </select>
+                                    </label>
+                                    {preview.holdout.pct > 0 ? (
+                                      <button type="button" className="link-btn" onClick={() => changeHoldout(selectedCampaign.id, 0)}>
+                                        Send to everyone
+                                      </button>
+                                    ) : (
+                                      <button type="button" className="link-btn" onClick={() => changeHoldout(selectedCampaign.id, 0.1)}>
+                                        Hold back 10% so this can be measured
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : null}
                               <div className="recipient-preview">
                                 <div className="recipient-preview-head">
                                   <div>

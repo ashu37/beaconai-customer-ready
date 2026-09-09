@@ -9,7 +9,7 @@
 // (see campaignAudienceService), and this module only records what the merchant
 // did with it.
 
-const { query } = require("../db");
+const { pool, query } = require("../db");
 
 // draft     — greenlit into the pipeline
 // approved  — merchant signed off for send
@@ -44,7 +44,7 @@ function rowToCampaign(row) {
 // updates the existing row rather than opening a second campaign for one send.
 // COALESCE on the optional columns so a partial upsert never blanks a field that
 // was already set — a later call carrying only a status must not erase the copy.
-async function upsertCampaign({ shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId }) {
+async function upsertCampaign({ shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct }) {
   if (!shopDomain) throw new Error("shopDomain is required");
   if (!runId) throw new Error("runId is required");
   if (!playId) throw new Error("playId is required");
@@ -52,14 +52,15 @@ async function upsertCampaign({ shopDomain, runId, playId, status, templateId, c
 
   const { rows } = await query(
     `INSERT INTO clean.campaigns
-       (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id)
-     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8)
+       (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id, holdout_pct)
+     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8, COALESCE($9, 0.100))
      ON CONFLICT (shop_domain, run_id, play_id) DO UPDATE SET
        status              = COALESCE($4, clean.campaigns.status),
        template_id         = COALESCE($5, clean.campaigns.template_id),
        copy                = COALESCE($6, clean.campaigns.copy),
        draft_edits         = COALESCE($7, clean.campaigns.draft_edits),
        klaviyo_campaign_id = COALESCE($8, clean.campaigns.klaviyo_campaign_id),
+       holdout_pct         = COALESCE($9, clean.campaigns.holdout_pct),
        approved_at = CASE
                        WHEN $4 = 'approved' AND clean.campaigns.approved_at IS NULL
                        THEN NOW() ELSE clean.campaigns.approved_at
@@ -75,7 +76,9 @@ async function upsertCampaign({ shopDomain, runId, playId, status, templateId, c
     [shopDomain, runId, playId, status || null, templateId || null,
      copy ? JSON.stringify(copy) : null,
      draftEdits === undefined ? null : JSON.stringify(draftEdits),
-     klaviyoCampaignId || null]
+     klaviyoCampaignId || null,
+     // NOT `|| null` — holdoutPct 0 means "send to everyone" and must survive.
+     holdoutPct === undefined || holdoutPct === null ? null : Number(holdoutPct)]
   );
   return rowToCampaign(rows[0]);
 }
@@ -169,8 +172,40 @@ async function findCachedCopy({ shopDomain, runId, playId, templateId }) {
   return rows.length ? rows[0].copy : null;
 }
 
+// Record which arm every recipient landed in. Written once, at send time —
+// after this there is no other record of who was held back, so a campaign
+// without these rows can never be measured.
+//
+// Replaces the whole set for the campaign so a retried send cannot leave a
+// customer in two arms, and runs in a transaction so a partial write never
+// produces a half-recorded split.
+async function recordRecipients(campaignId, { treated = [], holdout = [] }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`DELETE FROM clean.campaign_recipients WHERE campaign_id = $1`, [campaignId]);
+    for (const [arm, list] of [["treated", treated], ["holdout", holdout]]) {
+      if (!list.length) continue;
+      const ids = list.map((r) => r.customerId ?? r).filter(Boolean);
+      await client.query(
+        `INSERT INTO clean.campaign_recipients (campaign_id, customer_id, arm)
+         SELECT $1, unnest($2::text[]), $3
+         ON CONFLICT (campaign_id, customer_id) DO NOTHING`,
+        [campaignId, ids, arm]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   upsertCampaign,
+  recordRecipients,
   cacheCopyOnCampaign,
   listCampaigns,
   getCampaign,

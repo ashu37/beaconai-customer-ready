@@ -150,6 +150,7 @@ async function resolveCampaignAudience(shopDomain, campaign = {}) {
     count: recipients.length,
     recipients,
     materialized: true,
+    runId: latest.runId,
     status: entry.status,
     audienceDefinitionId: entry.audienceDefinitionId,
     memberCount: customerIds.length,
