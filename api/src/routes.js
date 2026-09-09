@@ -38,6 +38,11 @@ const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
 const { splitAudience } = require("./services/holdoutService");
 const {
+  measureCampaign,
+  summarizeCampaign,
+  staleCampaignIds,
+} = require("./services/measurementService");
+const {
   upsertCampaign,
   recordRecipients,
   cacheCopyOnCampaign,
@@ -567,6 +572,42 @@ router.patch("/campaigns/:id", async (req, res) => {
     res.json({ ok: true, campaign });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// One campaign's measurement. Recomputes when the stored numbers are stale —
+// at this volume that is cheap enough to do on read rather than on a schedule.
+router.get("/campaigns/:id/results", async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const summary = req.query.refresh === "false"
+      ? await summarizeCampaign(id)
+      : await measureCampaign(id);
+    res.json({ ok: true, ...summary });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Every sent campaign for a shop, measured. Stale ones are recomputed first, so
+// the page never reports numbers that are a week old without saying so.
+router.get("/results/:shopDomain", async (req, res) => {
+  try {
+    const shopDomain = req.params.shopDomain;
+    for (const id of await staleCampaignIds(shopDomain)) {
+      await measureCampaign(id).catch(() => {});
+    }
+    const campaigns = await listCampaigns(shopDomain);
+    const sent = campaigns.filter((c) => c.sentAt);
+    const results = [];
+    for (const campaign of sent) results.push(await summarizeCampaign(campaign.id));
+    res.json({ ok: true, results });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
