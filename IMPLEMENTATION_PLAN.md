@@ -34,10 +34,10 @@ Also defer billing automation, automatic re-sends, subscription LTV/profit, addi
 
 1. **P0: reconcile current state and protect real data.** Diagnose the reported partial-sync incident; verify deployment access boundaries; add isolated fixtures.
    **Status: OPEN.** Ticket A did not diagnose the incident and does not claim to have prevented its recurrence. What it does is contain the fallout: a sync now publishes whole or not at all, and every run predating verified sync — including any the incident produced — is `legacy_unverified`, readable as history and refused at handoff until the store is re-synced and re-analysed. The cause remains unestablished, and establishing it from logs and data is still required before the pilot. Until then, no recommendation produced before Ticket A may be sent.
-2. **P1: make one campaign trustworthy and sendable.** Sync publication, durable campaign state, branded email, clear evidence, and Klaviyo handoff. Fix essential layout along the way.
+2. **P1: make one campaign trustworthy and sendable.** Sync publication, durable campaign state, branded email, clear evidence, and Klaviyo handoff. Between C's backend foundation and D's UI implementation, complete the shared C/D UI checkpoint below. Implement its copy/preview changes in C and its handoff/status changes in D; do not close either ticket's UI work before the agreed screens are implemented. Fix essential layout along the way.
 3. **P2: make measurement valid from the first send.** Settle the program measurement protocol and record required assignments/timestamps. Correct existing Results semantics before exposure to merchants.
 4. **Launch the assisted pilot when the first-send gate passes.** P2 data collection must be ready; elaborate reporting need not be.
-5. **P3: finish the first review during the observation period.** Minimal campaign Results and validated program summary. Set an internal delivery date before the first promised merchant review.
+5. **P3: finish the first review during the observation period.** Before Ticket G's UI implementation, complete the Results UI clarification checkpoint below: annotated wireframe, exact wording and state examples reviewed by the founder. Then implement minimal campaign Results and the validated program summary. Set an internal delivery date before the first promised merchant review.
 6. **Expand only against observed friction.** Retrieve/search history when merchants cannot find campaigns; add a trend when totals fail to answer their question; add self-service when assisted setup repeats reliably.
 
 Tickets below are implementation slices. Named new fields/endpoints are proposed contracts, not existing capabilities. Engineers may adapt naming to repository conventions without weakening behavior. Record material alternatives before changing scope.
@@ -92,9 +92,29 @@ Tickets below are implementation slices. Named new fields/endpoints are proposed
 
 **Tests:** two distinct shops, isolation of configuration, missing logo/template, unsafe slot text/URL, identical preview/handoff HTML revision, a preview marked stale once the campaign revision moves past it, historical HTML unchanged after a new brand version. Review representative desktop/mobile email rendering and one provider preview/test-email flow with an authorized test recipient.
 
-**Done:** merchant can send without rebuilding the email in Klaviyo.
+**Done:** merchant can send without rebuilding the email in Klaviyo. C's copy/preview UI must match the shared C/D specification below; backend completion alone does not close C.
+
+## Between C and D — specify and implement the campaign UI
+
+**Timing:** complete this checkpoint now, while C's backend fixes continue, and before D's UI implementation. Do not leave it until both tickets close: the copy editor, preview and provider handoff are one merchant journey. D's independent authentication and reconciliation work may proceed in parallel.
+
+**Deliverable:** a compact `CAMPAIGN_UI_SPEC.md` with an annotated desktop wireframe, a narrow-screen adaptation, exact labels and a button/state table. Drafted: [CAMPAIGN_UI_SPEC.md](CAMPAIGN_UI_SPEC.md) — **awaiting founder review.** No screens are implemented against it until that review happens; the C-side pieces already built are listed at the end of the spec so the review can confirm or change them. The founder reviews the proposed flow once before implementation. This is clarification of the existing pilot scope, not a template picker or email-builder project.
+
+The specification must settle:
+
+- **Copy and branding (C):** where the active merchant shell name/version appears; which controls edit copy versus visual branding; subject, preview text, headline, body, optional support text, button label and destination URL; saved/unsaved/conflicted states; and confirmation before replacing edited starting copy. Make clear that the pilot uses one founder-configured approved shell per store. Existing copy-starting options must not look like a Klaviyo visual-template picker.
+- **Branded preview (C):** position and size beside the editor on desktop and stacked on narrow screens; inbox/email views where retained; loading, missing brand setup, invalid/missing destination, refresh failure and stale-preview states. Define retry actions and how a changed draft or shell version invalidates review. A previous render may remain visible only when explicitly marked out of date.
+- **Review and handoff (D):** a concise summary of the saved email, destination, originating audience, planned treatment/holdout counts, and sender details where known. Label unknown values honestly and identify checks completed in Klaviyo. The primary path is **Create draft in Klaviyo → Open draft in Klaviyo**; BeaconAI has no direct-send action in the pilot.
+- **Execution states (D):** ready, creating, draft created, awaiting send, sent, known failure and uncertain provider outcome requiring reconciliation. For each, specify the exact message, primary/secondary actions and disabled controls. A creating/reserved state prevents duplicate handoff; an uncertain outcome must not offer a blind retry. Only confirmed provider execution becomes “Sent.”
+- **Continuity:** returning to a saved or handed-off campaign restores its actual state and reviewed content. Define read-only behavior after handoff and explain how edits subsequently made in Klaviyo relate to the stored handoff snapshot; do not label that snapshot as the final sent email unless verified. Failed saves or unresolved conflicts block handoff, and changing the reviewed email or shell requires renewed review.
+
+Map each component/state to its API fields and owner (C or D), including the campaign revision, preview content/template version, provider reference and freshness. Include focus/keyboard behavior and status cues that do not rely only on color. Use labeled seed examples rather than live recipients for design review.
+
+**Implementation and exit criteria:** after the specification is agreed, implement C's editor/preview changes and D's review/handoff/status changes in their respective tickets. Attach desktop and narrow-screen screenshots and walk through: edit → save → current preview → create draft → open Klaviyo → reconcile status. Also verify failed save, changed shell, failed preview and uncertain handoff recovery. C closes when its agreed screens and renderer checks pass; D closes when its agreed screens and execution checks pass. The combined flow must pass before the first live handoff.
 
 ## Ticket D — first-send safety and honest execution (P1/P2, blocker)
+
+**UI dependency:** use the agreed `CAMPAIGN_UI_SPEC.md` from the checkpoint above. Implement its review summary, actions and execution states before closing D; backend safety work can begin before the wireframe is approved.
 
 **Files:** `routes.js`, `klaviyoClient.js`, `campaignService.js`, `holdoutService.js`, `schema.js`, `web/src/App.jsx`.
 
@@ -133,7 +153,25 @@ Freeze campaign recipients before sending. Preserve actual send anchors, identit
 
 **Gate:** do not send a campaign advertised as part of a measured program until its protocol and collection are implemented. A qualitative concierge pilot can proceed without that promise, but it cannot recover missing program assignment later.
 
+## Before Ticket G — clarify the Results UI
+
+**Required before starting Ticket G's UI implementation.** Produce a compact UI specification for the reduced pilot scope below. The broader sellability review is design context; it must not silently reintroduce deferred features. Independent measurement correctness fixes may proceed while this specification is prepared.
+
+The specification must include:
+
+- An annotated desktop wireframe and narrow-screen adaptation showing the campaign list/selection, detail layout, selected window, primary outcome, comparison, original email/rationale, freshness and next review action.
+- Exact component order, labels, metric units, table columns, button wording and expand/collapse behavior. Define how a merchant returns to a campaign and how selection survives refresh.
+- Example screens or component states for loading, no campaigns, still measuring, positive/negative result, no clear difference, insufficient data, missing holdout, stale data and failed refresh. Specify what remains visible and the recovery action for each; do not imply that every unavailable result is zero.
+- A compact definition of the program summary's placement and measuring/unavailable states, aligned with Ticket H. Its data contract remains dependent on Ticket F's measurement design.
+- A checklist mapping each visible element to an existing or planned API field, including null handling and the selected measurement window, plus basic keyboard/focus and non-color status behavior.
+
+Use clearly labeled seed examples. Keep the existing campaign list and simple detail interaction unless a small change is necessary for readability. Daily charts, advanced search/filtering, a full registry redesign and the four-card analytics redesign remain deferred.
+
+**Exit criterion:** the founder reviews the wireframe, wording and state examples and confirms the intended pilot UI before the engineer implements it. Store the agreed specification as `RESULTS_UI_SPEC.md` and link it from Ticket G. Resolve open layout choices here rather than leaving them implicit in implementation. This is a scope-clarification checkpoint, not another product redesign phase.
+
 ## Ticket G — truthful minimal Results (P2 fixes; P3 presentation)
+
+**UI dependency:** complete the Results UI clarification step above and attach the agreed `RESULTS_UI_SPEC.md` before implementing the screen. Ticket G's UI acceptance includes matching that specification.
 
 **Files:** `measurementService.js`, Results routes, `schema.js`, `web/src/App.jsx`.
 
