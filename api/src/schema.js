@@ -335,6 +335,12 @@ async function initSchema() {
 
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;`);
 
+  // Where this campaign's button sends people. Per-campaign because a winback
+  // and a restock rarely point at the same place; the shop's brand default
+  // covers the common case. Frozen with the rest of the sent record, so the
+  // destination in the record is the one that was actually mailed.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS destination_url TEXT;`);
+
   // Claimed at the START of a handoff, before any provider call. Two
   // simultaneous sends cannot both hold it, which is what stops a duplicate
   // draft being created while the first request is still in flight.

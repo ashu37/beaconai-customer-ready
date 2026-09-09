@@ -94,7 +94,7 @@ class CampaignFrozen extends Error {
 // the Klaviyo id and measurement counts are deliberately not here: those record
 // what happened to the send and must stay writable afterwards.
 const FROZEN_FIELDS = new Set([
-  "templateId", "copy", "draftEdits", "holdoutPct",
+  "templateId", "copy", "draftEdits", "holdoutPct", "destinationUrl",
   "approvedCopy", "renderedHtml", "templateVersion", "audienceRef", "audienceHash",
 ]);
 
@@ -124,6 +124,7 @@ function rowToCampaign(row) {
     displayName: row.display_name,
     status: row.status,
     templateId: row.template_id,
+    destinationUrl: row.destination_url,
     copy: row.copy,
     draftEdits: row.draft_edits,
     holdoutPct: row.holdout_pct === null ? null : Number(row.holdout_pct),
@@ -162,7 +163,7 @@ function rowToCampaign(row) {
 // need none — there is nothing there to lose.
 async function upsertCampaign({
   shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-  holdoutPct, displayName, expectedRevision,
+  holdoutPct, displayName, destinationUrl, expectedRevision,
 }, internal = {}) {
   if (!shopDomain) throw new Error("shopDomain is required");
   if (!runId) throw new Error("runId is required");
@@ -170,13 +171,13 @@ async function upsertCampaign({
   if (status && !STATUSES.has(status)) throw new Error(`Unknown status: ${status}`);
 
   const expected = normalizeRevision(expectedRevision);
-  const touchesFrozen = touchedFrozenFields({ templateId, copy, draftEdits, holdoutPct });
+  const touchesFrozen = touchedFrozenFields({ templateId, copy, draftEdits, holdoutPct, destinationUrl });
 
   const { rows } = await query(
     `INSERT INTO clean.campaigns
        (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id,
-        holdout_pct, display_name, approved_at, sent_at)
-     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8, COALESCE($9, 0.100), $10,
+        holdout_pct, display_name, destination_url, approved_at, sent_at)
+     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8, COALESCE($9, 0.100), $10, $14,
              -- Stamped on INSERT too, not only on conflict. A campaign created
              -- straight into 'sent' still has to record WHEN: measurement
              -- windows run from sent_at, so a missing stamp makes the campaign
@@ -193,6 +194,7 @@ async function upsertCampaign({
        -- The name is kept once known and never blanked by a later write that
        -- happens not to carry it; that is the whole point of storing it.
        display_name        = COALESCE($10, clean.campaigns.display_name),
+       destination_url     = COALESCE($14, clean.campaigns.destination_url),
        revision            = clean.campaigns.revision + 1,
        approved_at = CASE
                        WHEN $4 = 'approved' AND clean.campaigns.approved_at IS NULL
@@ -222,7 +224,8 @@ async function upsertCampaign({
      displayName || null,
      expected,
      touchesFrozen,
-     Boolean(internal.holdsReservation)]
+     Boolean(internal.holdsReservation),
+     destinationUrl || null]
   );
 
   if (rows.length) return rowToCampaign(rows[0]);
@@ -232,7 +235,7 @@ async function upsertCampaign({
   // this" from "this has already been sent".
   const current = await findCampaign({ shopDomain, runId, playId });
   if (!current) throw new Error("Campaign write affected no row and none exists");
-  throw conflictFor(current, expected, touchesFrozen, { templateId, copy, draftEdits, holdoutPct });
+  throw conflictFor(current, expected, touchesFrozen, { templateId, copy, draftEdits, holdoutPct, destinationUrl });
 }
 
 function normalizeRevision(value) {
@@ -346,6 +349,7 @@ async function updateCampaign(id, patch = {}, internal = {}) {
     holdoutPct: "holdout_pct",
     klaviyoCampaignId: "klaviyo_campaign_id",
     displayName: "display_name",
+    destinationUrl: "destination_url",
   };
 
   if (patch.status && !STATUSES.has(patch.status)) {

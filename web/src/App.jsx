@@ -684,6 +684,9 @@ function CampaignReviewPane({
   saveState,
   onRetrySave,
   activeBrandTemplateVersion,
+  onPreviewRendered,
+  destinationUrl,
+  onChangeDestination,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -698,7 +701,7 @@ function CampaignReviewPane({
   // What the preview ON SCREEN was rendered from. Compared against the current
   // draft to decide whether the merchant is looking at the email that would
   // actually be sent.
-  const [renderedFrom, setRenderedFrom] = useState({ signature: null, templateVersion: null });
+  const [renderedFrom, setRenderedFrom] = useState({ signature: null, templateVersion: null, fingerprint: null });
   const [previewFailed, setPreviewFailed] = useState(false);
   const [brandSetupRequired, setBrandSetupRequired] = useState(false);
 
@@ -709,7 +712,18 @@ function CampaignReviewPane({
     try {
       const result = await api.previewCampaignHtml({ ...currentDraft, brandContext });
       setPreviewHtml(result.html || "");
-      setRenderedFrom({ signature, templateVersion: result.templateVersion ?? null });
+      setRenderedFrom({
+        signature,
+        templateVersion: result.templateVersion ?? null,
+        fingerprint: result.renderFingerprint ?? null,
+      });
+      if (onPreviewRendered) {
+        onPreviewRendered({
+          templateVersion: result.templateVersion ?? null,
+          fingerprint: result.renderFingerprint ?? null,
+          signature,
+        });
+      }
       setPreviewFailed(false);
       setBrandSetupRequired(false);
     } catch (err) {
@@ -810,6 +824,18 @@ function CampaignReviewPane({
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
           <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
+          {onChangeDestination ? (
+            <label className="destination-field">
+              Button links to
+              <input
+                type="url"
+                inputMode="url"
+                placeholder="https://yourstore.com/collections/..."
+                value={destinationUrl || ""}
+                onChange={(event) => onChangeDestination(event.target.value)}
+              />
+            </label>
+          ) : null}
           {saveLabel ? (
             <span className={`save-state ${saveState}`} role="status">
               {saveLabel}
@@ -1634,6 +1660,10 @@ function App() {
   // Ticket C: the brand shell version this shop currently sends with. A new
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
+  const [destinationByPlay, setDestinationByPlay] = useState({});
+  // The rendering the merchant actually looked at, per play. Handoff sends this
+  // back so approval binds to that email rather than to whatever renders later.
+  const approvedRender = useRef({});
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   // D6b: weekly series for the Orders / Customers sparklines.
   const [statsSeries, setStatsSeries] = useState(null);
@@ -1925,6 +1955,9 @@ function App() {
         setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
         setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
         setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
+        setDestinationByPlay(Object.fromEntries(
+          thisRun.filter((c) => c.destinationUrl).map((c) => [c.playId, c.destinationUrl])
+        ));
         for (const c of thisRun) {
           latestRevision.current[c.playId] = c.revision;
           savedSignatureRef.current[c.playId] = draftSignature(c.draftEdits);
@@ -2593,6 +2626,11 @@ function App() {
         // Identify the campaign so the server resolves the audience from its
         // ORIGIN run rather than whatever the latest run happens to be.
         campaignId: campaignIdByPlay[campaignDraft.id],
+        // Bind the send to the email that was actually reviewed. If the shell
+        // was re-approved or the copy moved since, the server refuses rather
+        // than sending something nobody looked at.
+        expectedTemplateVersion: approvedRender.current[campaignDraft.id]?.templateVersion ?? null,
+        expectedRenderFingerprint: approvedRender.current[campaignDraft.id]?.fingerprint ?? null,
         // The revision the merchant actually reviewed. The server reserves the
         // campaign against it before touching Klaviyo, so a campaign edited
         // since approval cannot be handed off as though it had been signed off.
@@ -2743,6 +2781,19 @@ function App() {
     if (campaign.frozen) {
       showToast({ message: "This campaign was already sent — its content is read-only." });
     }
+  }
+
+  // The campaign's own destination. Debounced like copy edits, and persisted:
+  // an email whose button goes nowhere is not a campaign, and the value has to
+  // survive a refresh like everything else the merchant sets.
+  const destinationTimers = useRef({});
+  function changeDestination(playId, value) {
+    setDestinationByPlay((prev) => ({ ...prev, [playId]: value }));
+    clearTimeout(destinationTimers.current[playId]);
+    destinationTimers.current[playId] = setTimeout(() => {
+      delete destinationTimers.current[playId];
+      saveCampaignState(playId, { destinationUrl: value });
+    }, 600);
   }
 
   function chooseTemplate(playId, templateId) {
@@ -3171,6 +3222,9 @@ function App() {
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
                                 saveState={saveStateByPlay[reviewPlay.id]}
                                 activeBrandTemplateVersion={brandTemplateVersion}
+                                destinationUrl={destinationByPlay[reviewPlay.id]}
+                                onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
+                                onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}
                                 onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />

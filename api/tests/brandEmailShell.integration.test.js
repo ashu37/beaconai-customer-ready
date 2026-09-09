@@ -234,14 +234,16 @@ suite("the preview is the bytes the send would use", async () => {
   assert.equal(preview.status, 200);
   assert.equal(preview.body.templateVersion, template.version);
 
-  // The handoff path renders through the same function with the same inputs.
-  // Not "similar output" — the same bytes, which is the only version of this
-  // claim worth making.
+  // The handoff path renders through the same FINALIZATION and the same
+  // renderer. Not "similar output" — the same bytes, which is the only version
+  // of this claim worth making.
+  const { finalizeCampaignForRender } = require("../src/services/brandContextService");
   const direct = renderBrandEmail(template, slotValuesForCampaign(
-    { ...draft, brandContext: { brandName: "Shop A" } },
+    finalizeCampaignForRender(draft, { brandName: "Shop A" }),
     { ...template.brand, brandName: "Shop A" }
   ));
   assert.equal(preview.body.html, direct);
+  assert.equal(preview.body.renderFingerprint.length, 16);
 });
 
 suite("a rendering failure blocks handoff with an actionable message", async () => {
@@ -313,4 +315,234 @@ suite("one shop's shell cannot be reached through another shop's request", async
   });
   assert.equal(preview.status, 409);
   assert.equal(preview.body.code, "brand_setup_required");
+});
+
+suite("an intentionally emptied paragraph stays empty in the sent email", async () => {
+  await db.resetDatabase();
+  const template = await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(), brand: { brandName: "Shop A" }, approvedBy: "founder",
+  });
+  const { finalizeCampaignForRender } = require("../src/services/brandContextService");
+
+  // A merchant deleting the support paragraph means they do not want one.
+  // `||` treated "" as absent and refilled it with brand-voice filler — text
+  // written as guidance to a copywriter, mailed to customers as body copy.
+  const brandContext = {
+    brandName: "Shop A",
+    category: "beauty",
+    messaging: { useWords: ["clean", "gentle", "daily"] },
+    productLanguage: { bestSellers: [{ title: "Night Serum" }] },
+  };
+  const emptied = { ...draft, bodyP2: "" };
+
+  const finalized = finalizeCampaignForRender(emptied, brandContext);
+  assert.equal(finalized.bodyP2, "", "the deletion survives finalization");
+
+  const html = renderBrandEmail(template, slotValuesForCampaign(finalized, template.brand));
+  assert.ok(!html.includes("brand vocabulary"), "no filler reached the email");
+  assert.ok(!html.includes("Keep the copy"));
+
+  // An ABSENT field still gets its default — that is the difference being drawn.
+  const absent = finalizeCampaignForRender({ ...draft, bodyP2: undefined }, brandContext);
+  assert.ok(absent.bodyP2.length > 0);
+});
+
+suite("the handoff payload is byte-identical to the preview", async () => {
+  await db.resetDatabase();
+  const template = await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(), brand: { brandName: "Shop A" }, approvedBy: "founder",
+  });
+  await query(`INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete')`, [SHOP_A]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run, input_provenance, sync_run_id)
+     VALUES ('run-p', $1, 'store', '{}'::jsonb, 'verified', (SELECT id FROM clean.sync_runs WHERE shop_domain = $1))`,
+    [SHOP_A]
+  );
+
+  const emptied = { ...draft, play_id: "play-1", bodyP2: "" };
+  const preview = await api.post("/klaviyo/campaigns/preview-html", {
+    shopDomain: SHOP_A, campaign: emptied,
+  });
+  assert.equal(preview.status, 200);
+
+  // Reproduce the handoff's own rendering path with the same inputs. It applies
+  // the SAME finalization now; previously it applied brand-copy defaults the
+  // preview never saw, so these bytes differed.
+  const { finalizeCampaignForRender } = require("../src/services/brandContextService");
+  const { buildBrandContext } = require("../src/services/brandContextService");
+  const { getEngineInput } = require("../src/services/shopifyRepository");
+  const brandContext = buildBrandContext(await getEngineInput(SHOP_A));
+  const handoffHtml = renderBrandEmail(template, slotValuesForCampaign(
+    finalizeCampaignForRender(emptied, brandContext),
+    { ...template.brand, brandName: brandContext?.brandName }
+  ));
+  assert.equal(handoffHtml, preview.body.html);
+});
+
+suite("a send is refused when the shell changed since the preview", async () => {
+  await db.resetDatabase();
+  const { upsertCampaign } = require("../src/services/campaignService");
+  await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell({ accentColor: "#111111" }),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/" }, approvedBy: "founder",
+  });
+  await query(`INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete')`, [SHOP_A]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run, input_provenance, sync_run_id)
+     VALUES ('run-v', $1, 'store', '{}'::jsonb, 'verified', (SELECT id FROM clean.sync_runs WHERE shop_domain = $1))`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.customers (id, shop_domain, email, created_at) VALUES ('c-1', $1, 'c1@example.com', NOW())`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-v', 'aud-v', 'play-1', 'MATERIALIZED', $1)`,
+    [["c-1"]]
+  );
+  const campaign = await upsertCampaign({ shopDomain: SHOP_A, runId: "run-v", playId: "play-1" });
+
+  // The merchant reviewed version 1. A new shell is approved before they send.
+  await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell({ accentColor: "#eeeeee" }),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/" }, approvedBy: "founder",
+  });
+
+  const response = await api.post("/klaviyo/campaigns/from-engine", {
+    shopDomain: SHOP_A, campaignId: campaign.id, expectedRevision: campaign.revision,
+    expectedTemplateVersion: 1,
+    campaign: { play_id: "play-1", ...draft },
+  });
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, "preview_out_of_date");
+  assert.equal(response.body.reviewedVersion, 1);
+  assert.equal(response.body.activeVersion, 2);
+  assert.match(response.body.error, /Refresh the preview/);
+
+  // Nothing was sent, and the reservation was handed back so a retry is possible.
+  const { getCampaign } = require("../src/services/campaignService");
+  const after = await getCampaign(campaign.id);
+  assert.equal(after.frozen, false);
+  assert.equal(after.handoffReservedAt, null);
+});
+
+suite("a send is refused when the rendering is not the one approved", async () => {
+  await db.resetDatabase();
+  const { upsertCampaign } = require("../src/services/campaignService");
+  await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/" }, approvedBy: "founder",
+  });
+  await query(`INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete')`, [SHOP_A]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run, input_provenance, sync_run_id)
+     VALUES ('run-f', $1, 'store', '{}'::jsonb, 'verified', (SELECT id FROM clean.sync_runs WHERE shop_domain = $1))`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.customers (id, shop_domain, email, created_at) VALUES ('c-1', $1, 'c1@example.com', NOW())`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-f', 'aud-f', 'play-1', 'MATERIALIZED', $1)`,
+    [["c-1"]]
+  );
+  const campaign = await upsertCampaign({ shopDomain: SHOP_A, runId: "run-f", playId: "play-1" });
+
+  const response = await api.post("/klaviyo/campaigns/from-engine", {
+    shopDomain: SHOP_A, campaignId: campaign.id, expectedRevision: campaign.revision,
+    expectedRenderFingerprint: "0000000000000000",
+    campaign: { play_id: "play-1", ...draft },
+  });
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, "preview_out_of_date");
+  assert.match(response.body.error, /not the one that was previewed/);
+});
+
+suite("a campaign with nowhere to send is refused, not given an empty button", async () => {
+  await db.resetDatabase();
+  const template = await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(), brand: { brandName: "Shop A" }, approvedBy: "founder",
+  });
+
+  // No campaign destination and no shop default.
+  const { ctaUrl, ...noDestination } = draft;
+  assert.throws(
+    () => renderBrandEmail(template, slotValuesForCampaign(noDestination, template.brand)),
+    (error) => {
+      assert.equal(error.name, "MissingDestination");
+      assert.equal(error.code, "missing_destination");
+      assert.match(error.message, /Set where its button should send/);
+      return true;
+    }
+  );
+
+  const preview = await api.post("/klaviyo/campaigns/preview-html", {
+    shopDomain: SHOP_A, campaign: noDestination,
+  });
+  assert.equal(preview.status, 400);
+  assert.equal(preview.body.code, "missing_destination");
+
+  // The campaign's own destination satisfies it...
+  const withCampaignUrl = renderBrandEmail(template, slotValuesForCampaign(
+    { ...noDestination, destinationUrl: "https://shop-a.example/collections/new" }, template.brand
+  ));
+  assert.ok(withCampaignUrl.includes("https://shop-a.example/collections/new"));
+  assert.ok(!withCampaignUrl.includes('href=""'));
+
+  // ...and so does the shop-level default.
+  const withBrandDefault = renderBrandEmail(template, slotValuesForCampaign(
+    noDestination, { ...template.brand, ctaUrl: "https://shop-a.example/" }
+  ));
+  assert.ok(withBrandDefault.includes('href="https://shop-a.example/"'));
+});
+
+suite("the campaign destination persists and freezes with the send", async () => {
+  await db.resetDatabase();
+  const { upsertCampaign, getCampaign, freezeCampaignAtHandoff, updateCampaign } = require("../src/services/campaignService");
+  await query(`INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete')`, [SHOP_A]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run)
+     VALUES ('run-d', $1, 'store', '{}'::jsonb)`, [SHOP_A]
+  );
+
+  const created = await upsertCampaign({
+    shopDomain: SHOP_A, runId: "run-d", playId: "play-1",
+    destinationUrl: "https://shop-a.example/collections/restock",
+  });
+  assert.equal(created.destinationUrl, "https://shop-a.example/collections/restock");
+
+  const reloaded = await getCampaign(created.id);
+  assert.equal(reloaded.destinationUrl, "https://shop-a.example/collections/restock");
+
+  await freezeCampaignAtHandoff(created.id, { approvedCopy: draft, customerIds: ["c-1"] });
+  // The destination is part of what was sent, so it stops being editable.
+  await assert.rejects(
+    () => updateCampaign(created.id, { destinationUrl: "https://elsewhere.example/" }),
+    { name: "CampaignFrozen" }
+  );
+});
+
+suite("a missing logo or product image omits its block rather than breaking it", async () => {
+  await db.resetDatabase();
+  const template = await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell({ showLogo: true }),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/" }, approvedBy: "founder",
+  });
+
+  // No logo configured, no featured product. Rendering src="" would show a
+  // broken-image icon in most clients — in an email already approved.
+  const html = renderBrandEmail(template, slotValuesForCampaign(
+    { bodyH2: "Headline", bodyP1: "Body", cta: "Shop" }, template.brand
+  ));
+  assert.ok(!html.includes('src=""'), "no empty image sources");
+  assert.ok(!html.includes("<img"), "the image blocks are omitted entirely");
+
+  const withBoth = renderBrandEmail(template, slotValuesForCampaign(
+    { ...draft, ctaUrl: "https://shop-a.example/" },
+    { ...template.brand, logoUrl: "https://cdn.shop-a.example/logo.png" }
+  ));
+  assert.ok(withBoth.includes("logo.png") && withBoth.includes("serum.jpg"));
 });

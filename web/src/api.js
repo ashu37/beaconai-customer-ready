@@ -91,10 +91,13 @@ export const api = {
   // `campaign.campaignId`, when present, tells the server which existing
   // campaign this is — so the audience is resolved from that campaign's origin
   // run rather than the latest one.
-  createSendPackage: ({ campaignId, expectedRevision, ...campaign } = {}) =>
+  createSendPackage: ({ campaignId, expectedRevision, expectedTemplateVersion, expectedRenderFingerprint, ...campaign } = {}) =>
     request("/klaviyo/campaigns/from-engine", {
       method: "POST",
-      body: JSON.stringify({ shopDomain, campaignId, expectedRevision, campaign }),
+      body: JSON.stringify({
+        shopDomain, campaignId, expectedRevision,
+        expectedTemplateVersion, expectedRenderFingerprint, campaign,
+      }),
     }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   // Ticket C: which branded shell this shop sends with, if any.

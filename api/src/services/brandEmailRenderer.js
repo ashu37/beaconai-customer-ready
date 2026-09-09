@@ -21,6 +21,17 @@ const TEXT_SLOTS = new Set([
 ]);
 const URL_SLOTS = new Set(["cta_url", "product_image_url", "logo_url"]);
 
+// An email whose button goes nowhere is not a campaign. The others are genuinely
+// optional — a shop may have no logo, a play may feature no product — and those
+// are handled by omitting their block rather than rendering a broken image.
+const REQUIRED_URL_SLOTS = new Set(["cta_url"]);
+
+// Blocks that only render when their slot has a value: [[if:logo_url]]…[[endif]].
+// Without this, an absent logo or product image renders <img src=""> — a broken
+// image icon in most clients — and "missing logo" becomes a visible defect in an
+// email the merchant already approved.
+const CONDITIONAL_PATTERN = /\[\[if:([a-z0-9_]+)\]\]([\s\S]*?)\[\[endif\]\]/gi;
+
 // Provider syntax the shell may contain and the renderer must leave alone.
 const REQUIRED_PROVIDER_TAGS = [/\{%\s*unsubscribe\s*%\}/i];
 
@@ -43,6 +54,19 @@ class BrandSetupRequired extends Error {
     this.code = "brand_setup_required";
     this.statusCode = 409;
     this.shopDomain = shopDomain;
+  }
+}
+
+class MissingDestination extends Error {
+  constructor() {
+    super(
+      "This campaign has no destination link. Set where its button should send " +
+      "customers before previewing or sending."
+    );
+    this.name = "MissingDestination";
+    this.code = "missing_destination";
+    this.statusCode = 400;
+    this.slot = "cta_url";
   }
 }
 
@@ -70,7 +94,12 @@ function escapeHtml(value) {
 // merchant would have approved it without knowing.
 function safeUrl(value, slot) {
   const raw = String(value == null ? "" : value).trim();
-  if (!raw) return "";
+  if (!raw) {
+    // Previously this returned "", producing href="" — a button that looks
+    // finished and goes nowhere, in an email the merchant had approved.
+    if (REQUIRED_URL_SLOTS.has(slot)) throw new MissingDestination();
+    return "";
+  }
   let parsed;
   try {
     parsed = new URL(raw);
@@ -97,6 +126,12 @@ function validateShell(html, { requiredSlots = ["headline", "body", "cta_text", 
 
   const present = new Set();
   for (const match of source.matchAll(SLOT_PATTERN)) present.add(match[1].toLowerCase());
+
+  const openBlocks = (source.match(/\[\[if:[a-z0-9_]+\]\]/gi) || []).length;
+  const closeBlocks = (source.match(/\[\[endif\]\]/gi) || []).length;
+  if (openBlocks !== closeBlocks) {
+    problems.push(`it has ${openBlocks} [[if:...]] block(s) and ${closeBlocks} [[endif]]`);
+  }
 
   for (const slot of requiredSlots) {
     if (!present.has(slot)) problems.push(`it has no [[slot:${slot}]] placeholder`);
@@ -130,7 +165,15 @@ function validateShell(html, { requiredSlots = ["headline", "body", "cta_text", 
 function renderBrandEmail(template, values = {}) {
   if (!template || !template.html) throw new BrandSetupRequired(template?.shopDomain || "this shop");
 
-  return String(template.html).replace(SLOT_PATTERN, (_, rawName) => {
+  // Conditionals resolve FIRST, so a block dropped for an absent value never
+  // reaches slot substitution and cannot fail on its own emptiness.
+  const withBlocks = String(template.html).replace(CONDITIONAL_PATTERN, (_, rawName, inner) => {
+    const slot = String(rawName).toLowerCase();
+    const value = values[slot];
+    return value == null || String(value).trim() === "" ? "" : inner;
+  });
+
+  return withBlocks.replace(SLOT_PATTERN, (_, rawName) => {
     const slot = String(rawName).toLowerCase();
     const value = values[slot];
     if (URL_SLOTS.has(slot)) return safeUrl(value, slot);
@@ -152,7 +195,9 @@ function slotValuesForCampaign(campaign = {}, brand = {}) {
     body: campaign.bodyP1 || campaign.previewText || "",
     support_copy: campaign.bodyP2 || "",
     cta_text: campaign.cta || "Shop now",
-    cta_url: campaign.ctaUrl || brand.ctaUrl || "",
+    // The campaign's own destination first, then the shop's default. Neither
+    // present is an error at render time, not a silently empty href.
+    cta_url: campaign.destinationUrl || campaign.ctaUrl || brand.ctaUrl || "",
     product_title: featured?.title || "",
     product_image_url: featured?.imageUrl || "",
     logo_url: brand.logoUrl || "",
@@ -162,6 +207,8 @@ function slotValuesForCampaign(campaign = {}, brand = {}) {
 
 module.exports = {
   BrandSetupRequired,
+  MissingDestination,
+  REQUIRED_URL_SLOTS,
   BrandTemplateInvalid,
   SlotValueRejected,
   SLOT_PATTERN,
@@ -194,7 +241,7 @@ function buildStarterShell({
   showLogo = true,
 } = {}) {
   const logoBlock = showLogo
-    ? `<tr><td style="padding:20px 24px 0;"><img src="[[slot:logo_url]]" alt="[[slot:brand_name]]" style="max-height:40px;width:auto;border:0;" /></td></tr>`
+    ? `<tr><td style="padding:20px 24px 0;">[[if:logo_url]]<img src="[[slot:logo_url]]" alt="[[slot:brand_name]]" style="max-height:40px;width:auto;border:0;" />[[endif]]</td></tr>`
     : "";
 
   return `<!doctype html>
@@ -215,10 +262,10 @@ function buildStarterShell({
               <td style="padding:24px;">
                 <h1 style="margin:0 0 16px;font-size:24px;line-height:1.25;color:${accentColor};font-family:${fontStack};">[[slot:headline]]</h1>
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:${bodyColor};font-family:${fontStack};">[[slot:body]]</p>
-                <p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:${bodyColor};font-family:${fontStack};">[[slot:support_copy]]</p>
-                <div style="text-align:center;margin:0 0 20px;">
+                [[if:support_copy]]<p style="margin:0 0 24px;font-size:16px;line-height:1.55;color:${bodyColor};font-family:${fontStack};">[[slot:support_copy]]</p>[[endif]]
+                [[if:product_image_url]]<div style="text-align:center;margin:0 0 20px;">
                   <img src="[[slot:product_image_url]]" alt="[[slot:product_title]]" style="max-width:260px;width:100%;height:auto;border:0;" />
-                </div>
+                </div>[[endif]]
                 <a href="[[slot:cta_url]]" style="display:inline-block;background:${accentColor};color:${buttonTextColor};text-decoration:none;font-weight:bold;padding:14px 22px;font-family:${fontStack};">[[slot:cta_text]]</a>
               </td>
             </tr>

@@ -27,7 +27,11 @@ const SHOP = "campaign-shop.myshopify.com";
 // provider, so any test that expects to REACH the provider needs one configured.
 async function configureBrandShell(shopDomain = SHOP) {
   return saveBrandTemplate({
-    shopDomain, html: buildStarterShell(), brand: { brandName: "Test Shop" }, approvedBy: "founder",
+    shopDomain, html: buildStarterShell(),
+    // A shop-level default destination, so a campaign without its own still has
+    // somewhere for its button to go.
+    brand: { brandName: "Test Shop", ctaUrl: "https://test-shop.example/collections/all" },
+    approvedBy: "founder",
   });
 }
 const PLAY = "play-winback";

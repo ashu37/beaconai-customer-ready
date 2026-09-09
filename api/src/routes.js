@@ -41,6 +41,7 @@ const {
 const {
   BrandSetupRequired,
   BrandTemplateInvalid,
+  MissingDestination,
   SlotValueRejected,
   buildStarterShell,
   renderBrandEmail,
@@ -57,7 +58,16 @@ const {
   applyBrandVoiceToCampaign,
   buildBeaconTemplates,
   buildBrandContext,
+  finalizeCampaignForRender,
 } = require("./services/brandContextService");
+const crypto = require("node:crypto");
+
+// A short fingerprint of the exact bytes that were previewed. The merchant
+// approves a specific rendering; this is how the handoff proves it is sending
+// that one and not something rebuilt differently in the meantime.
+function renderFingerprint(html) {
+  return crypto.createHash("sha256").update(String(html)).digest("hex").slice(0, 16);
+}
 const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
 const { splitAudience } = require("./services/holdoutService");
@@ -88,7 +98,7 @@ const {
 // absent: holdsReservation, which is internal authority and now travels as a
 // separate argument to the service rather than inside the patch.
 const PUBLIC_CAMPAIGN_PATCH_FIELDS = [
-  "status", "templateId", "copy", "draftEdits", "displayName",
+  "status", "templateId", "copy", "draftEdits", "displayName", "destinationUrl",
   "audienceSize", "holdoutSize", "holdoutPct", "klaviyoCampaignId",
   "expectedRevision",
 ];
@@ -121,6 +131,17 @@ function requireFounderAuth(req, res) {
 // One shape for the three ways rendering can refuse, so the UI can tell "nothing
 // is configured yet" from "the shell is broken" from "this copy is unusable".
 function brandRenderErrorResponse(res, error) {
+  if (error instanceof MissingDestination) {
+    res.status(400).json({ ok: false, error: error.message, code: "missing_destination", slot: error.slot });
+    return true;
+  }
+  if (error && error.code === "preview_out_of_date") {
+    res.status(409).json({
+      ok: false, error: error.message, code: "preview_out_of_date",
+      reviewedVersion: error.reviewedVersion ?? null, activeVersion: error.activeVersion ?? null,
+    });
+    return true;
+  }
   if (error instanceof BrandSetupRequired) {
     res.status(409).json({ ok: false, error: error.message, code: "brand_setup_required" });
     return true;
@@ -696,7 +717,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
 
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
-    const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
+    const campaign = finalizeCampaignForRender(req.body.campaign, brandContext);
     // ONE run, resolved once, then used for everything: the provenance check,
     // the audience, and the campaign row. Verifying one run while the audience
     // came from another would let a verified run id authorize membership from a
@@ -783,10 +804,41 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     let renderedHtml;
     try {
       const brandTemplate = await requireActiveBrandTemplate(shopDomain);
+
+      // The shell the merchant REVIEWED, not whichever is active now. A version
+      // activated between the preview and the send would otherwise change an
+      // already-approved email without anyone seeing it.
+      const reviewedVersion = req.body.expectedTemplateVersion;
+      if (reviewedVersion != null && Number(reviewedVersion) !== brandTemplate.version) {
+        throw Object.assign(
+          new Error(
+            `The email shell changed since this was previewed (you reviewed version ` +
+            `${reviewedVersion}, the store now uses ${brandTemplate.version}). ` +
+            `Refresh the preview and review it again before sending.`
+          ),
+          { code: "preview_out_of_date", statusCode: 409, reviewedVersion, activeVersion: brandTemplate.version }
+        );
+      }
+
       renderedHtml = renderBrandEmail(brandTemplate, slotValuesForCampaign(
         campaign,
         { ...(brandTemplate.brand || {}), brandName: brandContext?.brandName }
       ));
+
+      // Byte-level binding. Whatever changed — copy, destination, shell — if the
+      // rendering is not the one that was approved, this refuses rather than
+      // sending something nobody reviewed.
+      const expectedFingerprint = req.body.expectedRenderFingerprint;
+      const actualFingerprint = renderFingerprint(renderedHtml);
+      if (expectedFingerprint && expectedFingerprint !== actualFingerprint) {
+        throw Object.assign(
+          new Error(
+            "This email is not the one that was previewed. Refresh the preview and review it again before sending."
+          ),
+          { code: "preview_out_of_date", statusCode: 409, expectedFingerprint, actualFingerprint }
+        );
+      }
+
       templateVersionUsed = brandTemplate.version;
     } catch (renderError) {
       // A rendering failure blocks the handoff with something actionable, and
@@ -914,20 +966,25 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
       brandContext = buildBrandContext(input);
     }
 
-    // The SAME renderer and the same shell version the send would use. A preview
-    // produced by a different code path is a preview of a different email.
+    // The SAME finalization and the SAME renderer the send uses. The preview
+    // used to render the raw draft while the handoff applied brand-copy defaults
+    // first, so the email approved and the email sent were built from different
+    // inputs — an intentionally emptied paragraph came back as filler.
+    const finalized = finalizeCampaignForRender(draft, brandContext);
     const template = await requireActiveBrandTemplate(shopDomain);
     const html = renderBrandEmail(template, slotValuesForCampaign(
-      { ...draft, brandContext },
+      finalized,
       { ...(template.brand || {}), brandName: brandContext?.brandName }
     ));
 
     res.json({
       ok: true,
       html,
-      // The version this preview was rendered with, so the client can tell when
-      // what is on screen no longer matches the campaign it belongs to.
+      // The version this preview was rendered with, and a fingerprint of the
+      // bytes. The handoff requires both back, so approval binds to THIS
+      // rendering rather than to whatever is active later.
       templateVersion: template.version,
+      renderFingerprint: renderFingerprint(html),
       renderedForRevision: req.body.expectedRevision ?? null,
     });
   } catch (error) {
@@ -964,11 +1021,11 @@ router.post("/campaigns", async (req, res) => {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
     const {
       runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-      holdoutPct, displayName, expectedRevision,
+      holdoutPct, displayName, destinationUrl, expectedRevision,
     } = req.body;
     const campaign = await upsertCampaign({
       shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-      holdoutPct, displayName, expectedRevision,
+      holdoutPct, displayName, destinationUrl, expectedRevision,
     });
     res.json({ ok: true, campaign });
   } catch (error) {
