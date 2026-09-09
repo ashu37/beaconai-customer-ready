@@ -616,3 +616,18 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 @media (max-width: 640px) {
   .data-state-banner { flex-direction: column; align-items: stretch; }
 }
+
+/* Ticket B: persistent save state for a campaign draft. A failed write has to
+   stay on screen — a toast that fades leaves the merchant typing into nothing. */
+.save-state { margin-left: 10px; font-size: 12px; color: var(--muted); }
+.save-state.saved { color: #2f7a4d; }
+.save-state.failed, .save-state.conflict { color: #a4402c; font-weight: 600; }
+.save-state .link-btn { margin-left: 6px; }
+
+/* Campaigns from earlier engine runs. The rows always survived; until now there
+   was no way into them from the UI. */
+.earlier-campaigns { border: 1px solid var(--rule); border-radius: var(--radius-card); padding: 10px 13px; margin-bottom: 14px; background: #fbfaf7; }
+.earlier-campaigns summary { font-size: 13px; cursor: pointer; }
+.earlier-campaigns-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.earlier-campaigns-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.earlier-campaign-meta { color: var(--muted); white-space: nowrap; }

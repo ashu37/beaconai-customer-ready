@@ -54,13 +54,71 @@ const {
   staleCampaignIds,
 } = require("./services/measurementService");
 const {
+  CampaignFrozen,
+  CampaignHandoffInProgress,
+  CampaignRevisionConflict,
+  CampaignRevisionRequired,
+  releaseHandoffReservation,
+  reserveCampaignForHandoff,
   upsertCampaign,
   recordRecipients,
   cacheCopyOnCampaign,
+  freezeCampaignAtHandoff,
+  getCampaign,
   listCampaigns,
   updateCampaign,
   findCachedCopy,
 } = require("./services/campaignService");
+
+// The only fields a client may set through the public patch route. Notably
+// absent: holdsReservation, which is internal authority and now travels as a
+// separate argument to the service rather than inside the patch.
+const PUBLIC_CAMPAIGN_PATCH_FIELDS = [
+  "status", "templateId", "copy", "draftEdits", "displayName",
+  "audienceSize", "holdoutSize", "holdoutPct", "klaviyoCampaignId",
+  "expectedRevision",
+];
+
+function publicCampaignPatch(body) {
+  const patch = {};
+  for (const field of PUBLIC_CAMPAIGN_PATCH_FIELDS) {
+    if (body[field] !== undefined) patch[field] = body[field];
+  }
+  return patch;
+}
+
+// One shape for both write conflicts, so the client can tell "someone else
+// changed this" from "this has already been sent" and recover rather than
+// retrying blindly. 409, never 500: neither is a server fault.
+function campaignConflictResponse(res, error) {
+  if (error instanceof CampaignRevisionRequired) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "revision_required", campaign: error.campaign,
+    });
+    return true;
+  }
+  if (error instanceof CampaignHandoffInProgress) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "handoff_in_progress", campaign: error.campaign,
+    });
+    return true;
+  }
+  if (error instanceof CampaignRevisionConflict) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "revision",
+      expectedRevision: error.expectedRevision, campaign: error.campaign,
+    });
+    return true;
+  }
+  if (error instanceof CampaignFrozen) {
+    res.status(409).json({
+      ok: false, error: error.message, conflict: "frozen",
+      fields: error.fields, campaign: error.campaign,
+    });
+    return true;
+  }
+  return false;
+}
 
 const router = express.Router();
 
@@ -518,7 +576,25 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // different, unverified one — and would silently re-send an older campaign
     // to today's audience. Falling back to the latest run happens HERE, before
     // the check, never inside audience resolution afterwards.
-    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
+    //
+    // An EXISTING campaign settles it outright: the campaign's own run is its
+    // origin, and the audience must come from there however old it is. Reading
+    // the latest run instead would send a reviewed campaign to a membership
+    // nobody reviewed.
+    const existingCampaign = req.body.campaignId
+      ? await getCampaign(Number.parseInt(req.body.campaignId, 10))
+      : null;
+    if (req.body.campaignId && !existingCampaign) {
+      res.status(404).json({ ok: false, error: `No campaign ${req.body.campaignId}` });
+      return;
+    }
+    if (existingCampaign && existingCampaign.shopDomain !== shopDomain) {
+      res.status(404).json({ ok: false, error: `No campaign ${req.body.campaignId}` });
+      return;
+    }
+    const runId = existingCampaign?.runId
+      || campaign.run_id || req.body.runId
+      || (await readLatestRun({ shopDomain }))?.runId || null;
 
     // Nothing built on input we cannot vouch for reaches a real customer. This
     // runs BEFORE the audience is resolved or anything is written, so a blocked
@@ -530,33 +606,94 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
     // what turns "these customers bought $X" into "this campaign earned $X".
-    const playId = campaign.play_id || campaign.id;
+    const playId = existingCampaign?.playId || campaign.play_id || campaign.id;
     let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
     let campaignRow = null;
 
     if (audience.materialized && playId) {
-      campaignRow = await upsertCampaign({ shopDomain, runId, playId });
+      campaignRow = existingCampaign || await upsertCampaign({
+        shopDomain, runId, playId,
+        displayName: campaign.play_name || campaign.name || null,
+        expectedRevision: req.body.expectedRevision,
+      });
+
+      // Claim the campaign BEFORE anything external happens. Reading `frozen`
+      // here and calling Klaviyo afterwards left a window in which two requests
+      // both passed the check and both created a draft. The reservation is one
+      // conditional UPDATE, so exactly one can hold it — and it requires the
+      // revision the merchant reviewed, so a campaign edited since approval
+      // cannot be handed off as if it had been signed off.
+      campaignRow = await reserveCampaignForHandoff(campaignRow.id, req.body.expectedRevision);
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
       // fails we must not send: a campaign whose split was never recorded can
       // never be measured, and an unmeasurable send is worse than a late one.
       await recordRecipients(campaignRow.id, split);
-      await updateCampaign(campaignRow.id, {
+      // Quotes the revision the reservation just returned. This route holds the
+      // campaign, so it is not guessing — but it still names what it is writing
+      // over, the same rule every other caller follows.
+      campaignRow = await updateCampaign(campaignRow.id, {
         audienceSize: split.treated.length + split.holdout.length,
         holdoutSize: split.holdout.length,
         holdoutPct: split.holdoutPct,
+        expectedRevision: campaignRow.revision,
+      }, {
+        // This route holds the reservation, so it is the one caller allowed to
+        // write content while the campaign is reserved. Second argument, out of
+        // reach of any request body.
+        holdsReservation: true,
       });
     }
 
     // Only the treated arm goes to Klaviyo. The holdout is, by definition, the
     // group that receives nothing.
     const sendAudience = { ...audience, recipients: split.treated, count: split.treated.length };
-    const packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
+    let packageResult;
+    try {
+      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
+    } catch (providerError) {
+      // Hand the reservation back ONLY on a PROVEN pre-creation failure — the
+      // request never left us, so nothing can exist at the provider and a retry
+      // is safe. Anything later keeps the reservation: a timeout at the campaign
+      // step may still have created a campaign, and releasing would let the next
+      // click create a second one. A campaign left reserved is visible and
+      // fixable; a duplicate send is not.
+      //
+      // This previously keyed off `providerError.partialPackage`, which nothing
+      // ever set — so every failure released, including ones that may have
+      // created a draft.
+      if (campaignRow && providerError.provenNothingCreated === true) {
+        await releaseHandoffReservation(campaignRow.id).catch(() => {});
+      } else if (campaignRow) {
+        providerError.reconciliationRequired = true;
+        providerError.campaignId = campaignRow.id;
+      }
+      throw providerError;
+    }
     const klaviyoCampaignId = packageResult.campaign?.data?.id;
 
-    if (campaignRow && klaviyoCampaignId) {
-      await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+    // Freeze what was actually sent: the approved copy, the exact HTML that went
+    // to Klaviyo, and the audience as a reference plus a hash of its membership.
+    // From here the row records delivery state and nothing else changes.
+    if (campaignRow) {
+      campaignRow = await freezeCampaignAtHandoff(campaignRow.id, {
+        approvedCopy: campaign,
+        renderedHtml: packageResult.html || packageResult.template?.html || null,
+        templateVersion: campaign.template_id || campaign.templateId || null,
+        audienceRef: {
+          runId,
+          audienceDefinitionId: audience.audienceDefinitionId || null,
+          memberCount: audience.memberCount ?? null,
+          treated: split.treated.length,
+          holdout: split.holdout.length,
+          holdoutPct: split.holdoutPct,
+        },
+        customerIds: (audience.recipients || []).map((r) => r.customerId),
+      });
+      if (klaviyoCampaignId) {
+        campaignRow = await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+      }
     }
 
     await saveKlaviyoAsset({
@@ -578,6 +715,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
+      campaign_record: campaignRow,
       inputProvenance: provenance.provenance,
       syncRunId: provenance.syncRunId,
       template: packageResult.template,
@@ -597,7 +735,17 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       });
       return;
     }
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+    if (campaignConflictResponse(res, error)) return;
+    res.status(500).json({
+      ok: false,
+      error: error.response?.data || error.message,
+      providerStage: error.providerStage || null,
+      // The send may or may not exist at the provider. The campaign stays
+      // reserved so nothing can retry blindly; clearing it is a manual
+      // reconciliation step (Ticket D).
+      reconciliationRequired: Boolean(error.reconciliationRequired),
+      campaignId: error.campaignId || null,
+    });
   }
 });
 
@@ -646,12 +794,17 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
 router.post("/campaigns", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const { runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct } = req.body;
+    const {
+      runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+      holdoutPct, displayName, expectedRevision,
+    } = req.body;
     const campaign = await upsertCampaign({
-      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct,
+      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+      holdoutPct, displayName, expectedRevision,
     });
     res.json({ ok: true, campaign });
   } catch (error) {
+    if (campaignConflictResponse(res, error)) return;
     res.status(400).json({ ok: false, error: error.message });
   }
 });
@@ -674,13 +827,18 @@ router.patch("/campaigns/:id", async (req, res) => {
       res.status(400).json({ ok: false, error: "campaign id must be numeric" });
       return;
     }
-    const campaign = await updateCampaign(id, req.body || {});
+    // Allowlisted. Forwarding the body wholesale let a caller set
+    // `holdsReservation` — the flag meant only for the handoff route that
+    // actually holds the reservation — and edit content mid-handoff. Anything
+    // not named here is ignored rather than trusted.
+    const campaign = await updateCampaign(id, publicCampaignPatch(req.body || {}));
     if (!campaign) {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;
     }
     res.json({ ok: true, campaign });
   } catch (error) {
+    if (campaignConflictResponse(res, error)) return;
     res.status(400).json({ ok: false, error: error.message });
   }
 });

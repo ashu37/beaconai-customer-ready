@@ -133,19 +133,24 @@ function campaignHtml(campaign) {
 async function createTemplate(privateKey, campaign) {
   const client = createKlaviyoClient(privateKey);
 
+  // Rendered once and returned alongside the response, so the caller can freeze
+  // the EXACT html that was pushed. Re-rendering it afterwards would be a second
+  // call that could differ — which defeats the point of keeping a record of what
+  // was sent.
+  const html = campaignHtml(campaign);
   const payload = {
     data: {
       type: "template",
       attributes: {
         name: campaignTemplateName(campaign),
         editor_type: "CODE",
-        html: campaignHtml(campaign),
+        html,
       },
     },
   };
 
   const response = await client.post("/templates", payload);
-  return response.data;
+  return { ...response.data, html };
 }
 
 async function createList(privateKey, name) {
@@ -254,22 +259,52 @@ async function assignTemplateToCampaignMessage(privateKey, messageId, templateId
   return response.data;
 }
 
+// Every provider call this makes is recorded on `error.providerStage` when it
+// throws, because the caller's decision — retry, or keep the campaign locked for
+// reconciliation — depends entirely on whether anything can already exist at the
+// provider. "not_started" is the ONLY stage that proves nothing was created.
+const PROVIDER_STAGES = ["not_started", "template", "list", "import", "campaign", "message", "assignment"];
+
 async function createCampaignSendPackage(privateKey, campaign, audience) {
+  const progress = { stage: "not_started" };
+  try {
+    return await createCampaignSendPackageInner(privateKey, campaign, audience, progress);
+  } catch (error) {
+    error.providerStage = progress.stage;
+    // True only before the first provider request is issued. Anything later may
+    // have created a template, a list or a campaign.
+    error.provenNothingCreated = progress.stage === "not_started";
+    throw error;
+  }
+}
+
+async function createCampaignSendPackageInner(privateKey, campaign, audience, progress) {
+  // The stage is advanced BEFORE each call, not after: a request that times out
+  // may still have been executed by the provider, so "we were at the campaign
+  // step" has to mean "a campaign may exist".
+  progress.stage = "template";
   const template = await createTemplate(privateKey, campaign);
   const templateId = template?.data?.id;
+  progress.stage = "list";
   const list = await createList(privateKey, `${campaignName(campaign)} - Audience`);
   const listId = list?.data?.id;
+  progress.stage = "import";
   const importJob = await importProfilesToList(privateKey, listId, audience.recipients || []);
+  progress.stage = "campaign";
   const klaviyoCampaign = await createCampaign(privateKey, campaign, listId);
   const campaignId = klaviyoCampaign?.data?.id;
+  progress.stage = "message";
   const messages = await getCampaignMessages(privateKey, campaignId);
   const messageId = messages?.data?.[0]?.id;
+  progress.stage = "assignment";
   const assignment = messageId && templateId
     ? await assignTemplateToCampaignMessage(privateKey, messageId, templateId)
     : null;
 
   return {
     template,
+    // The exact html pushed to Klaviyo, for the campaign record.
+    html: template?.html || null,
     list,
     importJob,
     campaign: klaviyoCampaign,
@@ -310,6 +345,7 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 }
 
 module.exports = {
+  PROVIDER_STAGES,
   testKlaviyo,
   getKlaviyoLists,
   getKlaviyoProfiles,

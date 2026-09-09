@@ -87,9 +87,10 @@ Tickets below are implementation slices. Named new fields/endpoints are proposed
 - Add versioned `brand_email_templates`: shop, version, HTML/supported slot definition, approval metadata. Slots cover approved copy, product image and destination URL. Validate/escape slot values; preserve supported provider merge/unsubscribe syntax. Do not accept arbitrary unreviewed HTML from public endpoints.
 - Support logo and merchant colors/layout, email-safe font fallbacks, footer and editable CTA destination. If an existing Klaviyo shell is used, validate its compatibility rather than promising universal import support.
 - One renderer supplies preview and provider draft. Save exact output/version on the campaign revision. Missing configuration yields `brand_setup_required`, not silent BeaconAI styling.
+- **Carried from Ticket B:** mark a stale preview and support retry. The preview currently refetches on template/play change only, so it can show markup that no longer matches the saved revision. Preview/rendered-email consistency belongs here, with the single renderer, rather than in campaign persistence.
 - Founder and merchant approve the actual provider draft, including footer, sender, URLs and mobile view. Rendering failures block handoff with actionable error text.
 
-**Tests:** two distinct shops, isolation of configuration, missing logo/template, unsafe slot text/URL, identical preview/handoff HTML revision, historical HTML unchanged after a new brand version. Review representative desktop/mobile email rendering and one provider preview/test-email flow with an authorized test recipient.
+**Tests:** two distinct shops, isolation of configuration, missing logo/template, unsafe slot text/URL, identical preview/handoff HTML revision, a preview marked stale once the campaign revision moves past it, historical HTML unchanged after a new brand version. Review representative desktop/mobile email rendering and one provider preview/test-email flow with an authorized test recipient.
 
 **Done:** merchant can send without rebuilding the email in Klaviyo.
 
