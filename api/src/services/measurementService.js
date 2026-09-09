@@ -92,18 +92,30 @@ function compareArms(treated, holdout) {
   // customers, where the t correction is immaterial.
   const margin = 1.96 * se;
 
-  // Minimum-events guard. Revenue per customer is overwhelmingly zeros with a
-  // few large values, so with very few buyers the normal approximation stops
-  // holding — and in the worst case an arm with ZERO purchases has zero
-  // variance, which makes the interval collapse and a difference look certain
-  // when it rests on nothing. A holdout of 21 people that happened to buy
-  // nothing would otherwise report "worked".
+  // Degenerate-arm guard.
   //
-  // Below this floor we still report the estimate and its interval; we simply
-  // decline to call it significant, and the caller renders "too small to tell".
-  const MIN_BUYERS_PER_ARM = 5;
-  const enoughEvents = (treated.n_orders ?? 0) >= MIN_BUYERS_PER_ARM
-    && (holdout.n_orders ?? 0) >= MIN_BUYERS_PER_ARM;
+  // The failure this exists for is an arm with ZERO purchases: its variance is
+  // exactly 0, so the interval collapses onto the other arm and a difference
+  // looks certain when it rests on nothing. A 21-person holdout that happened to
+  // buy nothing would otherwise report "worked".
+  //
+  // A SMALL non-zero count is noisy, not degenerate, and must still resolve.
+  // 200 treated purchases against 4 held-out ones is a real effect — roughly
+  // z = 7 on the underlying proportions — and refusing to report it would be its
+  // own kind of dishonesty. So the gate is: at least one purchase in each arm,
+  // and enough purchases overall to be worth a verdict.
+  //
+  // `thinEvidence` still flags an arm under five purchases so the reader can see
+  // the result leans on few events, without the verdict being withheld.
+  const MIN_BUYERS_PER_ARM = 1;
+  const MIN_BUYERS_TOTAL = 10;
+  const THIN_EVIDENCE_BELOW = 5;
+  const tOrders = treated.n_orders ?? 0;
+  const hOrders = holdout.n_orders ?? 0;
+  const enoughEvents = tOrders >= MIN_BUYERS_PER_ARM
+    && hOrders >= MIN_BUYERS_PER_ARM
+    && tOrders + hOrders >= MIN_BUYERS_TOTAL;
+  const thinEvidence = tOrders < THIN_EVIDENCE_BELOW || hOrders < THIN_EVIDENCE_BELOW;
 
   return {
     perCustomer: { treated: meanT, holdout: meanH, difference: diff, low: diff - margin, high: diff + margin },
@@ -114,7 +126,7 @@ function compareArms(treated, holdout) {
       high: (diff + margin) * treated.n_customers,
     },
     enoughEvents,
-    minBuyersPerArm: MIN_BUYERS_PER_ARM,
+    thinEvidence,
     significant: enoughEvents && se > 0 && (diff - margin > 0 || diff + margin < 0),
   };
 }
