@@ -92,6 +92,19 @@ function compareArms(treated, holdout) {
   // customers, where the t correction is immaterial.
   const margin = 1.96 * se;
 
+  // Minimum-events guard. Revenue per customer is overwhelmingly zeros with a
+  // few large values, so with very few buyers the normal approximation stops
+  // holding — and in the worst case an arm with ZERO purchases has zero
+  // variance, which makes the interval collapse and a difference look certain
+  // when it rests on nothing. A holdout of 21 people that happened to buy
+  // nothing would otherwise report "worked".
+  //
+  // Below this floor we still report the estimate and its interval; we simply
+  // decline to call it significant, and the caller renders "too small to tell".
+  const MIN_BUYERS_PER_ARM = 5;
+  const enoughEvents = (treated.n_orders ?? 0) >= MIN_BUYERS_PER_ARM
+    && (holdout.n_orders ?? 0) >= MIN_BUYERS_PER_ARM;
+
   return {
     perCustomer: { treated: meanT, holdout: meanH, difference: diff, low: diff - margin, high: diff + margin },
     // Scaled to the treated arm: what the campaign added by being sent to them.
@@ -100,7 +113,9 @@ function compareArms(treated, holdout) {
       low: (diff - margin) * treated.n_customers,
       high: (diff + margin) * treated.n_customers,
     },
-    significant: se > 0 && (diff - margin > 0 || diff + margin < 0),
+    enoughEvents,
+    minBuyersPerArm: MIN_BUYERS_PER_ARM,
+    significant: enoughEvents && se > 0 && (diff - margin > 0 || diff + margin < 0),
   };
 }
 
@@ -196,6 +211,9 @@ async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {})
     else if (!holdout || holdout.n_customers === 0) verdict = "no_holdout";
     else if (!complete) verdict = "measuring";
     else if (!comparison) verdict = "too_small";
+    // Too few buyers for the comparison to mean anything — distinct from a
+    // genuine null result, and reported as such rather than as "no effect".
+    else if (!comparison.enoughEvents) verdict = "too_small";
     else if (comparison.significant) verdict = comparison.perCustomer.difference > 0 ? "worked" : "hurt";
     else verdict = "no_effect_found";
 
