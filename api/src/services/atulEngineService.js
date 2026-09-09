@@ -3,6 +3,7 @@ const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
 const { pool, query } = require("../db");
+const { buildEngineInputSnapshot, snapshotToCsv } = require("./engineInputSnapshot");
 
 const ENGINE_FLAGS = {
   ENGINE_V2_DECIDE: "true",
@@ -25,136 +26,6 @@ function defaultEngineDir() {
 
 function defaultPythonPath(engineDir) {
   return path.join(engineDir, ".venv", "bin", "python");
-}
-
-function csvCell(value) {
-  if (value == null) return "";
-  const text = String(value);
-  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
-  return text;
-}
-
-function money(value, fallback = "0") {
-  if (value == null || value === "") return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? String(parsed) : fallback;
-}
-
-function dateValue(value) {
-  if (!value) return "";
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
-}
-
-function shippingAmount(order) {
-  return order.total_shipping_price_set?.shop_money?.amount || order.raw?.total_shipping_price_set?.shop_money?.amount || "0";
-}
-
-function customerEmail(order) {
-  return order.email || order.raw?.email || order.raw?.customer?.email || "";
-}
-
-function customerId(order) {
-  return order.customer_id || order.raw?.customer?.id || customerEmail(order);
-}
-
-function customerName(order) {
-  const first = order.raw?.customer?.first_name || "";
-  const last = order.raw?.customer?.last_name || "";
-  return `${first} ${last}`.trim();
-}
-
-function shippingProvince(order) {
-  return order.raw?.shipping_address?.province_code || order.raw?.shipping_address?.province || "";
-}
-
-function shippingCountry(order) {
-  return order.raw?.shipping_address?.country_code || order.raw?.shipping_address?.country || "";
-}
-
-function lineItemsForOrder(input, order) {
-  const items = input.order_line_items.filter((item) => item.order_id === order.id);
-  if (items.length) return items;
-  return [
-    {
-      title: "Order",
-      quantity: 1,
-      price: order.subtotal_price || order.total_price || "0",
-      total_discount: order.total_discounts || "0",
-    },
-  ];
-}
-
-function orderCreatedAt(order) {
-  // Prefer processed_at (the transaction/placement date) over created_at.
-  // Rationale: Shopify's Admin API assigns created_at = server-now on any order
-  // created via orderCreate (there is no createdAt input field), so API-imported
-  // / backdated-seed orders all carry created_at = import time and lose their
-  // true history. processed_at is settable and reflects when the order was
-  // actually placed. For organically-created orders the two are the same day,
-  // so real merchants are unaffected; this only rescues imported history.
-  return order.processed_at || order.shopify_order_created_at || order.created_at;
-}
-
-function orderRows(input) {
-  const rows = [];
-  for (const order of input.orders || []) {
-    for (const item of lineItemsForOrder(input, order)) {
-      rows.push({
-        "Name": order.name || order.id,
-        "Created at": dateValue(orderCreatedAt(order)),
-        "Lineitem name": item.title || item.raw?.title || item.raw?.name || "Product",
-        "Lineitem quantity": item.quantity || item.raw?.quantity || 1,
-        "Lineitem price": money(item.price || item.raw?.price),
-        "Lineitem discount": money(item.total_discount || item.raw?.total_discount),
-        "Financial Status": order.financial_status || order.raw?.financial_status || "paid",
-        "Fulfillment Status": order.raw?.fulfillment_status || "",
-        "Subtotal": money(order.subtotal_price),
-        "Total Discount": money(order.total_discounts),
-        "Shipping": money(shippingAmount(order)),
-        "Taxes": money(order.total_tax),
-        "Total": money(order.total_price),
-        "Currency": order.currency || input.shop?.currency || "USD",
-        "Customer Email": customerEmail(order),
-        "customer_id": customerId(order),
-        "Billing Name": customerName(order),
-        "Shipping Province": shippingProvince(order),
-        "Shipping Country": shippingCountry(order),
-      });
-    }
-  }
-  return rows;
-}
-
-async function writeOrdersCsv(input, csvPath) {
-  const headers = [
-    "Name",
-    "Created at",
-    "Lineitem name",
-    "Lineitem quantity",
-    "Lineitem price",
-    "Lineitem discount",
-    "Financial Status",
-    "Fulfillment Status",
-    "Subtotal",
-    "Total Discount",
-    "Shipping",
-    "Taxes",
-    "Total",
-    "Currency",
-    "Customer Email",
-    "customer_id",
-    "Billing Name",
-    "Shipping Province",
-    "Shipping Country",
-  ];
-  const rows = orderRows(input);
-  const lines = [headers.join(",")];
-  for (const row of rows) {
-    lines.push(headers.map((header) => csvCell(row[header])).join(","));
-  }
-  await fs.writeFile(csvPath, `${lines.join("\n")}\n`, "utf8");
-  return rows.length;
 }
 
 function runProcess(command, args, options) {
@@ -295,7 +166,7 @@ async function readAudiencesFromManifest(manifest, manifestPath) {
 // plays have no auditable audience, which is indistinguishable from the engine
 // deciding not to materialize one. Failing the run is better than persisting
 // that ambiguity.
-async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, manifestPath }) {
+async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, manifestPath, syncRunId, inputProvenance }) {
   const runId = engineRun?.run_id || manifest?.run_id;
   if (!runId) throw new Error("Engine run has no run_id; refusing to persist.");
 
@@ -305,8 +176,9 @@ async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, ma
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO clean.engine_run_snapshots
-         (run_id, shop_domain, store_id, schema_version, engine_run, manifest)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (run_id, shop_domain, store_id, schema_version, engine_run, manifest,
+          sync_run_id, input_provenance)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (run_id) DO NOTHING`,
       [
         runId,
@@ -315,6 +187,8 @@ async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, ma
         engineRun?.schema_version || null,
         JSON.stringify(engineRun),
         manifest ? JSON.stringify(manifest) : null,
+        syncRunId || null,
+        inputProvenance || null,
       ]
     );
 
@@ -350,15 +224,24 @@ async function runAtulEngine(input, options = {}) {
     await fs.mkdir(outDir, { recursive: true });
     await fs.mkdir(mplConfigDir, { recursive: true });
 
+    // The briefing is built from the immutable snapshot the sync published, not
+    // from a fresh read of the clean tables. Those tables are mutable: a sync
+    // running alongside this one would otherwise leave the analysis reading a
+    // store that is half old and half new, with nothing recording which.
+    // `options.snapshot` is that published input; falling back to projecting
+    // `input` here keeps fixture and legacy callers working, and both are
+    // labelled as such on the row rather than passed off as verified.
+    const snapshot = options.snapshot || buildEngineInputSnapshot(input);
+
     let ordersCsv;
     if (options.useFixture) {
       ordersCsv = path.join(engineDir, "tests", "fixtures", "synthetic", "healthy_beauty_240d_orders.csv");
     } else {
       ordersCsv = path.join(runRoot, "orders.csv");
-      await writeOrdersCsv(input, ordersCsv);
+      await fs.writeFile(ordersCsv, snapshotToCsv(snapshot), "utf8");
     }
 
-    const brand = input.shop?.shop_domain || input.shop?.raw?.name || options.shopDomain || "BeaconAI";
+    const brand = snapshot.shop?.shop_domain || input?.shop?.shop_domain || input?.shop?.raw?.name || options.shopDomain || "BeaconAI";
     const storeId = sanitizeStoreId(brand);
     const env = {
       ...process.env,
@@ -385,13 +268,24 @@ async function runAtulEngine(input, options = {}) {
 
     const { manifest, engineRun } = await readEngineRunFromManifest(manifestPath);
     const shopDomain = options.shopDomain || brand;
-    const runId = await persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, manifestPath });
+    const inputProvenance = options.useFixture
+      ? "fixture"
+      : options.syncRunId
+        ? "verified"
+        : "legacy_unverified";
+    const runId = await persistRunSnapshot({
+      shopDomain, storeId, engineRun, manifest, manifestPath,
+      syncRunId: options.useFixture ? null : options.syncRunId,
+      inputProvenance,
+    });
 
     return {
       engineRun,
       manifest,
       runId,
       storeId,
+      syncRunId: options.useFixture ? null : options.syncRunId || null,
+      inputProvenance,
       artifacts: { manifestPath },
     };
   } finally {
@@ -410,7 +304,7 @@ async function readLatestRun({ shopDomain } = {}) {
   if (!shopDomain) return null;
 
   const { rows } = await query(
-    `SELECT run_id, store_id, engine_run, manifest, narration
+    `SELECT run_id, store_id, engine_run, manifest, narration, sync_run_id, input_provenance
        FROM clean.engine_run_snapshots
       WHERE shop_domain = $1
       ORDER BY created_at DESC
@@ -426,6 +320,8 @@ async function readLatestRun({ shopDomain } = {}) {
     engineRun: row.engine_run,
     manifest: row.manifest,
     narration: row.narration,
+    syncRunId: row.sync_run_id,
+    inputProvenance: row.input_provenance || (row.sync_run_id == null ? "legacy_unverified" : "verified"),
   };
 }
 

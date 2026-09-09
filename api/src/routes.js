@@ -30,6 +30,16 @@ const {
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
 const {
+  assertReadyForAnalysis,
+  getActiveInputSnapshot,
+  assertInputVerifiedForHandoff,
+  getRunProvenance,
+  getSyncStatus,
+  runSync,
+  SyncNotReadyError,
+  UnverifiedInputError,
+} = require("./services/syncService");
+const {
   applyBrandVoiceToCampaign,
   buildBeaconTemplates,
   buildBrandContext,
@@ -318,26 +328,69 @@ router.post("/sync/shopify", async (req, res) => {
   try {
     const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
     // No default cap: undefined limit paginates every resource to completion.
-    // A caller may still pass an explicit numeric limit to bound the sync.
+    // A caller may still pass an explicit numeric limit to bound the sync — and
+    // if that limit stops a resource mid-stream, the sync is recorded as
+    // INCOMPLETE and never published. A bounded fetch is a diagnostic, not
+    // store data.
     const limit = req.body.limit;
+    const connection = await getConnectionStatus(shopDomain).catch(() => null);
 
-    const data = await fetchShopifyData({ shopDomain, accessToken, limit });
+    const result = await runSync({
+      shopDomain,
+      accessToken,
+      limit,
+      shopifyScope: connection?.shopify?.scopes || null,
+    });
 
-    await saveRawShopifyData(shopDomain, data);
-    await upsertAllShopifyData(shopDomain, data);
+    if (!result.published) {
+      // 200, not 500: the fetch worked, and the honest answer is that what came
+      // back is not usable. The body says which, so the UI can say so too.
+      res.status(200).json({
+        ok: true,
+        published: false,
+        shopDomain,
+        syncRunId: result.syncRunId,
+        status: result.status,
+        validationFailures: result.validationFailures || [],
+        resources: result.resourceManifest || null,
+        coverage: result.declaredCoverage || null,
+      });
+      return;
+    }
 
     res.json({
       ok: true,
+      published: true,
       shopDomain,
+      syncRunId: result.syncRunId,
+      status: result.status,
+      coverage: result.declaredCoverage,
+      resources: result.resourceManifest,
       synced: {
-        shop: Boolean(data.shop),
-        products: data.products.length,
-        customers: data.customers.length,
-        orders: data.orders.length,
+        shop: result.counts.shop,
+        products: result.counts.products,
+        customers: result.counts.customers,
+        orders: result.counts.orders,
       },
     });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+    res.status(500).json({
+      ok: false,
+      syncRunId: error.syncRunId || null,
+      error: error.response?.data || error.message,
+    });
+  }
+});
+
+// What this store's data actually is: which sync the clean tables represent,
+// how much history it covers, whether a new analysis may run, and whether the
+// briefing on screen was built from the current input.
+router.get("/sync/status/:shopDomain", async (req, res) => {
+  try {
+    const status = await getSyncStatus(req.params.shopDomain);
+    res.json({ ok: true, ...status });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
@@ -364,11 +417,30 @@ router.get("/stats/series/:shopDomain", async (req, res) => {
 router.post("/engine/atul/run", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    const useFixture = Boolean(req.body.useFixture);
+
+    // The gate lives here, not on a disabled button. A fixture run is exempt
+    // because it reads none of the merchant's data — it is labelled `fixture`
+    // on the run row so it can never be mistaken for their briefing.
+    let snapshot = null;
+    let syncRunId = null;
+    if (!useFixture) {
+      await assertReadyForAnalysis(shopDomain);
+      const active = await getActiveInputSnapshot(shopDomain);
+      if (!active) {
+        throw new SyncNotReadyError({
+          ready: false,
+          reasons: [{ code: "no_input_snapshot", message: "The active sync has no stored input snapshot. Re-sync before running an analysis." }],
+        });
+      }
+      snapshot = active.snapshot;
+      syncRunId = active.syncRunId;
+    }
+
+    // getEngineInput still supplies brand/product context; the ORDERS the
+    // engine reads come from `snapshot`.
     const input = await getEngineInput(shopDomain);
-    const result = await runAtulEngine(input, {
-      shopDomain,
-      useFixture: Boolean(req.body.useFixture),
-    });
+    const result = await runAtulEngine(input, { shopDomain, useFixture, snapshot, syncRunId });
     let narration = null;
     try {
       narration = await narrateAtulRun(result);
@@ -386,8 +458,14 @@ router.post("/engine/atul/run", async (req, res) => {
       presentedRun,
       narration,
       manifest: result.manifest,
+      syncRunId: result.syncRunId,
+      inputProvenance: result.inputProvenance,
     });
   } catch (error) {
+    if (error instanceof SyncNotReadyError) {
+      res.status(409).json({ ok: false, error: error.message, readiness: error.readiness });
+      return;
+    }
     res.status(500).json({
       ok: false,
       error: error.message,
@@ -410,7 +488,13 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
     // on refresh — same run → same prose. null when a run predates persistence,
     // in which case the presenter renders data chips (no templated prose).
     const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null);
-    res.json({ ok: true, found: true, presentedRun });
+    res.json({
+      ok: true,
+      found: true,
+      presentedRun,
+      syncRunId: latest.syncRunId,
+      inputProvenance: latest.inputProvenance,
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -428,7 +512,21 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
     const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
-    const audience = await resolveCampaignAudience(shopDomain, campaign);
+    // ONE run, resolved once, then used for everything: the provenance check,
+    // the audience, and the campaign row. Verifying one run while the audience
+    // came from another would let a verified run id authorize membership from a
+    // different, unverified one — and would silently re-send an older campaign
+    // to today's audience. Falling back to the latest run happens HERE, before
+    // the check, never inside audience resolution afterwards.
+    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
+
+    // Nothing built on input we cannot vouch for reaches a real customer. This
+    // runs BEFORE the audience is resolved or anything is written, so a blocked
+    // handoff leaves no half-made campaign behind. Every run predating verified
+    // sync — including anything the partial-sync incident produced — is
+    // legacy_unverified and stops here until the store is re-synced.
+    const provenance = await assertInputVerifiedForHandoff(runId, shopDomain);
+    const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
     // what turns "these customers bought $X" into "this campaign earned $X".
@@ -436,8 +534,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
     let campaignRow = null;
 
-    if (audience.materialized && audience.runId && playId) {
-      campaignRow = await upsertCampaign({ shopDomain, runId: audience.runId, playId });
+    if (audience.materialized && playId) {
+      campaignRow = await upsertCampaign({ shopDomain, runId, playId });
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
@@ -480,6 +578,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
+      inputProvenance: provenance.provenance,
+      syncRunId: provenance.syncRunId,
       template: packageResult.template,
       list: packageResult.list,
       importJob: packageResult.importJob,
@@ -488,6 +588,15 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       assignment: packageResult.assignment,
     });
   } catch (error) {
+    if (error instanceof UnverifiedInputError) {
+      res.status(409).json({
+        ok: false,
+        error: error.message,
+        inputProvenance: error.provenance,
+        blocked: "unverified_input",
+      });
+      return;
+    }
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
@@ -621,7 +730,8 @@ router.post("/campaigns/audience/preview", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
     const campaign = req.body.campaign || {};
-    const audience = await resolveCampaignAudience(shopDomain, campaign);
+    const runId = campaign.run_id || req.body.runId || (await readLatestRun({ shopDomain }))?.runId || null;
+    const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Show the merchant the same split the send will actually perform, computed
     // by the same function — so the number on screen is a promise, not an
@@ -629,14 +739,26 @@ router.post("/campaigns/audience/preview", async (req, res) => {
     let holdout = null;
     if (audience.materialized) {
       const playId = campaign.play_id || campaign.id;
-      const existing = audience.runId && playId
-        ? (await listCampaigns(shopDomain, { runId: audience.runId })).find((c) => c.playId === playId)
+      const existing = runId && playId
+        ? (await listCampaigns(shopDomain, { runId })).find((c) => c.playId === playId)
         : null;
       const split = splitAudience(shopDomain, audience.recipients, existing?.holdoutPct ?? 0.1);
       holdout = { treated: split.treated.length, held: split.holdout.length, pct: split.holdoutPct };
     }
 
-    res.json({ ok: true, shopDomain, audience, holdout });
+    const provenance = runId ? await getRunProvenance(runId) : null;
+    const foreign = Boolean(provenance && provenance.shopDomain !== shopDomain);
+    res.json({
+      ok: true,
+      shopDomain,
+      audience,
+      holdout,
+      // So the UI can say why a send is blocked before the merchant clicks it,
+      // rather than only after.
+      runId,
+      inputProvenance: foreign ? "foreign_run" : provenance?.provenance || (runId ? "unknown_run" : null),
+      sendable: Boolean(provenance) && !foreign && !["fixture", "legacy_unverified"].includes(provenance.provenance),
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

@@ -4,9 +4,24 @@ function json(value) {
   return value == null ? null : JSON.stringify(value);
 }
 
-async function saveRawShopifyData(shopDomain, data) {
+// Every write below goes through an injected executor rather than the pool
+// directly. Passing a pg client makes the whole import one transaction, which
+// is what lets a failure halfway through an order import roll back instead of
+// leaving the clean tables half-updated and readable as if they were whole.
+// Omitting it keeps the old autocommit behaviour for read paths and callers
+// that have no transaction of their own.
+function executor(client) {
+  if (!client) return query;
+  return (text, params) => client.query(text, params);
+}
+
+async function saveRawShopifyData(shopDomain, data, client) {
+  const run = executor(client);
+  // `resources` is fetch metadata, not a Shopify resource; it belongs on the
+  // sync_runs row, not in the raw event log.
   for (const [resourceType, payload] of Object.entries(data)) {
-    await query(
+    if (resourceType === "resources") continue;
+    await run(
       `
       INSERT INTO raw.shopify_events (shop_domain, resource_type, payload)
       VALUES ($1, $2, $3)
@@ -16,8 +31,8 @@ async function saveRawShopifyData(shopDomain, data) {
   }
 }
 
-async function upsertShop(shopDomain, shop) {
-  await query(
+async function upsertShop(shopDomain, shop, client) {
+  await executor(client)(
     `
     INSERT INTO clean.shop
     (shop_domain, iana_timezone, currency, plan_name, raw, updated_at)
@@ -39,9 +54,10 @@ async function upsertShop(shopDomain, shop) {
   );
 }
 
-async function upsertCustomers(shopDomain, customers) {
+async function upsertCustomers(shopDomain, customers, client) {
+  const run = executor(client);
   for (const customer of customers || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.customers
       (id, shop_domain, email, created_at, state, email_marketing_consent, tags, raw)
@@ -68,9 +84,10 @@ async function upsertCustomers(shopDomain, customers) {
   }
 }
 
-async function upsertProducts(shopDomain, products) {
+async function upsertProducts(shopDomain, products, client) {
+  const run = executor(client);
   for (const product of products || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.products
       (id, shop_domain, title, product_type, tags, status, raw)
@@ -94,7 +111,7 @@ async function upsertProducts(shopDomain, products) {
     );
 
     for (const variant of product.variants || []) {
-      await query(
+      await run(
         `
         INSERT INTO clean.product_variants
         (id, shop_domain, product_id, sku, price, inventory_item_id, inventory_quantity, raw)
@@ -121,9 +138,10 @@ async function upsertProducts(shopDomain, products) {
   }
 }
 
-async function upsertOrders(shopDomain, orders) {
+async function upsertOrders(shopDomain, orders, client) {
+  const run = executor(client);
   for (const order of orders || []) {
-    await query(
+    await run(
       `
       INSERT INTO clean.orders
       (
@@ -174,7 +192,7 @@ async function upsertOrders(shopDomain, orders) {
     );
 
     for (const item of order.line_items || []) {
-      await query(
+      await run(
         `
         INSERT INTO clean.order_line_items
         (id, shop_domain, order_id, product_id, variant_id, sku, title, quantity, price, total_discount, raw)
@@ -205,11 +223,12 @@ async function upsertOrders(shopDomain, orders) {
       );
     }
 
-    await upsertRefundsFromOrder(shopDomain, order);
+    await upsertRefundsFromOrder(shopDomain, order, client);
   }
 }
 
-async function upsertRefundsFromOrder(shopDomain, order) {
+async function upsertRefundsFromOrder(shopDomain, order, client) {
+  const run = executor(client);
   for (const refund of order.refunds || []) {
     const transactionAmount = (refund.transactions || []).reduce(
       (sum, txn) => sum + Number(txn.amount || 0),
@@ -217,15 +236,28 @@ async function upsertRefundsFromOrder(shopDomain, order) {
     );
 
     for (const refundItem of refund.refund_line_items || []) {
-      await query(
+      // Unlike every other clean table this one has no natural primary key, so
+      // a re-sync used to append a second copy of every refund and quietly
+      // double the store's refund total. Shopify's own refund id plus the line
+      // item it applies to is that key; the NOT EXISTS guard (rather than ON
+      // CONFLICT) enforces it without a unique index, which cannot be created
+      // over rows an earlier sync already duplicated. Publication is serialized
+      // per shop, so there is no concurrent writer to race with.
+      await run(
         `
         INSERT INTO clean.refunds
-        (shop_domain, order_id, created_at, line_item_id, quantity, transaction_amount, raw)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        (shop_domain, order_id, refund_id, created_at, line_item_id, quantity, transaction_amount, raw)
+        SELECT $1,$2,$3,$4,$5,$6,$7,$8
+        WHERE $3::text IS NULL OR NOT EXISTS (
+          SELECT 1 FROM clean.refunds
+           WHERE shop_domain = $1 AND refund_id = $3
+             AND line_item_id IS NOT DISTINCT FROM $5
+        )
         `,
         [
           shopDomain,
           String(order.id),
+          refund.id ? String(refund.id) : null,
           refund.created_at || null,
           refundItem.line_item_id ? String(refundItem.line_item_id) : null,
           refundItem.quantity || null,
@@ -237,38 +269,86 @@ async function upsertRefundsFromOrder(shopDomain, order) {
   }
 }
 
-async function upsertAllShopifyData(shopDomain, data) {
-  await upsertShop(shopDomain, data.shop);
-  await upsertProducts(shopDomain, data.products);
-  await upsertCustomers(shopDomain, data.customers);
-  await upsertOrders(shopDomain, data.orders);
+async function upsertAllShopifyData(shopDomain, data, client) {
+  await upsertShop(shopDomain, data.shop, client);
+  await upsertProducts(shopDomain, data.products, client);
+  await upsertCustomers(shopDomain, data.customers, client);
+  await upsertOrders(shopDomain, data.orders, client);
 }
 
-async function getEngineInput(shopDomain) {
+/**
+ * The engine's input, read out of the clean tables.
+ *
+ * `generation`, when given, restricts the read to the exact records ONE fetch
+ * returned — `{ orderIds, lineItemIds, customerIds, productIds }`. Without it
+ * the read is the accumulated tables: everything ever synced, including records
+ * Shopify has since stopped returning.
+ *
+ * That distinction is the whole point. The clean tables are upserted, never
+ * pruned, so they are a union of every sync rather than a picture of the store.
+ * An order deleted in Shopify, a line item removed from an order, a product
+ * archived — all of them stay. Publishing that union as "the verified input"
+ * would attach a verification to records this sync never saw, and no date range
+ * catches it: a record missing from the middle of the fetched period sits
+ * inside the covered dates and looks accounted for.
+ *
+ * Unscoped reads remain correct for brand context and previews, which want
+ * whatever is known about the store rather than one fetch's contents.
+ */
+async function getEngineInput(shopDomain, client, generation = null) {
+  const run = executor(client);
+  const ids = (values) => (generation ? (values || []).map(String) : null);
+  const orderIds = ids(generation?.orderIds);
+  const lineItemIds = ids(generation?.lineItemIds);
+  const customerIds = ids(generation?.customerIds);
+  const productIds = ids(generation?.productIds);
+
   const [shop, orders, orderLineItems, customers, products, productVariants, refunds] =
     await Promise.all([
-      query(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
-      query(
+      run(`SELECT * FROM clean.shop WHERE shop_domain = $1`, [shopDomain]),
+      run(
         `SELECT clean.orders.*, clean.orders.created_at AS shopify_order_created_at
          FROM clean.orders
          WHERE shop_domain = $1
+           AND ($2::text[] IS NULL OR id = ANY($2))
          ORDER BY created_at DESC`,
-        [shopDomain]
+        [shopDomain, orderIds]
       ),
-      query(`SELECT * FROM clean.order_line_items WHERE shop_domain = $1`, [shopDomain]),
-      query(`SELECT * FROM clean.customers WHERE shop_domain = $1`, [shopDomain]),
-      query(`SELECT * FROM clean.products WHERE shop_domain = $1 AND status = 'active'`, [shopDomain]),
-      query(
+      run(
+        `SELECT * FROM clean.order_line_items
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, lineItemIds]
+      ),
+      run(
+        `SELECT * FROM clean.customers
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, customerIds]
+      ),
+      run(
+        `SELECT * FROM clean.products
+          WHERE shop_domain = $1 AND status = 'active'
+            AND ($2::text[] IS NULL OR id = ANY($2))`,
+        [shopDomain, productIds]
+      ),
+      run(
         `SELECT pv.*
          FROM clean.product_variants pv
          JOIN clean.products p
            ON p.shop_domain = pv.shop_domain
           AND p.id = pv.product_id
          WHERE pv.shop_domain = $1
-           AND p.status = 'active'`,
-        [shopDomain]
+           AND p.status = 'active'
+           AND ($2::text[] IS NULL OR p.id = ANY($2))`,
+        [shopDomain, productIds]
       ),
-      query(`SELECT * FROM clean.refunds WHERE shop_domain = $1`, [shopDomain]),
+      run(
+        `SELECT * FROM clean.refunds
+          WHERE shop_domain = $1
+            AND ($2::text[] IS NULL OR order_id = ANY($2))`,
+        [shopDomain, orderIds]
+      ),
     ]);
 
   return {
@@ -282,17 +362,64 @@ async function getEngineInput(shopDomain) {
   };
 }
 
+/**
+ * What the clean tables hold for this shop that the given fetch did NOT return.
+ *
+ * Membership, not dates. A record absent from the fetch but sitting inside the
+ * fetched date range is invisible to any range check, and that is exactly the
+ * case that matters: an order cancelled and removed in Shopify last week is
+ * still in clean.orders, still dated inside the covered period, and still read
+ * by anything that treats the accumulated tables as the store.
+ */
+async function reconcileGeneration(shopDomain, generation, client) {
+  const run = executor(client);
+  const orderIds = (generation?.orderIds || []).map(String);
+  const lineItemIds = (generation?.lineItemIds || []).map(String);
+
+  const { rows } = await run(
+    `SELECT
+       (SELECT count(*)::int FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS orders,
+       (SELECT count(*)::int FROM clean.order_line_items
+         WHERE shop_domain = $1 AND NOT (id = ANY($3))) AS line_items,
+       (SELECT min(COALESCE(processed_at, created_at)) FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS earliest,
+       (SELECT max(COALESCE(processed_at, created_at)) FROM clean.orders
+         WHERE shop_domain = $1 AND NOT (id = ANY($2))) AS latest`,
+    [shopDomain, orderIds, lineItemIds]
+  );
+
+  const row = rows[0];
+  return {
+    orders: row.orders,
+    lineItems: row.line_items,
+    earliestOrderAt: row.earliest ? new Date(row.earliest).toISOString() : null,
+    latestOrderAt: row.latest ? new Date(row.latest).toISOString() : null,
+  };
+}
+
 // D6b: weekly order counts + weekly first-time-customer counts for sparklines.
 // Read-only. A customer's first-time week is the week of their earliest order.
+//
+// Buckets in the SHOP's time zone. created_at is TIMESTAMPTZ, and
+// date_trunc('week', <timestamptz>) resolves in the session's TimeZone — so
+// without an explicit AT TIME ZONE the week an order falls into would depend on
+// where the API process happens to run. A merchant's week is their store's week.
 async function getWeeklySeries(shopDomain, weeks = 12) {
   const span = Math.max(1, Math.min(52, Number(weeks) || 12));
+  const zoneRow = await query(
+    `SELECT iana_timezone FROM clean.shop WHERE shop_domain = $1`, [shopDomain]
+  );
+  const zone = zoneRow.rows[0]?.iana_timezone || "UTC";
   const result = await query(
     `WITH bounded AS (
        SELECT id, customer_id, created_at,
-              date_trunc('week', created_at) AS week
+              date_trunc('week', created_at AT TIME ZONE $3) AS week
        FROM clean.orders
        WHERE shop_domain = $1
-         AND created_at >= date_trunc('week', now()) - ($2::int - 1) * interval '1 week'
+         AND created_at >= (
+               date_trunc('week', now() AT TIME ZONE $3) - ($2::int - 1) * interval '1 week'
+             ) AT TIME ZONE $3
          AND (test IS NULL OR test = false)
          AND cancelled_at IS NULL
      ),
@@ -315,7 +442,7 @@ async function getWeeklySeries(shopDomain, weeks = 12) {
      LEFT JOIN first_order fo ON fo.customer_id = b.customer_id
      GROUP BY b.week
      ORDER BY b.week ASC`,
-    [shopDomain, span]
+    [shopDomain, span, zone]
   );
   return result.rows.map((row) => ({
     week: row.week,
@@ -329,4 +456,5 @@ module.exports = {
   upsertAllShopifyData,
   getEngineInput,
   getWeeklySeries,
+  reconcileGeneration,
 };

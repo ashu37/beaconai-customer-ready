@@ -1,4 +1,4 @@
-const { query } = require("./db");
+const { pool, query } = require("./db");
 
 async function initSchema() {
   await query(`CREATE SCHEMA IF NOT EXISTS raw;`);
@@ -296,6 +296,357 @@ async function initSchema() {
     ALTER TABLE clean.campaign_measurements
       ADD COLUMN IF NOT EXISTS revenue_sq NUMERIC(18,4) NOT NULL DEFAULT 0;
   `);
+
+  // clean.refunds has no natural key, so before this every re-sync appended a
+  // second copy of every refund and doubled the store's refund total. The fix
+  // needs three steps, and the first two are what make the third work at all.
+  await query(`ALTER TABLE clean.refunds ADD COLUMN IF NOT EXISTS refund_id TEXT;`);
+
+  // 1. Backfill Shopify's own refund id onto rows written before the column
+  //    existed. Without this every legacy row keeps refund_id NULL, the
+  //    NOT EXISTS guard in shopifyRepository has nothing to match on, and the
+  //    very next sync appends yet another copy alongside them.
+  await query(`
+    UPDATE clean.refunds
+       SET refund_id = raw->>'id'
+     WHERE refund_id IS NULL
+       AND raw ? 'id'
+       AND raw->>'id' IS NOT NULL;
+  `);
+
+  // 2. Move pre-existing duplicates OUT rather than deleting them. Quarantine
+  //    is the non-destructive form of this migration: the rows are still
+  //    readable and restorable, they simply stop being counted twice. Keeping
+  //    them in place was not an option — a doubled refund total is a number the
+  //    merchant would act on.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.refunds_quarantine (
+      LIKE clean.refunds INCLUDING DEFAULTS
+    );
+  `);
+  await query(`
+    ALTER TABLE clean.refunds_quarantine
+      ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  `);
+  await query(`
+    ALTER TABLE clean.refunds_quarantine
+      ADD COLUMN IF NOT EXISTS quarantine_reason TEXT;
+  `);
+
+  // Keep the earliest row of each (shop, refund, line item) group; quarantine
+  // the rest. Rows with no refund_id (Shopify sent no id) are left alone: they
+  // cannot be grouped safely, and guessing would be worse than the duplicate.
+  const deduped = await query(`
+    WITH ranked AS (
+      SELECT id,
+             row_number() OVER (
+               PARTITION BY shop_domain, refund_id, line_item_id
+               ORDER BY id ASC
+             ) AS copy_number
+        FROM clean.refunds
+       WHERE refund_id IS NOT NULL
+    ),
+    extra AS (
+      SELECT id FROM ranked WHERE copy_number > 1
+    ),
+    moved AS (
+      INSERT INTO clean.refunds_quarantine
+        (id, shop_domain, order_id, created_at, line_item_id, quantity,
+         transaction_amount, raw, refund_id, quarantine_reason)
+      SELECT r.id, r.shop_domain, r.order_id, r.created_at, r.line_item_id,
+             r.quantity, r.transaction_amount, r.raw, r.refund_id,
+             'duplicate_from_resync_before_refund_id'
+        FROM clean.refunds r
+        JOIN extra e ON e.id = r.id
+      RETURNING id
+    )
+    DELETE FROM clean.refunds
+     WHERE id IN (SELECT id FROM moved)
+    RETURNING id;
+  `);
+
+  if (deduped.rowCount > 0) {
+    // Loud on purpose: this changes a number the merchant may already have been
+    // shown, and the count is what makes it auditable afterwards.
+    console.warn(
+      `[schema] quarantined ${deduped.rowCount} duplicate refund row(s) into clean.refunds_quarantine ` +
+      `(re-sync duplicates predating refund_id). Refund totals for affected shops change accordingly.`
+    );
+  }
+
+  // 3. Only now can the guard's lookup index exist over clean data.
+  await query(`
+    CREATE INDEX IF NOT EXISTS refunds_by_refund_id
+      ON clean.refunds (shop_domain, refund_id, line_item_id);
+  `);
+
+  // One row per attempt to pull a store into the clean tables. The reason this
+  // exists: a sync that stops early still returns 200 OK and still leaves rows
+  // behind, so "we have data" and "we have the store's data" were previously
+  // the same observation. This table is what separates them.
+  //
+  // status:
+  //   running    — fetching or publishing; no claim about completeness yet
+  //   failed     — the attempt errored; nothing was published
+  //   incomplete — the fetch succeeded but is known-partial (a cap truncated a
+  //                resource, or coverage is too short to analyse); NOT published
+  //   complete   — fetched whole, validated, and published in one transaction
+  //
+  // Only `complete` rows are ever published, and only a published row can back
+  // an analysis. Rows are never deleted: a failed sync is evidence.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.sync_runs (
+      id SERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      status TEXT NOT NULL,
+      provenance TEXT NOT NULL DEFAULT 'verified',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      published_at TIMESTAMPTZ,
+      schema_version TEXT,
+      requested_limit TEXT,
+      resource_manifest JSONB,
+      declared_coverage JSONB,
+      validation_failures JSONB NOT NULL DEFAULT '[]'::jsonb,
+      input_snapshot JSONB,
+      input_snapshot_ref TEXT,
+      failure_reason TEXT
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS sync_runs_by_shop
+      ON clean.sync_runs (shop_domain, started_at DESC);
+  `);
+
+  // The active sync pointer: which published sync the clean tables currently
+  // represent. Separate from sync_runs so the swap is a single row update
+  // inside the publishing transaction, and so "latest attempt" can never be
+  // mistaken for "what analysis may read".
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.active_sync (
+      shop_domain TEXT PRIMARY KEY,
+      sync_run_id INTEGER NOT NULL REFERENCES clean.sync_runs(id),
+      published_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      started_at TIMESTAMPTZ
+    );
+  `);
+
+  // Which verified input a briefing was built from. Nullable: runs that predate
+  // this column keep a null, which reads as unknown provenance — not as
+  // verified. Never backfilled.
+  await query(`
+    ALTER TABLE clean.engine_run_snapshots
+      ADD COLUMN IF NOT EXISTS sync_run_id INTEGER REFERENCES clean.sync_runs(id);
+  `);
+
+  // 'verified' | 'fixture' | 'legacy_unverified'. Fixture runs are demo data and
+  // must never be mistaken for a merchant's own; legacy runs are the ones whose
+  // input nothing vouches for. Existing rows keep a null, which the status API
+  // reports as legacy_unverified rather than assuming anything.
+  await query(`
+    ALTER TABLE clean.engine_run_snapshots
+      ADD COLUMN IF NOT EXISTS input_provenance TEXT;
+  `);
+
+  // ---------------------------------------------------------------------------
+  // Order/customer/refund dates: TIMESTAMP WITHOUT TIME ZONE -> TIMESTAMPTZ
+  //
+  // WHAT WAS WRONG. These columns were declared without a time zone, and
+  // Postgres IGNORES the offset when casting into such a column: both
+  // '2025-11-15T16:15:35-08:00' and '2025-11-15T16:15:35Z' stored the identical
+  // naked value 2025-11-15 16:15:35. node-postgres then read that back
+  // interpreted in the READER's zone, so the same row produced a different
+  // instant depending on where the process ran.
+  //
+  // Why it mattered: engineInputSnapshot projects these columns into the orders
+  // CSV the engine buckets into L7/L28/L56/L90 windows, getWeeklySeries buckets
+  // them by week, and measurementService compares processed_at against
+  // campaign sent_at (already TIMESTAMPTZ) — so a naive value was being
+  // silently coerced through the session zone on every attribution query. A
+  // whole-offset shift moves an order across a day, week, or window boundary.
+  //
+  // WHAT THE STORED DIGITS MEAN. The corruption was on READ, not write: the
+  // digits are the wall clock exactly as Shopify sent it, which for order
+  // timestamps is the SHOP's local time. Nothing was destroyed. But the digits
+  // alone cannot say which zone they belong to — a row written from a
+  // Z-suffixed string (seeds, fixtures) has UTC digits, one written from a real
+  // Shopify payload has shop-local digits. Guessing one rule for both would
+  // rewrite real history on an assumption.
+  //
+  // So the zone is not assumed. It is recovered per row from that row's own
+  // `raw` payload, which retains the original offset. Rows whose payload lacks
+  // the field cannot be recovered and are FLAGGED rather than quietly rewritten.
+  // ATOMIC. Every step below runs on one connection inside one transaction.
+  // Postgres has transactional DDL, so the ALTERs roll back with the data.
+  //
+  // It has to be atomic because the "already migrated?" check keys off the
+  // column TYPE. If the process died after the ALTERs but before the
+  // re-derivation, the columns would be timestamptz holding placeholder digits,
+  // and every subsequent boot would see timestamptz, conclude the migration was
+  // done, and skip the re-derivation forever — silent corruption that a restart
+  // could never repair.
+  const client = await pool.connect();
+  let migrationReport = null;
+  try {
+    await client.query("BEGIN");
+    const q = (text, params) => client.query(text, params);
+
+    const needsTimestamptz = await q(`
+      SELECT data_type FROM information_schema.columns
+       WHERE table_schema = 'clean' AND table_name = 'orders' AND column_name = 'processed_at'
+    `);
+    const migrating = needsTimestamptz.rows[0]?.data_type === "timestamp without time zone";
+
+    if (migrating) {
+      // Back up first. The re-derivation below rewrites values, and a migration
+      // that rewrites dates must leave the originals readable.
+      await q(`
+        CREATE TABLE IF NOT EXISTS clean.orders_date_backup (
+          id TEXT PRIMARY KEY,
+          shop_domain TEXT,
+          created_at_naive TIMESTAMP,
+          processed_at_naive TIMESTAMP,
+          cancelled_at_naive TIMESTAMP,
+          backed_up_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      await q(`
+        INSERT INTO clean.orders_date_backup
+          (id, shop_domain, created_at_naive, processed_at_naive, cancelled_at_naive)
+        SELECT id, shop_domain, created_at, processed_at, cancelled_at FROM clean.orders
+        ON CONFLICT (id) DO NOTHING;
+      `);
+    }
+
+    // AT TIME ZONE 'UTC' here is a PLACEHOLDER, not a claim: it preserves the
+    // stored digits exactly while giving the column a type that can hold an
+    // instant. The re-derivation immediately after is what establishes the true
+    // zone; anything it cannot reach keeps these digits and is flagged.
+    //
+    // Each column is guarded by its CURRENT type, and must be. Run against a
+    // column that is already TIMESTAMPTZ, `x AT TIME ZONE 'UTC'` converts it
+    // back to a naive UTC wall clock and the assignment then re-reads that in
+    // the session's zone — so an unguarded ALTER shifts every date by the
+    // server's offset on every single startup. initSchema runs on every boot.
+    for (const [table, column] of [
+      ["orders", "created_at"],
+      ["orders", "processed_at"],
+      ["orders", "cancelled_at"],
+      ["customers", "created_at"],
+      ["refunds", "created_at"],
+      ["shop", "updated_at"],
+    ]) {
+      const current = await q(
+        `SELECT data_type FROM information_schema.columns
+          WHERE table_schema = 'clean' AND table_name = $1 AND column_name = $2`,
+        [table, column]
+      );
+      if (current.rows[0]?.data_type !== "timestamp without time zone") continue;
+      await q(`
+        ALTER TABLE clean.${table}
+          ALTER COLUMN ${column} TYPE TIMESTAMPTZ
+          USING ${column} AT TIME ZONE 'UTC';
+      `);
+    }
+
+    // Which rows carry a date we can stand behind.
+    //   rederived_from_raw     — the offset came from that row's own Shopify payload
+    //   unverified_assumed_utc — no payload field; digits kept, read as UTC, flagged
+    await q(`ALTER TABLE clean.orders ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+    await q(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS date_provenance TEXT;`);
+
+    if (migrating) {
+      // Ground truth: the row's own payload, offset intact. ::timestamptz honours
+      // that offset, so this yields the instant Shopify actually meant.
+      const orders = await q(`
+        UPDATE clean.orders
+           SET created_at   = CASE WHEN raw ? 'created_at'   AND raw->>'created_at'   IS NOT NULL
+                                   THEN (raw->>'created_at')::timestamptz   ELSE created_at   END,
+               processed_at = CASE WHEN raw ? 'processed_at' AND raw->>'processed_at' IS NOT NULL
+                                   THEN (raw->>'processed_at')::timestamptz ELSE processed_at END,
+               cancelled_at = CASE WHEN raw ? 'cancelled_at' AND raw->>'cancelled_at' IS NOT NULL
+                                   THEN (raw->>'cancelled_at')::timestamptz ELSE cancelled_at END,
+               date_provenance = CASE
+                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                   THEN 'rederived_from_raw'
+                 ELSE 'unverified_assumed_utc'
+               END
+         WHERE date_provenance IS NULL
+         RETURNING date_provenance;
+      `);
+      const customers = await q(`
+        UPDATE clean.customers
+           SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                                 THEN (raw->>'created_at')::timestamptz ELSE created_at END,
+               date_provenance = CASE
+                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                   THEN 'rederived_from_raw'
+                 ELSE 'unverified_assumed_utc'
+               END
+         WHERE date_provenance IS NULL
+         RETURNING date_provenance;
+      `);
+      await q(`
+        UPDATE clean.refunds
+           SET created_at = (raw->>'created_at')::timestamptz
+         WHERE raw ? 'created_at' AND raw->>'created_at' IS NOT NULL;
+      `);
+
+      // Any briefing already produced was computed over the pre-conversion dates,
+      // so its window boundaries may have sat a whole offset out. Those runs are
+      // not deleted — they stay readable as history — but they stop being
+      // sendable until the store is re-analysed, the same rule Ticket A applies
+      // to any recommendation whose input cannot be vouched for.
+      const affectedRuns = await q(`
+        UPDATE clean.engine_run_snapshots
+           SET input_provenance = 'predates_timezone_fix'
+         WHERE input_provenance = 'verified'
+         RETURNING run_id;
+      `);
+
+      // The published input snapshot is FROZEN normalized CSV rows, not a view
+      // over the clean tables — so converting those tables does not touch it.
+      // It still holds the old dates, and getActiveInputSnapshot feeds it
+      // straight to the engine, which would run a "verified" analysis on the
+      // very values this migration exists to correct.
+      //
+      // Rewriting a frozen snapshot in place would be re-deriving an artifact
+      // whose whole purpose is to be immutable. So instead the active pointer is
+      // dropped: the sync_runs rows and their snapshots stay for audit, no sync
+      // is active, and the store must re-sync before it can be analysed again.
+      const droppedPointers = await q(`DELETE FROM clean.active_sync RETURNING shop_domain;`);
+
+      migrationReport = {
+        orders: orders.rowCount,
+        customers: customers.rowCount,
+        unverified: orders.rows.filter((r) => r.date_provenance === "unverified_assumed_utc").length,
+        runs: affectedRuns.rowCount,
+        shops: droppedPointers.rowCount,
+      };
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  // Announced only after the transaction actually commits.
+  if (migrationReport && (migrationReport.orders || migrationReport.customers || migrationReport.runs)) {
+    console.warn(
+      `[schema] converted order/customer dates to TIMESTAMPTZ. ` +
+      `${migrationReport.orders} order row(s), ${migrationReport.customers} customer row(s); ` +
+      `${migrationReport.unverified} order row(s) had no original payload date and are flagged ` +
+      `date_provenance='unverified_assumed_utc'. Originals kept in clean.orders_date_backup. ` +
+      `${migrationReport.runs} existing engine run(s) were computed over the pre-conversion ` +
+      `dates and are now marked 'predates_timezone_fix': readable as history, blocked at handoff. ` +
+      `${migrationReport.shops} shop(s) had their active sync pointer cleared — their published ` +
+      `input snapshots still hold pre-conversion dates, so each must re-sync before a new analysis.`
+    );
+  }
 }
 
 module.exports = { initSchema };
