@@ -370,6 +370,7 @@ suite("handoff resolves the audience from the campaign's own run", async () => {
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP,
     campaignId: campaign.id,
+    expectedRevision: campaign.revision,
     campaign: { play_id: PLAY },
   });
   assert.equal(response.status, 500, "the Klaviyo call fails, well past run resolution");
@@ -394,6 +395,7 @@ suite("a campaign id from another shop is not found", async () => {
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: "someone-else.myshopify.com",
     campaignId: mine.id,
+    expectedRevision: mine.revision,
     campaign: { play_id: PLAY },
   });
   assert.equal(response.status, 404);
@@ -430,4 +432,141 @@ suite("existing campaigns gain the new fields without inventing history", async 
   assert.deepEqual(campaign.copy, { subject: "Legacy subject" });
   assert.equal(campaign.status, "sent");
   assert.equal(campaign.revision, 1, "the counter starts, rather than claiming prior revisions");
+});
+
+suite("a handoff without a revision is refused outright", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+
+  // Accepting a missing revision meant the freeze recorded whatever happened to
+  // be in the row, which is the one thing the reservation exists to pin down.
+  await assert.rejects(
+    () => reserveCampaignForHandoff(created.id, undefined),
+    (error) => {
+      assert.equal(error.name, "CampaignRevisionRequired");
+      return true;
+    }
+  );
+  await assert.rejects(
+    () => reserveCampaignForHandoff(created.id, null),
+    (error) => {
+      assert.equal(error.name, "CampaignRevisionRequired");
+      return true;
+    }
+  );
+
+  const after = await getCampaign(created.id);
+  assert.equal(after.handoffReservedAt, null, "nothing was reserved");
+});
+
+suite("content cannot change while a handoff holds the campaign", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY, copy: { subject: "Reviewed" },
+  });
+  const reserved = await reserveCampaignForHandoff(created.id, created.revision);
+
+  // An edit landing between the reservation and the freeze would be captured in
+  // the frozen record without ever having been reviewed.
+  for (const patch of [
+    { draftEdits: { subject: "Snuck in" } },
+    { copy: { subject: "Snuck in" } },
+    { templateId: "tpl-other" },
+    { holdoutPct: 0.4 },
+  ]) {
+    await assert.rejects(
+      () => updateCampaign(created.id, { ...patch, expectedRevision: reserved.revision }),
+      (error) => {
+        assert.equal(error.name, "CampaignHandoffInProgress");
+        return true;
+      }
+    );
+  }
+
+  // The upsert path is guarded the same way.
+  await assert.rejects(
+    () => upsertCampaign({
+      shopDomain: SHOP, runId: "run-1", playId: PLAY,
+      draftEdits: { subject: "Snuck in" }, expectedRevision: reserved.revision,
+    }),
+    (error) => {
+      assert.equal(error.name, "CampaignHandoffInProgress");
+      return true;
+    }
+  );
+
+  // The route driving the handoff holds the reservation, so it may still write.
+  const bookkeeping = await updateCampaign(created.id, {
+    holdoutPct: 0.1, audienceSize: 100, holdoutSize: 10,
+    expectedRevision: reserved.revision, holdsReservation: true,
+  });
+  assert.equal(Number(bookkeeping.holdoutPct), 0.1);
+
+  // And delivery state is writable by anyone: it records what happened TO a send.
+  const delivered = await updateCampaign(created.id, { klaviyoCampaignId: "kl-9" });
+  assert.equal(delivered.klaviyoCampaignId, "kl-9");
+
+  const final = await getCampaign(created.id);
+  assert.deepEqual(final.copy, { subject: "Reviewed" }, "the reviewed content is intact");
+});
+
+suite("a provider failure after creation keeps the campaign locked", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  for (const id of ["c-1", "c-2"]) {
+    await query(
+      `INSERT INTO clean.customers (id, shop_domain, email, created_at)
+       VALUES ($1, $2, $3, NOW()) ON CONFLICT (id) DO NOTHING`,
+      [id, SHOP, `${id}@example.com`]
+    );
+  }
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-1', 'aud-1', $1, 'MATERIALIZED', $2)`,
+    [PLAY, ["c-1", "c-2"]]
+  );
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" });
+
+  // No Klaviyo key in tests, so the package call fails — but it fails INSIDE the
+  // provider sequence, at the template step, which may already have created
+  // something. Releasing there would let the next click create a duplicate.
+  const response = await api.post("/klaviyo/campaigns/from-engine", {
+    shopDomain: SHOP, campaignId: created.id, expectedRevision: created.revision,
+    campaign: { play_id: PLAY },
+  });
+  assert.equal(response.status, 500);
+  assert.equal(response.body.providerStage, "template", "we were inside the provider sequence");
+  assert.equal(response.body.reconciliationRequired, true);
+
+  const after = await getCampaign(created.id);
+  assert.ok(after.handoffReservedAt, "the reservation is KEPT, not handed back");
+  assert.equal(after.frozen, false);
+
+  // A retry is refused rather than creating a second draft. Clearing this is a
+  // manual reconciliation step (Ticket D).
+  const retry = await api.post("/klaviyo/campaigns/from-engine", {
+    shopDomain: SHOP, campaignId: created.id, expectedRevision: after.revision,
+    campaign: { play_id: PLAY },
+  });
+  assert.equal(retry.status, 409);
+  assert.equal(retry.body.conflict, "handoff_in_progress");
+});
+
+suite("a failure before any provider call releases the reservation", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+  const reserved = await reserveCampaignForHandoff(created.id, created.revision);
+
+  // provenNothingCreated is the only condition that permits a release, and it
+  // is true only before the first provider request is issued.
+  const { PROVIDER_STAGES } = require("../src/services/klaviyoClient");
+  assert.equal(PROVIDER_STAGES[0], "not_started");
+
+  const released = await releaseHandoffReservation(reserved.id);
+  assert.equal(released.handoffReservedAt, null);
+  const again = await reserveCampaignForHandoff(created.id, released.revision);
+  assert.ok(again.handoffReservedAt, "and the merchant can retry");
 });

@@ -621,6 +621,9 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         holdoutSize: split.holdout.length,
         holdoutPct: split.holdoutPct,
         expectedRevision: campaignRow.revision,
+        // This route holds the reservation, so it is the one caller allowed to
+        // write content while the campaign is reserved.
+        holdsReservation: true,
       });
     }
 
@@ -631,14 +634,21 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     try {
       packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
     } catch (providerError) {
-      // Hand the reservation back ONLY when nothing can have been created at the
-      // provider. `template` is the first call in the package, so a failure
-      // carrying no template means we never got that far and a retry is safe.
-      // Otherwise a draft may exist, releasing would let a second handoff create
-      // a duplicate, and the campaign is left reserved for reconciliation
-      // (Ticket D owns that path).
-      if (campaignRow && !providerError.partialPackage) {
+      // Hand the reservation back ONLY on a PROVEN pre-creation failure — the
+      // request never left us, so nothing can exist at the provider and a retry
+      // is safe. Anything later keeps the reservation: a timeout at the campaign
+      // step may still have created a campaign, and releasing would let the next
+      // click create a second one. A campaign left reserved is visible and
+      // fixable; a duplicate send is not.
+      //
+      // This previously keyed off `providerError.partialPackage`, which nothing
+      // ever set — so every failure released, including ones that may have
+      // created a draft.
+      if (campaignRow && providerError.provenNothingCreated === true) {
         await releaseHandoffReservation(campaignRow.id).catch(() => {});
+      } else if (campaignRow) {
+        providerError.reconciliationRequired = true;
+        providerError.campaignId = campaignRow.id;
       }
       throw providerError;
     }
@@ -707,7 +717,16 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       return;
     }
     if (campaignConflictResponse(res, error)) return;
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+    res.status(500).json({
+      ok: false,
+      error: error.response?.data || error.message,
+      providerStage: error.providerStage || null,
+      // The send may or may not exist at the provider. The campaign stays
+      // reserved so nothing can retry blindly; clearing it is a manual
+      // reconciliation step (Ticket D).
+      reconciliationRequired: Boolean(error.reconciliationRequired),
+      campaignId: error.campaignId || null,
+    });
   }
 });
 

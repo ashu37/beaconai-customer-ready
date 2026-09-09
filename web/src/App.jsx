@@ -1936,6 +1936,11 @@ function App() {
   // is idempotent on (shop, run, play). Returns the row so the caller can learn
   // its id for later patches.
   const latestRevision = useRef({});
+  // Saves already sent to the server. The debounce timer map only knows about
+  // edits still WAITING; once a save fires it leaves that map, so a flush that
+  // consulted only the timers would report "nothing pending" while a write was
+  // still in flight.
+  const inFlightSaves = useRef({});
   const saveCampaignState = useCallback(async (playId, fields) => {
     // A campaign belongs to the run it was created in. Writing it against
     // whatever run is current would open a second campaign for the same play the
@@ -1943,6 +1948,7 @@ function App() {
     const runId = runIdByPlay[playId] || currentRunId;
     if (!runId || !playId) return null;
     setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saving" }));
+    const tracked = (async () => {
     try {
       const { campaign } = await api.saveCampaign({
         runId, playId,
@@ -1959,7 +1965,7 @@ function App() {
       // save needs the revision the server just returned, and setState has not
       // landed yet.
       latestRevision.current[playId] = campaign.revision;
-      return campaign;
+      return { ok: true, campaign, revision: campaign.revision, playId };
     } catch (error) {
       // A conflict is not a failure to save — it is a save that would have
       // destroyed a newer edit. Take the server's version as the new baseline so
@@ -1975,12 +1981,20 @@ function App() {
             : "This campaign changed elsewhere. Reload before editing further.",
           error: true,
         });
-        return null;
+        return { ok: false, reason: error.conflict, campaign: error.campaign, playId };
       }
       // Anything else is a real write failure. Surfaced, not swallowed: the
       // merchant is otherwise editing a draft that is no longer being stored.
       setSaveStateByPlay((prev) => ({ ...prev, [playId]: "failed" }));
-      return null;
+      return { ok: false, reason: "failed", playId };
+    }
+    })();
+
+    inFlightSaves.current[playId] = tracked;
+    try {
+      return await tracked;
+    } finally {
+      if (inFlightSaves.current[playId] === tracked) delete inFlightSaves.current[playId];
     }
   }, [currentRunId, revisionByPlay, runIdByPlay]);
 
@@ -2014,7 +2028,9 @@ function App() {
   // added to.
   const flushPendingEdits = useCallback(async (playId = null) => {
     const timers = editSaveTimers.current;
-    const ids = playId ? [playId] : Object.keys(timers);
+    const ids = playId
+      ? [playId]
+      : Array.from(new Set([...Object.keys(timers), ...Object.keys(inFlightSaves.current)]));
     const saves = [];
     for (const id of ids) {
       if (timers[id]) {
@@ -2025,9 +2041,18 @@ function App() {
       if (edits !== undefined) {
         delete pendingEdits.current[id];
         saves.push(saveCampaignState(id, { draftEdits: edits }));
+      } else if (inFlightSaves.current[id]) {
+        // Nothing queued, but a save is already on the wire. Waiting for it is
+        // the whole point: it may still fail or conflict.
+        saves.push(inFlightSaves.current[id]);
       }
     }
-    return Promise.all(saves);
+    const results = await Promise.all(saves);
+    return {
+      results,
+      ok: results.every((r) => r?.ok !== false),
+      failed: results.filter((r) => r?.ok === false),
+    };
   }, [saveCampaignState]);
 
   useEffect(() => {
@@ -2459,16 +2484,28 @@ function App() {
     // the merchant is looking at but not in the record of what was approved —
     // and that record is frozen immediately afterwards, so it could never be
     // corrected. Awaited, not fired and forgotten.
-    await flushPendingEdits(campaignDraft.id);
-    if (saveStateByPlay[campaignDraft.id] === "failed") {
-      showToast({ message: "This campaign's last edit didn't save. Retry before sending.", error: true });
+    // Act on what the flush actually REPORTS, not on React state captured when
+    // this handler was created. That state predates the save by definition, so
+    // reading it could clear a handoff whose save had just failed — and the
+    // record freezes moments later, past correcting.
+    const flush = await flushPendingEdits(campaignDraft.id);
+    if (!flush.ok) {
+      const conflicted = flush.failed.some((f) => f.reason && f.reason !== "failed");
+      showToast({
+        message: conflicted
+          ? "This campaign changed elsewhere. Reload it before sending."
+          : "This campaign's last edit didn't save. Retry before sending.",
+        error: true,
+      });
       return;
     }
 
-    // Read from the ref rather than state: the flush above may have just
-    // returned a new revision that setState has not applied yet, and sending a
-    // stale one would be refused by the server for no good reason.
-    const expectedRevision = latestRevision.current[campaignDraft.id] ?? revisionByPlay[campaignDraft.id];
+    // Prefer the revision the flush just returned. Falling back to state would
+    // send a stale number that the server would refuse for no good reason.
+    const flushed = flush.results.find((r) => r?.playId === campaignDraft.id && r.ok);
+    const expectedRevision = flushed?.revision
+      ?? latestRevision.current[campaignDraft.id]
+      ?? revisionByPlay[campaignDraft.id];
     if (campaignIdByPlay[campaignDraft.id] && expectedRevision === undefined) {
       showToast({ message: "This campaign hasn't finished saving. Try again in a moment.", error: true });
       return;
@@ -2573,6 +2610,61 @@ function App() {
       return result;
     } finally {
       setPreviewingCampaignId("");
+    }
+  }
+
+  // Reopen a campaign from an earlier run for editing.
+  //
+  // The workspace is keyed by play, and an old campaign's play is usually absent
+  // from the current slate — so the campaign record itself supplies the play.
+  // Its saved template, edits and copy are restored, and its ORIGIN run and
+  // revision are registered so later saves write back to the same row rather
+  // than opening a second campaign for the same play.
+  function openHistoricalCampaign(campaign) {
+    const playId = campaign.playId;
+
+    // Two runs can carry the same play id. Merging them into the play-keyed maps
+    // would show one campaign's state on the other's row, so this stops and says
+    // so rather than quietly corrupting the current draft.
+    if (campaignIdByPlay[playId] && campaignIdByPlay[playId] !== campaign.id) {
+      showToast({
+        message: "This play also has a campaign in the current briefing. Finish or dismiss that one first.",
+        error: true,
+      });
+      return;
+    }
+
+    setCampaignIdByPlay((prev) => ({ ...prev, [playId]: campaign.id }));
+    setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
+    setRunIdByPlay((prev) => ({ ...prev, [playId]: campaign.runId }));
+    latestRevision.current[playId] = campaign.revision;
+    if (campaign.templateId) setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: campaign.templateId }));
+    setDraftEditsByPlay((prev) => ({ ...prev, [playId]: campaign.draftEdits || {} }));
+    if (campaign.copy?.copy) setAgentCopyByPlay((prev) => ({ ...prev, [playId]: campaign.copy.copy }));
+
+    // Put it in the workspace rail. Built from the campaign row, because the
+    // engine play it came from may no longer be in any slate.
+    setCampaignPackages((prev) => (
+      prev.some((item) => item.id === playId) ? prev : [...prev, {
+        id: playId,
+        playTitle: campaign.displayName || playId,
+        status: campaign.status === "sent" ? "sent" : "building",
+        customers: campaign.audienceSize || 0,
+        segment: "—",
+        subject: campaign.approvedCopy?.subject || "",
+        previewText: "",
+        bodyH2: campaign.displayName || playId,
+        bodyP1: "",
+        cta: "Review package",
+        sendTime: "Manual review",
+        suppression: STANDARD_SUPPRESSIONS_NOTE,
+        fromEarlierRun: true,
+      }]
+    ));
+    setReviewPlayId(playId);
+    setActivePage("campaigns");
+    if (campaign.frozen) {
+      showToast({ message: "This campaign was already sent — its content is read-only." });
     }
   }
 
@@ -2895,7 +2987,9 @@ function App() {
               <ul className="earlier-campaigns-list">
                 {historicalCampaigns.map((c) => (
                   <li key={c.id}>
-                    <strong>{c.displayName || c.playId}</strong>
+                    <button type="button" className="link-btn" onClick={() => openHistoricalCampaign(c)}>
+                      {c.displayName || c.playId}
+                    </button>
                     <span className="earlier-campaign-meta">
                       {c.status}
                       {c.sentAt ? ` · sent ${new Date(c.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}

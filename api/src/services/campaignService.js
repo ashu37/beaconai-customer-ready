@@ -31,12 +31,17 @@ class CampaignRevisionConflict extends Error {
 }
 
 /**
- * An edit to content that has already been sent.
+ * An edit to content that has already been sent, or that a handoff currently
+ * holds.
  *
  * Once a campaign is handed off, its approved copy, rendered HTML and audience
  * are the record of an email that has left. Editing them in place would not
  * change what the recipients got — it would only make the record disagree with
  * it. Sending again is a new campaign, not a mutation of this one.
+ *
+ * The same applies from the moment a handoff RESERVES the campaign: an edit
+ * landing between the reservation and the freeze would be captured in the frozen
+ * record without ever having been reviewed.
  */
 /**
  * An update to an existing campaign that did not say which revision it was
@@ -151,7 +156,7 @@ function rowToCampaign(row) {
 // need none — there is nothing there to lose.
 async function upsertCampaign({
   shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-  holdoutPct, displayName, expectedRevision,
+  holdoutPct, displayName, expectedRevision, holdsReservation = false,
 }) {
   if (!shopDomain) throw new Error("shopDomain is required");
   if (!runId) throw new Error("runId is required");
@@ -195,10 +200,12 @@ async function upsertCampaign({
                      END,
        updated_at  = NOW()
      -- $11 NULL fails this comparison, which is what refuses a revision-less
-     -- update. $12 lets delivery bookkeeping through on a frozen campaign while
-     -- refusing any write that touches what was sent.
+     -- update. $12 lets delivery bookkeeping through on a frozen or reserved
+     -- campaign while refusing any write that touches what was sent. $13 is the
+     -- handoff route itself, which already holds the reservation.
      WHERE clean.campaigns.revision = $11
        AND (NOT $12 OR clean.campaigns.frozen_at IS NULL)
+       AND (NOT $12 OR $13 OR clean.campaigns.handoff_reserved_at IS NULL)
      RETURNING *`,
     [shopDomain, runId, playId, status || null, templateId || null,
      copy ? JSON.stringify(copy) : null,
@@ -208,7 +215,8 @@ async function upsertCampaign({
      holdoutPct === undefined || holdoutPct === null ? null : Number(holdoutPct),
      displayName || null,
      expected,
-     touchesFrozen]
+     touchesFrozen,
+     Boolean(holdsReservation)]
   );
 
   if (rows.length) return rowToCampaign(rows[0]);
@@ -235,6 +243,9 @@ function touchedFrozenFields(patch) {
 // been sent" is the more actionable answer, and a stale revision against a
 // frozen campaign is not something a reload would fix.
 function conflictFor(current, expected, touchesFrozen, patch) {
+  if (touchesFrozen && current.handoffReservedAt && !current.frozenAt) {
+    return new CampaignHandoffInProgress(current);
+  }
   if (touchesFrozen && current.frozenAt) {
     return new CampaignFrozen(
       current,
@@ -365,6 +376,10 @@ async function updateCampaign(id, patch = {}) {
     values.push(expected);
     guards.push(`revision = $${values.length}`);
     guards.push("frozen_at IS NULL");
+    // A handoff in flight owns the content until it freezes or releases. The
+    // route driving that handoff passes holdsReservation, because it IS the
+    // holder — everyone else is refused.
+    if (!patch.holdsReservation) guards.push("handoff_reserved_at IS NULL");
   } else if (expected !== null) {
     values.push(expected);
     guards.push(`revision = $${values.length}`);
@@ -397,13 +412,24 @@ async function updateCampaign(id, patch = {}) {
  */
 async function reserveCampaignForHandoff(id, expectedRevision) {
   const expected = normalizeRevision(expectedRevision);
+
+  // No NULL bypass. A handoff without a revision cannot state which version of
+  // the content the merchant reviewed, and the freeze that follows would record
+  // whatever happened to be in the row — which is the exact thing the
+  // reservation exists to pin down.
+  if (expected === null) {
+    const current = await getCampaign(id);
+    if (!current) return null;
+    throw new CampaignRevisionRequired(current);
+  }
+
   const { rows } = await query(
     `UPDATE clean.campaigns
         SET handoff_reserved_at = NOW(), revision = revision + 1, updated_at = NOW()
       WHERE id = $1
         AND frozen_at IS NULL
         AND handoff_reserved_at IS NULL
-        AND ($2::int IS NULL OR revision = $2)
+        AND revision = $2
       RETURNING *`,
     [id, expected]
   );
