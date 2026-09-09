@@ -45,7 +45,17 @@ async function request(path, options = {}) {
 
   if (!response.ok || data?.ok === false) {
     const detail = data?.error || data || response.statusText;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail, null, 2));
+    const error = new Error(typeof detail === "string" ? detail : JSON.stringify(detail, null, 2));
+    // A campaign write that lost a race, or one against an already-sent
+    // campaign, is recoverable and carries the row as it now stands. Flattening
+    // it into a bare message would leave the caller nothing to recover WITH.
+    error.status = response.status;
+    if (data?.conflict) {
+      error.conflict = data.conflict;
+      error.campaign = data.campaign;
+      error.fields = data.fields;
+    }
+    throw error;
   }
 
   return data;
@@ -76,7 +86,11 @@ export const api = {
   saveCampaign: (campaign) => request("/campaigns", { method: "POST", body: JSON.stringify({ shopDomain, ...campaign }) }),
   patchCampaign: (id, patch) => request(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
-  createSendPackage: (campaign) => request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),
+  // `campaign.campaignId`, when present, tells the server which existing
+  // campaign this is — so the audience is resolved from that campaign's origin
+  // run rather than the latest one.
+  createSendPackage: ({ campaignId, ...campaign } = {}) =>
+    request("/klaviyo/campaigns/from-engine", { method: "POST", body: JSON.stringify({ shopDomain, campaignId, campaign }) }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
   generateCopy: ({ playId, templateId, regenerate, lockedSlots, steer } = {}) =>

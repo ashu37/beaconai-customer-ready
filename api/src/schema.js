@@ -254,6 +254,46 @@ async function initSchema() {
       ON clean.campaigns (shop_domain, created_at DESC);
   `);
 
+  // Ticket B — durable campaign revision.
+  //
+  // A campaign row is the record of what the merchant reviewed and sent. Two
+  // things previously made that record unreliable: a later write could silently
+  // overwrite a newer one with no way to notice, and the row described a send by
+  // POINTING at things that move (the latest run's copy, today's audience) rather
+  // than by holding what was actually approved. All columns are additive and
+  // nullable — nothing is backfilled, because a value invented for a historical
+  // campaign is indistinguishable from one that was really reviewed.
+  await query(`
+    ALTER TABLE clean.campaigns
+      ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1;
+  `);
+
+  // The play's merchant-facing name, copied onto the row. The engine emits a new
+  // slate each run, so a play that drops out of the latest slate would otherwise
+  // leave its campaign nameless in history — a sent campaign the merchant can no
+  // longer identify.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS display_name TEXT;`);
+
+  // What was actually approved, frozen at handoff, as opposed to `copy` (what the
+  // model most recently wrote) and `draft_edits` (what the merchant is currently
+  // typing). Those two keep changing; this must not, because it is the record of
+  // the email that went out.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS approved_copy JSONB;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS rendered_html TEXT;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS template_version TEXT;`);
+
+  // The audience as a REFERENCE — (run_id, audience_definition_id) plus counts —
+  // not a re-derivation. audience_hash is over the member id list, so a later
+  // read can tell whether the audience it resolves is the one that was reviewed.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS audience_ref JSONB;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS audience_hash TEXT;`);
+
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;`);
+
+  // Set at handoff. After this the approved content and audience are immutable:
+  // editing them would rewrite the record of an email that has already left.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ;`);
+
   // Which arm each customer landed in. Written at send time and never after —
   // without this row the campaign cannot be measured later, because there is no
   // other record of who was held back.
