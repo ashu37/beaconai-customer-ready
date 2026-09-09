@@ -287,6 +287,15 @@ async function initSchema() {
       PRIMARY KEY (campaign_id, window_days, arm)
     );
   `);
+
+  // Sum of each customer's squared revenue. Storing this sufficient statistic
+  // alongside the sum is what lets the interval be recomputed at read time
+  // without re-scanning orders — and an estimate without an interval is the
+  // thing this product exists not to publish.
+  await query(`
+    ALTER TABLE clean.campaign_measurements
+      ADD COLUMN IF NOT EXISTS revenue_sq NUMERIC(18,4) NOT NULL DEFAULT 0;
+  `);
 }
 
 module.exports = { initSchema };

@@ -52,8 +52,15 @@ async function upsertCampaign({ shopDomain, runId, playId, status, templateId, c
 
   const { rows } = await query(
     `INSERT INTO clean.campaigns
-       (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id, holdout_pct)
-     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8, COALESCE($9, 0.100))
+       (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, klaviyo_campaign_id,
+        holdout_pct, approved_at, sent_at)
+     VALUES ($1, $2, $3, COALESCE($4, 'draft'), $5, $6, $7, $8, COALESCE($9, 0.100),
+             -- Stamped on INSERT too, not only on conflict. A campaign created
+             -- straight into 'sent' still has to record WHEN: measurement
+             -- windows run from sent_at, so a missing stamp makes the campaign
+             -- permanently unmeasurable rather than visibly broken.
+             CASE WHEN $4 = 'approved' THEN NOW() END,
+             CASE WHEN $4 = 'sent'     THEN NOW() END)
      ON CONFLICT (shop_domain, run_id, play_id) DO UPDATE SET
        status              = COALESCE($4, clean.campaigns.status),
        template_id         = COALESCE($5, clean.campaigns.template_id),
