@@ -70,6 +70,23 @@ const {
   findCachedCopy,
 } = require("./services/campaignService");
 
+// The only fields a client may set through the public patch route. Notably
+// absent: holdsReservation, which is internal authority and now travels as a
+// separate argument to the service rather than inside the patch.
+const PUBLIC_CAMPAIGN_PATCH_FIELDS = [
+  "status", "templateId", "copy", "draftEdits", "displayName",
+  "audienceSize", "holdoutSize", "holdoutPct", "klaviyoCampaignId",
+  "expectedRevision",
+];
+
+function publicCampaignPatch(body) {
+  const patch = {};
+  for (const field of PUBLIC_CAMPAIGN_PATCH_FIELDS) {
+    if (body[field] !== undefined) patch[field] = body[field];
+  }
+  return patch;
+}
+
 // One shape for both write conflicts, so the client can tell "someone else
 // changed this" from "this has already been sent" and recover rather than
 // retrying blindly. 409, never 500: neither is a server fault.
@@ -621,8 +638,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         holdoutSize: split.holdout.length,
         holdoutPct: split.holdoutPct,
         expectedRevision: campaignRow.revision,
+      }, {
         // This route holds the reservation, so it is the one caller allowed to
-        // write content while the campaign is reserved.
+        // write content while the campaign is reserved. Second argument, out of
+        // reach of any request body.
         holdsReservation: true,
       });
     }
@@ -808,7 +827,11 @@ router.patch("/campaigns/:id", async (req, res) => {
       res.status(400).json({ ok: false, error: "campaign id must be numeric" });
       return;
     }
-    const campaign = await updateCampaign(id, req.body || {});
+    // Allowlisted. Forwarding the body wholesale let a caller set
+    // `holdsReservation` — the flag meant only for the handoff route that
+    // actually holds the reservation — and edit content mid-handoff. Anything
+    // not named here is ignored rather than trusted.
+    const campaign = await updateCampaign(id, publicCampaignPatch(req.body || {}));
     if (!campaign) {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
+import { canHandoff, draftSignature } from "./campaignSaveGate";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -1876,7 +1877,11 @@ function App() {
         setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
         setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
         setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
-        for (const c of thisRun) latestRevision.current[c.playId] = c.revision;
+        for (const c of thisRun) {
+          latestRevision.current[c.playId] = c.revision;
+          savedSignatureRef.current[c.playId] = draftSignature(c.draftEdits);
+          saveStatusRef.current[c.playId] = "saved";
+        }
         setRestoredApprovedPlayIds(live.map((c) => c.playId));
         setApprovedForSend(live.filter((c) => c.status === "approved" || c.status === "sent").map((c) => c.playId));
         setAuthorizedPackageIds(live.filter((c) => c.klaviyoCampaignId).map((c) => c.playId));
@@ -1941,6 +1946,13 @@ function App() {
   // consulted only the timers would report "nothing pending" while a write was
   // still in flight.
   const inFlightSaves = useRef({});
+  // The LAST SETTLED outcome per draft, and the signature of what was actually
+  // persisted. Both are refs: a handoff handler closes over state from the
+  // render that created it, which by definition predates the save it needs to
+  // judge. A failure stays here until a later save succeeds — that is what stops
+  // a settled failure from looking like "nothing pending".
+  const saveStatusRef = useRef({});
+  const savedSignatureRef = useRef({});
   const saveCampaignState = useCallback(async (playId, fields) => {
     // A campaign belongs to the run it was created in. Writing it against
     // whatever run is current would open a second campaign for the same play the
@@ -1958,9 +1970,18 @@ function App() {
         ...fields,
       });
       setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
+      if (savedSignatureRef.current[playId] === undefined) {
+        savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
+      }
       setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
       setRunIdByPlay((prev) => (prev[playId] === campaign.runId ? prev : { ...prev, [playId]: campaign.runId }));
       setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saved" }));
+      saveStatusRef.current[playId] = "saved";
+      // Record WHAT was persisted, not merely that something was. The handoff
+      // compares the draft on screen against this.
+      if (fields.draftEdits !== undefined) {
+        savedSignatureRef.current[playId] = draftSignature(fields.draftEdits);
+      }
       // Kept in a ref as well as state: a handoff started in the same tick as a
       // save needs the revision the server just returned, and setState has not
       // landed yet.
@@ -1972,8 +1993,11 @@ function App() {
       // a retry is against reality, and tell the merchant rather than silently
       // dropping either copy.
       if (error.conflict && error.campaign) {
+        // The server's revision is recorded for display, but NOT adopted as the
+        // reviewed revision: the merchant's copy has not been resolved against
+        // it, so handing off would freeze one of the two arbitrarily.
         setRevisionByPlay((prev) => ({ ...prev, [playId]: error.campaign.revision }));
-        latestRevision.current[playId] = error.campaign.revision;
+        saveStatusRef.current[playId] = "conflict";
         setSaveStateByPlay((prev) => ({ ...prev, [playId]: "conflict" }));
         showToast({
           message: error.conflict === "frozen"
@@ -1986,6 +2010,7 @@ function App() {
       // Anything else is a real write failure. Surfaced, not swallowed: the
       // merchant is otherwise editing a draft that is no longer being stored.
       setSaveStateByPlay((prev) => ({ ...prev, [playId]: "failed" }));
+      saveStatusRef.current[playId] = "failed";
       return { ok: false, reason: "failed", playId };
     }
     })();
@@ -2484,32 +2509,25 @@ function App() {
     // the merchant is looking at but not in the record of what was approved —
     // and that record is frozen immediately afterwards, so it could never be
     // corrected. Awaited, not fired and forgotten.
-    // Act on what the flush actually REPORTS, not on React state captured when
-    // this handler was created. That state predates the save by definition, so
-    // reading it could clear a handoff whose save had just failed — and the
-    // record freezes moments later, past correcting.
-    const flush = await flushPendingEdits(campaignDraft.id);
-    if (!flush.ok) {
-      const conflicted = flush.failed.some((f) => f.reason && f.reason !== "failed");
-      showToast({
-        message: conflicted
-          ? "This campaign changed elsewhere. Reload it before sending."
-          : "This campaign's last edit didn't save. Retry before sending.",
-        error: true,
-      });
-      return;
-    }
+    // Flush first so anything queued or in flight is settled, then ask the gate.
+    // The gate is what actually decides, because a flush can legitimately report
+    // "nothing pending" while the last save FAILED — the settled request has
+    // already left every pending map by then.
+    await flushPendingEdits(campaignDraft.id);
 
-    // Prefer the revision the flush just returned. Falling back to state would
-    // send a stale number that the server would refuse for no good reason.
-    const flushed = flush.results.find((r) => r?.playId === campaignDraft.id && r.ok);
-    const expectedRevision = flushed?.revision
-      ?? latestRevision.current[campaignDraft.id]
-      ?? revisionByPlay[campaignDraft.id];
-    if (campaignIdByPlay[campaignDraft.id] && expectedRevision === undefined) {
-      showToast({ message: "This campaign hasn't finished saving. Try again in a moment.", error: true });
+    const playId = campaignDraft.id;
+    const verdict = canHandoff({
+      status: saveStatusRef.current[playId],
+      currentSignature: draftSignature(draftEditsByPlay[playId]),
+      savedSignature: savedSignatureRef.current[playId],
+      savedRevision: latestRevision.current[playId],
+      hasCampaignRow: Boolean(campaignIdByPlay[playId]),
+    });
+    if (!verdict.ok) {
+      showToast({ message: verdict.message, error: true });
       return;
     }
+    const expectedRevision = verdict.revision;
 
     setPublishingCampaignId(campaignDraft.id);
     try {
@@ -2638,6 +2656,8 @@ function App() {
     setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
     setRunIdByPlay((prev) => ({ ...prev, [playId]: campaign.runId }));
     latestRevision.current[playId] = campaign.revision;
+    savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
+    saveStatusRef.current[playId] = "saved";
     if (campaign.templateId) setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: campaign.templateId }));
     setDraftEditsByPlay((prev) => ({ ...prev, [playId]: campaign.draftEdits || {} }));
     if (campaign.copy?.copy) setAgentCopyByPlay((prev) => ({ ...prev, [playId]: campaign.copy.copy }));

@@ -498,10 +498,11 @@ suite("content cannot change while a handoff holds the campaign", async () => {
   );
 
   // The route driving the handoff holds the reservation, so it may still write.
-  const bookkeeping = await updateCampaign(created.id, {
-    holdoutPct: 0.1, audienceSize: 100, holdoutSize: 10,
-    expectedRevision: reserved.revision, holdsReservation: true,
-  });
+  const bookkeeping = await updateCampaign(
+    created.id,
+    { holdoutPct: 0.1, audienceSize: 100, holdoutSize: 10, expectedRevision: reserved.revision },
+    { holdsReservation: true }
+  );
   assert.equal(Number(bookkeeping.holdoutPct), 0.1);
 
   // And delivery state is writable by anyone: it records what happened TO a send.
@@ -569,4 +570,61 @@ suite("a failure before any provider call releases the reservation", async () =>
   assert.equal(released.handoffReservedAt, null);
   const again = await reserveCampaignForHandoff(created.id, released.revision);
   assert.ok(again.handoffReservedAt, "and the merchant can retry");
+});
+
+suite("the public patch route cannot claim reservation authority", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY, copy: { subject: "Reviewed" },
+  });
+  const reserved = await reserveCampaignForHandoff(created.id, created.revision);
+
+  // holdsReservation is internal authority. It used to be read straight off the
+  // patch object, which came from the request body — so anyone who could call
+  // this route could assert it and edit content mid-handoff, nullifying the
+  // guard entirely.
+  const patched = await fetch(`${api.base}/campaigns/${created.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      draftEdits: { subject: "Snuck in" },
+      expectedRevision: reserved.revision,
+      holdsReservation: true,
+    }),
+  });
+  assert.equal(patched.status, 409);
+  const body = await patched.json();
+  assert.equal(body.conflict, "handoff_in_progress");
+
+  const after = await getCampaign(created.id);
+  assert.equal(after.draftEdits, null, "the smuggled edit did not land");
+  assert.deepEqual(after.copy, { subject: "Reviewed" });
+});
+
+suite("unknown patch fields are ignored, not forwarded", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+
+  const response = await fetch(`${api.base}/campaigns/${created.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      status: "approved",
+      expectedRevision: created.revision,
+      // None of these are patchable through the public route.
+      frozenAt: new Date().toISOString(),
+      revision: 999,
+      shopDomain: "someone-else.myshopify.com",
+      holdsReservation: true,
+    }),
+  });
+  assert.equal(response.status, 200);
+
+  const after = await getCampaign(created.id);
+  assert.equal(after.status, "approved", "the allowlisted field applied");
+  assert.equal(after.frozenAt, null);
+  assert.equal(after.revision, created.revision + 1, "revision is the server's counter, not the client's");
+  assert.equal(after.shopDomain, SHOP);
 });

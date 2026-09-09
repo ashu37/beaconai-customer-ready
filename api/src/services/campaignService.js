@@ -84,6 +84,12 @@ class CampaignFrozen extends Error {
   }
 }
 
+// Reservation-owner authority is passed as a SEPARATE argument, never as part
+// of the patch object. A patch can arrive from a request body; a second
+// positional argument cannot. Carrying it inside the patch meant any caller who
+// could reach the public update route could claim to hold a reservation it did
+// not hold, which nullified the guard it was there to enforce.
+
 // Fields that describe WHAT WAS SENT. Frozen at handoff. Status bookkeeping,
 // the Klaviyo id and measurement counts are deliberately not here: those record
 // what happened to the send and must stay writable afterwards.
@@ -156,8 +162,8 @@ function rowToCampaign(row) {
 // need none — there is nothing there to lose.
 async function upsertCampaign({
   shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-  holdoutPct, displayName, expectedRevision, holdsReservation = false,
-}) {
+  holdoutPct, displayName, expectedRevision,
+}, internal = {}) {
   if (!shopDomain) throw new Error("shopDomain is required");
   if (!runId) throw new Error("runId is required");
   if (!playId) throw new Error("playId is required");
@@ -216,7 +222,7 @@ async function upsertCampaign({
      displayName || null,
      expected,
      touchesFrozen,
-     Boolean(holdsReservation)]
+     Boolean(internal.holdsReservation)]
   );
 
   if (rows.length) return rowToCampaign(rows[0]);
@@ -329,7 +335,7 @@ async function getCampaign(id) {
 
 // Partial update by id. Only the named columns are touched; anything omitted
 // keeps its current value.
-async function updateCampaign(id, patch = {}) {
+async function updateCampaign(id, patch = {}, internal = {}) {
   const allowed = {
     status: "status",
     templateId: "template_id",
@@ -379,7 +385,7 @@ async function updateCampaign(id, patch = {}) {
     // A handoff in flight owns the content until it freezes or releases. The
     // route driving that handoff passes holdsReservation, because it IS the
     // holder — everyone else is refused.
-    if (!patch.holdsReservation) guards.push("handoff_reserved_at IS NULL");
+    if (!internal.holdsReservation) guards.push("handoff_reserved_at IS NULL");
   } else if (expected !== null) {
     values.push(expected);
     guards.push(`revision = $${values.length}`);
