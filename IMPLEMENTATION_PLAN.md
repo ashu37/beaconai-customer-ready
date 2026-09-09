@@ -98,7 +98,7 @@ Tickets below are implementation slices. Named new fields/endpoints are proposed
 
 **Timing:** complete this checkpoint now, while C's backend fixes continue, and before D's UI implementation. Do not leave it until both tickets close: the copy editor, preview and provider handoff are one merchant journey. D's independent authentication and reconciliation work may proceed in parallel.
 
-**Deliverable:** a compact `CAMPAIGN_UI_SPEC.md` with an annotated desktop wireframe, a narrow-screen adaptation, exact labels and a button/state table. Drafted: [CAMPAIGN_UI_SPEC.md](CAMPAIGN_UI_SPEC.md) — **awaiting founder review.** No screens are implemented against it until that review happens; the C-side pieces already built are listed at the end of the spec so the review can confirm or change them. The founder reviews the proposed flow once before implementation. This is clarification of the existing pilot scope, not a template picker or email-builder project.
+**Deliverable:** a compact `CAMPAIGN_UI_SPEC.md` with an annotated desktop wireframe, a narrow-screen adaptation, exact labels and a button/state table. The founder reviews the proposed flow once before implementation. This is clarification of the existing pilot scope, not a template picker or email-builder project.
 
 The specification must settle:
 
