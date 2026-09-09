@@ -40,6 +40,7 @@ const { splitAudience } = require("./services/holdoutService");
 const {
   measureCampaign,
   summarizeCampaign,
+  summarizeProgram,
   staleCampaignIds,
 } = require("./services/measurementService");
 const {
@@ -604,8 +605,13 @@ router.get("/results/:shopDomain", async (req, res) => {
     const campaigns = await listCampaigns(shopDomain);
     const sent = campaigns.filter((c) => c.sentAt);
     const results = [];
-    for (const campaign of sent) results.push(await summarizeCampaign(campaign.id));
-    res.json({ ok: true, results });
+    for (const campaign of sent) {
+      const summary = await summarizeCampaign(campaign.id);
+      results.push({ ...summary, playId: campaign.playId, sentAt: campaign.sentAt,
+        audienceSize: campaign.audienceSize, holdoutSize: campaign.holdoutSize });
+    }
+    const program = await summarizeProgram(shopDomain);
+    res.json({ ok: true, program, results });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
