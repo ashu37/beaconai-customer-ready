@@ -531,9 +531,9 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
 router.post("/campaigns", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
-    const { runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId } = req.body;
+    const { runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct } = req.body;
     const campaign = await upsertCampaign({
-      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
+      shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId, holdoutPct,
     });
     res.json({ ok: true, campaign });
   } catch (error) {

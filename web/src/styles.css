@@ -532,3 +532,6 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .holdout-note { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; margin-bottom: 12px; border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--surface); }
 .holdout-note strong { font-size: 14px; color: var(--ink); }
 .holdout-note span { font-size: 13px; line-height: 1.5; color: var(--ink-soft); }
+.holdout-controls { display: flex; align-items: center; gap: 14px; margin-top: 8px; font-size: 13px; }
+.holdout-controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-soft); }
+.holdout-controls select { font: inherit; padding: 3px 6px; border: 1px solid var(--rule); border-radius: 5px; background: var(--surface); color: var(--ink); }
