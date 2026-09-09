@@ -1269,7 +1269,9 @@ function ResultRow({ result, playTitle, expanded, onToggle }) {
               : shown.verdict === "measuring"
                 ? `Day ${shown.daysElapsed} of ${shown.windowDays}. We report a result once the window closes — a partial window would read as a verdict it hasn't earned.`
                 : shown.verdict === "too_small"
-                  ? "Too few purchases in one of the groups to compare them. This isn't a null result — there simply isn't enough here to draw a line through yet. Larger audiences, or a larger holdout, would change that."
+                  ? "Too few purchases to compare the groups at all. This isn't a null result — there simply isn't enough here to draw a line through yet. Larger audiences, or a larger holdout, would change that."
+                  : c?.thinEvidence
+                    ? "This rests on few purchases in one group, so treat the size of the difference loosely — the direction is better supported than the exact figure. It firms up as the window fills."
                   : shown.verdict === "no_effect_found"
                     ? "The two groups are close enough that the difference could be chance. That's a real answer, not a missing one."
                     : "Revenue is net of refunds and excludes cancelled and test orders. It is not profit — product costs aren't connected."}
