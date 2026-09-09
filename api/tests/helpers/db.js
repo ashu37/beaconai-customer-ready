@@ -14,6 +14,8 @@ const TABLES = [
   "clean.campaign_measurements",
   "clean.campaign_recipients",
   "clean.campaigns",
+  "clean.brand_email_active",
+  "clean.brand_email_templates",
   "clean.engine_audiences",
   "clean.engine_run_snapshots",
   "clean.sync_runs",

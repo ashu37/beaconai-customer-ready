@@ -18,7 +18,18 @@ const {
   updateCampaign,
 } = require("../src/services/campaignService");
 
+const { saveBrandTemplate } = require("../src/services/brandEmailTemplateService");
+const { buildStarterShell } = require("../src/services/brandEmailRenderer");
+
 const SHOP = "campaign-shop.myshopify.com";
+
+// Ticket C: a handoff renders the shop's approved shell before it touches the
+// provider, so any test that expects to REACH the provider needs one configured.
+async function configureBrandShell(shopDomain = SHOP) {
+  return saveBrandTemplate({
+    shopDomain, html: buildStarterShell(), brand: { brandName: "Test Shop" }, approvedBy: "founder",
+  });
+}
 const PLAY = "play-winback";
 
 let api;
@@ -358,6 +369,7 @@ suite("handoff resolves the audience from the campaign's own run", async () => {
     [PLAY, ["old-1", "old-2"], ["new-1"]]
   );
 
+  await configureBrandShell();
   const campaign = await upsertCampaign({ shopDomain: SHOP, runId: "run-old", playId: PLAY, status: "approved" });
 
   // Only the campaign id is sent — no run_id anywhere in the body. run-new is
@@ -528,6 +540,7 @@ suite("a provider failure after creation keeps the campaign locked", async () =>
      VALUES ('run-1', 'aud-1', $1, 'MATERIALIZED', $2)`,
     [PLAY, ["c-1", "c-2"]]
   );
+  await configureBrandShell();
   const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" });
 
   // No Klaviyo key in tests, so the package call fails — but it fails INSIDE the

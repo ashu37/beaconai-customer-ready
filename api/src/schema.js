@@ -254,6 +254,51 @@ async function initSchema() {
       ON clean.campaigns (shop_domain, created_at DESC);
   `);
 
+  // Ticket C — the per-shop branded email shell.
+  //
+  // Versioned and append-only. A campaign freezes the template version it
+  // rendered with, so a later brand revision must not be able to change what an
+  // already-sent email looked like — which means old versions stay readable
+  // rather than being edited in place.
+  //
+  // `html` is a SHELL containing [[slot:name]] placeholders, reviewed by the
+  // founder before it is stored. Slot values are escaped at render time; the
+  // shell itself is trusted markup and therefore never accepted from a public
+  // endpoint.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.brand_email_templates (
+      id SERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      html TEXT NOT NULL,
+      slots JSONB NOT NULL DEFAULT '[]'::jsonb,
+      brand JSONB NOT NULL DEFAULT '{}'::jsonb,
+      source TEXT NOT NULL DEFAULT 'founder_configured',
+      approved_at TIMESTAMPTZ,
+      approved_by TEXT,
+      notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (shop_domain, version)
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS brand_email_templates_by_shop
+      ON clean.brand_email_templates (shop_domain, version DESC);
+  `);
+
+  // Which version a shop currently sends with. Separate from the versions table
+  // for the same reason active_sync is separate from sync_runs: "the newest row"
+  // and "the one approved for use" are different questions, and only the second
+  // may reach a merchant's customers.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.brand_email_active (
+      shop_domain TEXT PRIMARY KEY,
+      template_id INTEGER NOT NULL REFERENCES clean.brand_email_templates(id),
+      activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
   // Ticket B — durable campaign revision.
   //
   // A campaign row is the record of what the merchant reviewed and sent. Two

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { canHandoff, draftSignature } from "./campaignSaveGate";
+import { PREVIEW_STATE, previewFreshness } from "./previewFreshness";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -682,6 +683,7 @@ function CampaignReviewPane({
   onRewrite,
   saveState,
   onRetrySave,
+  activeBrandTemplateVersion,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -693,18 +695,46 @@ function CampaignReviewPane({
   const copyLoading = copyStatus === "loading";
   const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
+  // What the preview ON SCREEN was rendered from. Compared against the current
+  // draft to decide whether the merchant is looking at the email that would
+  // actually be sent.
+  const [renderedFrom, setRenderedFrom] = useState({ signature: null, templateVersion: null });
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const [brandSetupRequired, setBrandSetupRequired] = useState(false);
+
   const refreshPreview = React.useCallback(async (currentDraft) => {
     if (!currentDraft) return;
     setPreviewLoading(true);
+    const signature = draftSignature(currentDraft);
     try {
       const result = await api.previewCampaignHtml({ ...currentDraft, brandContext });
       setPreviewHtml(result.html || "");
+      setRenderedFrom({ signature, templateVersion: result.templateVersion ?? null });
+      setPreviewFailed(false);
+      setBrandSetupRequired(false);
     } catch (err) {
-      // Leave the last good preview in place on transient failures.
+      // The last good preview stays on screen, but it is no longer presented as
+      // current — previewFreshness reports the failure and offers a retry.
+      // Rendering nothing would be worse; rendering it silently, worse still.
+      setPreviewFailed(true);
+      if (err.code === "brand_setup_required") {
+        setBrandSetupRequired(true);
+        setPreviewHtml("");
+      }
     } finally {
       setPreviewLoading(false);
     }
   }, [brandContext]);
+
+  const freshness = previewFreshness({
+    renderedSignature: renderedFrom.signature,
+    currentSignature: draft ? draftSignature(draft) : "",
+    renderedTemplateVersion: renderedFrom.templateVersion,
+    activeTemplateVersion: activeBrandTemplateVersion ?? null,
+    loading: previewLoading,
+    lastRefreshFailed: previewFailed,
+    setupRequired: brandSetupRequired,
+  });
 
   // Immediate refresh when the play or selected template changes.
   useEffect(() => {
@@ -1010,7 +1040,21 @@ function CampaignReviewPane({
                 </div>
               )}
             </div>
-            {previewLoading ? <div className="preview-status">Updating preview…</div> : null}
+            {freshness.state === PREVIEW_STATE.loading ? (
+              <div className="preview-status">Updating preview…</div>
+            ) : freshness.message ? (
+              // Persistent, and it stays until the preview is actually current.
+              // The whole risk here is a merchant approving a picture of an
+              // email that is not the email their customers would receive.
+              <div className={`preview-status ${freshness.state}`} role="status">
+                {freshness.message}
+                {freshness.canRetry ? (
+                  <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
+                    Refresh preview
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -1587,6 +1631,9 @@ function App() {
   const [runIdByPlay, setRunIdByPlay] = useState({});
   // Campaigns from earlier runs, kept so the merchant can still find them.
   const [historicalCampaigns, setHistoricalCampaigns] = useState([]);
+  // Ticket C: the brand shell version this shop currently sends with. A new
+  // approved version makes every existing preview out of date.
+  const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   // D6b: weekly series for the Orders / Customers sparklines.
   const [statsSeries, setStatsSeries] = useState(null);
@@ -1785,6 +1832,7 @@ function App() {
     checkConnections();
     preloadStoreSnapshot();
     loadBrandContext();
+    loadBrandEmailTemplate();
     loadLatestRun();
   }, []);
 
@@ -2217,6 +2265,15 @@ function App() {
       setEngineInput(result.input);
     } catch (_) {
       // Home can still render connection and workflow state before data is synced.
+    }
+  }
+
+  async function loadBrandEmailTemplate() {
+    try {
+      const result = await api.brandEmailTemplate();
+      setBrandTemplateVersion(result.active?.version ?? null);
+    } catch (_) {
+      // Additive: the preview's own response still reports brand_setup_required.
     }
   }
 
@@ -3113,6 +3170,7 @@ function App() {
                                 copyStatus={copyStatusByPlay[reviewPlay.id] || null}
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
                                 saveState={saveStateByPlay[reviewPlay.id]}
+                                activeBrandTemplateVersion={brandTemplateVersion}
                                 onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
