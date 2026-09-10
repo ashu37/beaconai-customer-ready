@@ -244,6 +244,6 @@ Acceptance checklist:
 - [ ] D: create → provider draft → reopen retains exact snapshot/reference. Double-click, refresh during creation, provider timeout, safe retry, and unknown-outcome reconciliation do not duplicate drafts.
 - [ ] D: only confirmed provider execution becomes Sent; unknown counts remain unknown; later Klaviyo edits do not rewrite the BeaconAI handoff snapshot.
 - [ ] Walk through keyboard operation and narrow-screen editing/recovery. Attach implementation screenshots for comparison with the wireframes.
-- [ ] **BLOCKED — no Klaviyo credentials are configured in this environment.** Complete one authorized Klaviyo draft/preview or test-email walkthrough, checking sender, destination, footer, mobile view, recipients and holdout exclusions before live pilot handoff.
+- [ ] **Deferred until an authorized pilot account is connected.** Complete one authorized Klaviyo draft/preview or test-email walkthrough, checking sender, destination, footer, mobile view, recipients and holdout exclusions before live pilot handoff.
 
 Delivery: Ticket C-UI implements all screens in this specification, starting with editor/preview and integrating D’s handoff/reconciliation contract when ready. D backend work can proceed in parallel. Keep the Results UI checkpoint separate; this spec adds no Results screens.

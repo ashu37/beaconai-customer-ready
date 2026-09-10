@@ -1640,6 +1640,11 @@ function App() {
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
   const [brandDesign, setBrandDesign] = useState(null);
+  // Which shop, if any, this browser is actually signed in as. Independent of
+  // whether the integration is connected.
+  const [signedInShop, setSignedInShop] = useState(null);
+  const [signedInChecked, setSignedInChecked] = useState(false);
+  const [signInView, setSignInView] = useState({ state: "checking", needsSignIn: false, message: null });
   // Durable provider state per campaign, from the Ticket D contract. Never
   // inferred from local status — that is the whole point of the contract.
   const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
@@ -2309,6 +2314,20 @@ function App() {
     try {
       await api.health();
       next.api = true;
+
+      // Signed in is a DIFFERENT question from connected, and conflating them
+      // was the trap: a store stays connected while a session expires, so the
+      // page said "Connected", hid the Shopify action, and every protected
+      // request failed with no way back in.
+      let session = null;
+      try { session = await api.session(); } catch (_) {}
+      const signIn = signInState({ session, viewingShop: api.shopDomain, checked: true });
+      setSignInView(signIn);
+      setSignedInShop(signIn.state === "signed_in" ? session.shopDomain : null);
+      setSignedInChecked(true);
+      next.signedIn = !signIn.needsSignIn;
+      const authenticated = !signIn.needsSignIn;
+
       try {
         const connection = await api.connectionStatus();
         next.shopify = Boolean(connection.status?.shopify?.connected);
@@ -2316,8 +2335,12 @@ function App() {
         next.shopifySource = connection.status?.shopify?.source || "none";
         next.klaviyoSource = connection.status?.klaviyo?.source || "none";
       } catch (_) {}
-      try { await api.testShopify(); next.shopify = true; } catch (_) {}
-      try { await api.testKlaviyo(); next.klaviyo = true; } catch (_) {}
+      // These now require a session; skip them when there is none rather than
+      // letting two guaranteed failures look like a broken integration.
+      if (authenticated) {
+        try { await api.testShopify(); next.shopify = true; } catch (_) {}
+        try { await api.testKlaviyo(); next.klaviyo = true; } catch (_) {}
+      }
       setStatus(next);
     } catch (err) {
       setError(`API health failed: ${err.message}`);
@@ -3049,6 +3072,23 @@ function App() {
                 <div className="sparse-interstitial">
                   <p>Your store has {orderCount} orders. BeaconAI holds recommendations until the data can back them — here's what's tracking toward unlock.</p>
                   <button className="btn small" onClick={() => setSparseInterstitialDismissed(true)}>Dismiss</button>
+                </div>
+              ) : null}
+              {signInView.needsSignIn ? (
+                // Shown regardless of connection state. A connected store with
+                // an expired session is exactly the case that had no way back:
+                // every protected request failed while the page said
+                // "Connected" and hid the only action that would fix it.
+                <div className="data-state-banner warn" role="status">
+                  <div className="data-state-main">
+                    <strong>
+                      {signInView.state === "wrong_shop"
+                        ? "You're signed in to a different store"
+                        : "You're signed out of this store"}
+                    </strong>
+                    <span>{signInView.message}</span>
+                  </div>
+                  <button className="btn" onClick={() => startOAuth("shopify")}>Sign in with Shopify</button>
                 </div>
               ) : null}
               <DataStateBanner

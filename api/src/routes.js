@@ -237,7 +237,6 @@ const PUBLIC_PATHS = [
   /^\/session$/,
   /^\/oauth\//,
   /^\/connections\/status$/,
-  /^\/connections\/(shopify|klaviyo)\/test$/,
   /^\/$/,
 ];
 
@@ -250,17 +249,23 @@ router.use((req, res, next) => {
   return requireShopSession(req, res, next);
 });
 
-async function resolveShopifyConfig(body = {}) {
-  const shopDomain = body.shopDomain || config.shopify.shopDomain;
+// Both of these take an ALREADY-AUTHORIZED shop and nothing else.
+//
+// They used to accept the request and pick the shop out of it, which meant the
+// session guard established WHO was asking while the handler still chose whose
+// stored credential to spend. A signed-in merchant could name another store and
+// have this reach the provider with that store's key.
+async function resolveShopifyConfig(shopDomain, { accessToken } = {}) {
+  if (!shopDomain) throw new Error("shopDomain is required");
   return {
     shopDomain,
-    accessToken: body.accessToken || await resolveStoredShopifyToken(shopDomain),
+    accessToken: accessToken || await resolveStoredShopifyToken(shopDomain),
   };
 }
 
-async function resolveKlaviyoKey(body = {}) {
-  const shopDomain = body.shopDomain || config.shopify.shopDomain;
-  return body.privateKey || await resolveStoredKlaviyoToken(shopDomain);
+async function resolveKlaviyoKey(shopDomain, { privateKey } = {}) {
+  if (!shopDomain) throw new Error("shopDomain is required");
+  return privateKey || await resolveStoredKlaviyoToken(shopDomain);
 }
 
 router.get("/health", (req, res) => {
@@ -279,7 +284,9 @@ router.get("/ready", (req, res) => {
 
 router.post("/connections/shopify/test", async (req, res) => {
   try {
-    const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
+    const shop = authorizedShop(req, res, req.body.shopDomain);
+    if (!shop) return;
+    const { shopDomain, accessToken } = await resolveShopifyConfig(shop, req.body);
     const limit = req.body.limit || 1;
 
     const data = await fetchShopifyData({ shopDomain, accessToken, limit });
@@ -301,7 +308,9 @@ router.post("/connections/shopify/test", async (req, res) => {
 
 router.post("/connections/klaviyo/test", async (req, res) => {
   try {
-    const privateKey = await resolveKlaviyoKey(req.body);
+    const shopDomain = authorizedShop(req, res, req.body.shopDomain);
+    if (!shopDomain) return;
+    const privateKey = await resolveKlaviyoKey(shopDomain, req.body);
     const data = await testKlaviyo(privateKey);
     res.json({ ok: true, data });
   } catch (error) {
@@ -570,7 +579,9 @@ router.post("/copy/generate", async (req, res) => {
 // Klaviyo" when it does not — never a guess assembled from the store domain.
 router.get("/klaviyo/sender", async (req, res) => {
   try {
-    const sender = await getKlaviyoSender(await resolveKlaviyoKey(req.query));
+    const shopDomain = authorizedShop(req, res, req.query.shopDomain);
+    if (!shopDomain) return;
+    const sender = await getKlaviyoSender(await resolveKlaviyoKey(shopDomain, req.query));
     res.json({ ok: true, sender });
   } catch (error) {
     // An unreachable provider is not evidence of a missing sender. Both render
@@ -581,7 +592,9 @@ router.get("/klaviyo/sender", async (req, res) => {
 
 router.get("/klaviyo/lists", async (req, res) => {
   try {
-    const data = await getKlaviyoLists(await resolveKlaviyoKey(req.query));
+    const shopDomain = authorizedShop(req, res, req.query.shopDomain);
+    if (!shopDomain) return;
+    const data = await getKlaviyoLists(await resolveKlaviyoKey(shopDomain, req.query));
     res.json({ ok: true, data });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
@@ -590,7 +603,9 @@ router.get("/klaviyo/lists", async (req, res) => {
 
 router.get("/klaviyo/profiles", async (req, res) => {
   try {
-    const data = await getKlaviyoProfiles(await resolveKlaviyoKey(req.query));
+    const shopDomain = authorizedShop(req, res, req.query.shopDomain);
+    if (!shopDomain) return;
+    const data = await getKlaviyoProfiles(await resolveKlaviyoKey(shopDomain, req.query));
     res.json({ ok: true, data });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
@@ -604,7 +619,7 @@ router.get("/klaviyo/templates", async (req, res) => {
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
     const beaconTemplates = buildBeaconTemplates(brandContext);
-    const data = await getKlaviyoTemplates(await resolveKlaviyoKey(req.query));
+    const data = await getKlaviyoTemplates(await resolveKlaviyoKey(shopDomain, req.query));
     const existingTemplates = (data.data || []).map((template) => ({
       id: template.id,
       source: "klaviyo",
@@ -623,7 +638,11 @@ router.get("/klaviyo/templates", async (req, res) => {
       source: data.mock ? "beacon-fallback" : "klaviyo",
     });
   } catch (error) {
-    const input = await getEngineInput(authorizedShop(req, res, req.query.shopDomain) || config.shopify.shopDomain);
+    // The shop was already authorized above; re-deriving it here from the query
+    // would reopen the hole in the error path.
+    const input = await getEngineInput(req.auth?.kind === "founder"
+      ? (req.query.shopDomain || config.shopify.shopDomain)
+      : req.auth?.shopDomain);
     const brandContext = buildBrandContext(input);
     res.json({
       ok: true,
@@ -637,7 +656,9 @@ router.get("/klaviyo/templates", async (req, res) => {
 
 router.post("/sync/shopify", async (req, res) => {
   try {
-    const { shopDomain, accessToken } = await resolveShopifyConfig(req.body);
+    const shop = authorizedShop(req, res, req.body.shopDomain);
+    if (!shop) return;
+    const { shopDomain, accessToken } = await resolveShopifyConfig(shop, req.body);
     // No default cap: undefined limit paginates every resource to completion.
     // A caller may still pass an explicit numeric limit to bound the sync — and
     // if that limit stops a resource mid-stream, the sync is recorded as
@@ -823,7 +844,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.body.shopDomain);
     if (!shopDomain) return;
-    const privateKey = await resolveKlaviyoKey(req.body);
+    const privateKey = await resolveKlaviyoKey(shopDomain, req.body);
     if (!req.body.campaign) {
       res.status(400).json({ ok: false, error: "campaign is required" });
       return;
@@ -1174,7 +1195,7 @@ router.post("/klaviyo/campaigns/send", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.body.shopDomain);
     if (!shopDomain) return;
-    const privateKey = await resolveKlaviyoKey(req.body);
+    const privateKey = await resolveKlaviyoKey(shopDomain, req.body);
     const campaignId = req.body.campaignId;
     if (!campaignId) throw new Error("campaignId is required to send a Klaviyo campaign.");
 

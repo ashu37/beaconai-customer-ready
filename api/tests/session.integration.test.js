@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const db = require("./helpers/db");
 const suite = db.available ? test : test.skip;
 
+const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
 const {
   authorizedForShop,
@@ -169,4 +170,80 @@ suite("onboarding still works before a session exists", async () => {
     assert.notEqual(response.status, 401, `${path} must not require a session`);
     assert.notEqual(response.status, 403, `${path} must not require a session`);
   }
+});
+
+suite("no route spends another shop's stored credentials", async () => {
+  await db.resetDatabase();
+  const mine = "mine.myshopify.com";
+  const theirs = "theirs.myshopify.com";
+
+  // Only the OTHER shop has provider credentials. If a handler resolves them
+  // from the request rather than the session, the response comes back carrying
+  // that shop's data — which is exactly what was reproduced.
+  await query(
+    `INSERT INTO clean.connections (shop_domain, shopify_access_token, klaviyo_private_key)
+     VALUES ($1, 'their-shopify-token', 'their-klaviyo-key')`,
+    [theirs]
+  );
+  await query(`INSERT INTO clean.connections (shop_domain) VALUES ($1)`, [mine]);
+
+  // Every route that reaches a provider with a stored credential.
+  const crossShopGets = [
+    `/klaviyo/profiles?shopDomain=${encodeURIComponent(theirs)}`,
+    `/klaviyo/lists?shopDomain=${encodeURIComponent(theirs)}`,
+    `/klaviyo/sender?shopDomain=${encodeURIComponent(theirs)}`,
+    `/klaviyo/templates?shopDomain=${encodeURIComponent(theirs)}`,
+    `/brand/context?shopDomain=${encodeURIComponent(theirs)}`,
+    `/brand/email-template?shopDomain=${encodeURIComponent(theirs)}`,
+    `/sync/status/${theirs}`,
+    `/engine/input/${theirs}`,
+    `/stats/series/${theirs}`,
+    `/engine/atul/latest/${theirs}`,
+    `/campaigns/${theirs}`,
+    `/results/${theirs}`,
+  ];
+  for (const path of crossShopGets) {
+    const response = await api.get(path, { session: mine });
+    assert.equal(response.status, 403, `GET ${path} must refuse a session for another shop`);
+  }
+
+  const crossShopPosts = [
+    "/connections/shopify/test",
+    "/connections/klaviyo/test",
+    "/sync/shopify",
+    "/engine/atul/run",
+    "/copy/generate",
+    "/campaigns",
+    "/campaigns/audience/preview",
+    "/klaviyo/campaigns/preview-html",
+    "/klaviyo/campaigns/from-engine",
+    "/klaviyo/campaigns/send",
+  ];
+  for (const path of crossShopPosts) {
+    const response = await api.post(path, { shopDomain: theirs }, { session: mine });
+    assert.equal(response.status, 403, `POST ${path} must refuse a session for another shop`);
+  }
+});
+
+suite("the connection tests are not anonymous", async () => {
+  await db.resetDatabase();
+  const shop = "acme.myshopify.com";
+  await query(
+    `INSERT INTO clean.connections (shop_domain, klaviyo_private_key, shopify_access_token)
+     VALUES ($1, 'a-key', 'a-token')`,
+    [shop]
+  );
+
+  // These load a shop's stored credential and return the provider's response.
+  // Anonymous access handed out account data to anyone who could name a shop.
+  for (const path of ["/connections/klaviyo/test", "/connections/shopify/test"]) {
+    const response = await api.post(path, { shopDomain: shop }, { session: null });
+    assert.equal(response.status, 401, `${path} must require a session`);
+  }
+
+  // Onboarding does not need them: the booleans are public and sufficient.
+  const status = await api.get(`/connections/status?shopDomain=${encodeURIComponent(shop)}`, { session: null });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.status.klaviyo.connected, true);
+  assert.equal(status.body.status.klaviyo.scopes, undefined);
 });
