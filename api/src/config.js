@@ -19,6 +19,17 @@ const config = {
   // logged-in merchant's cookie to this API.
   corsOrigins: (process.env.CORS_ORIGINS || "")
     .split(",").map((origin) => origin.trim()).filter(Boolean),
+  // Campaign assessment policy (RESULTS_UI_SPEC §6.2). Unset by default: the
+  // floors and critical value await statistical review, and until all three
+  // are set campaign results report descriptive figures with no comparison.
+  campaignAssessmentPolicy: (() => {
+    const minCustomersPerArm = Number(process.env.CAMPAIGN_ASSESSMENT_MIN_CUSTOMERS_PER_ARM);
+    const minPurchasersPerArm = Number(process.env.CAMPAIGN_ASSESSMENT_MIN_PURCHASERS_PER_ARM);
+    const criticalValue = Number(process.env.CAMPAIGN_ASSESSMENT_CRITICAL_VALUE);
+    return [minCustomersPerArm, minPurchasersPerArm, criticalValue].every((v) => Number.isFinite(v) && v > 0)
+      ? { minCustomersPerArm, minPurchasersPerArm, criticalValue }
+      : null;
+  })(),
   tokenEncryptionSecret: process.env.TOKEN_ENCRYPTION_SECRET || process.env.SESSION_SECRET || "beaconai-local-dev-secret",
   shopify: {
     shopDomain: process.env.SHOPIFY_SHOP_DOMAIN,

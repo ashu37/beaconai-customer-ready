@@ -54,7 +54,7 @@ This is not total store revenue, and not provider-attributed revenue.
 - **Key at T0:** the Shopify customer id where a customer record exists, otherwise the lower-cased, trimmed email. Identifiers already linked at T0 (a customer record with an email; orders carrying both) are deduplicated **before** assignment, so one person gets one enrollment.
 - **Aliases:** every identifier known for an enrollee at T0 is stored against the enrollment id. Handoff exclusion and outcome matching both resolve through aliases to the enrollment id — never through the current key alone.
 - **Email → Shopify id upgrade:** when an email-keyed enrollee later gets a Shopify id, the id is added as an alias of the **same enrollment**. Enrollment date and arm are unchanged.
-- **Conflicting existing assignments** (an identifier found after T0 to link two enrollments):
+- **Conflicting existing assignments** (an identifier found after T0 to link two enrollments). *The rule below is a proposal. Handling post-assignment identity merges is left to the statistical reviewer (§11).*
   - **Survivor:** the earlier enrollment id; the other is marked `merged_into` with a timestamp.
   - **Arm:** the survivor keeps its original arm. Arms are never reassigned from later data, because linkage can be caused by purchasing, which the treatment may affect.
   - **Outcomes:** both identifiers' orders count toward the survivor.
@@ -67,13 +67,15 @@ This is not total store revenue, and not provider-attributed revenue.
 - At each BeaconAI handoff, audience members resolving to a **holdout** enrollment are removed from the send and recorded as excluded (`program_holdout`).
 - **Program-arm enrollees** get no additional per-campaign holdout: when they are in an audience, they are sent.
 - **Customers outside the cohort** keep the existing per-campaign bucket.
-- **Manual targeting.** The merchant agrees not to add recipients to a BeaconAI draft in Klaviyo, and not to send BeaconAI content to held-back customers. Reconciliation flags a provider sent count above the planned recipient count as possible contamination.
+- **Manual targeting.** The merchant agrees not to add recipients to a BeaconAI draft in Klaviyo, and not to send BeaconAI content to held-back customers.
+- **Contamination signal.** A provider sent count **above** the planned recipient count triggers an investigation, and any causal program claim is **withheld until it is resolved**. A count **within** plan does **not** prove audience integrity: recipients could have been swapped, or other BeaconAI content sent to held-back customers. It only fails to show a problem.
 
 ### 4.5 Common start rule
 - **Start S** = the provider-confirmed send time (delivery state `sent`, with `provider_sent_at`) of the **first BeaconAI campaign confirmed sent after T0**.
 - S is the **same calendar instant for every enrollee in both arms**, whether or not they were in that campaign's audience. Follow-up is `[S, S + 90 days)`.
 - **If the first campaign is never confirmed sent** — the draft was never sent, creation failed, the outcome stayed uncertain, or a scheduled send was cancelled — it does not start the clock. S is set by the first campaign that *is* confirmed sent. Enrollment and assignment are unchanged meanwhile, and holdout exclusion applies from T0.
 - **If no campaign is confirmed sent within 30 days of T0,** the cohort closes as `not_started`, with no estimate. A new cohort needs a new T0 and a fresh enrollment; nothing is backdated.
+- **An uncertain earlier send blocks that expiry.** A cohort whose earlier BeaconAI send is `uncertain` cannot automatically lapse into a newly randomized cohort: the send may have happened and started the clock. Reconciliation must resolve it first. If the provider shows it was sent, S is that send time; only a proven non-send lets the cohort close. Re-enrolling is always a deliberate founder action, never automatic.
 - Orders before S are not outcomes. They may be reported as labelled baseline context only.
 
 ### 4.6 Estimand
@@ -102,8 +104,9 @@ Per-campaign results are never summed into a program figure: the same customers 
 
 ### 4.9 Reporting floors
 - **Unique purchasers,** not orders: distinct enrollees with at least one qualifying order in the window. Ten orders from one customer are one purchaser.
-- **Proposed floors:** ≥ 100 enrollees per arm, and ≥ 10 unique purchasers per arm. Below either, the state is "insufficient data", which is distinct from "no clear difference".
-- **The current campaign gate counts orders, not purchasers.** It must switch to unique purchasers before any merchant sees a campaign verdict (owner: Ticket G, Results truth).
+- **Program floors are left to the statistical reviewer.** Illustrative starting point: ≥ 100 enrollees and ≥ 10 unique purchasers per arm. Below the floors the state is "insufficient data", which is distinct from "no clear difference".
+- **Campaign floors are a separate policy.** Until one is agreed, campaign results show descriptive group figures with the assessment "comparison unavailable" (Ticket G). No thresholds are invented.
+- **Unique purchasers are now counted** separately from orders for campaign results (Ticket G).
 
 ### 4.10 Estimator
 - **Current code:** an unequal-variance standard error with a 1.96 normal critical value (§1).
@@ -148,9 +151,8 @@ Rolling enrollment; opportunity-restricted analysis; CUPED or other covariate ad
 3. **The 365-day eligibility lookback** (§4.1).
 4. **The reporting floors'** values (§4.9).
 5. **The estimator** (§4.10) — statistical review.
-6. **The 1% identity-conflict flag** threshold (§4.3).
-7. **The contamination check:** whether a provider sent count above plan should block the estimate or only flag it (§4.4).
-8. **When the campaign gate switches to unique purchasers** — due in Ticket G.
+6. **Post-assignment identity merges,** including the 1% conflict flag (§4.3) — statistical review.
+7. **The campaign assessment policy** (floors and estimator for per-campaign comparisons). Until it is set, Ticket G reports campaign comparisons as unavailable, with descriptive figures.
 
 ## 11. For the statistical reviewer
 1. Is whole-cohort intent-to-treat with a common calendar start S appropriate when S depends on when the first send is confirmed?

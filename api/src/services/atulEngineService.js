@@ -300,24 +300,7 @@ async function runAtulEngine(input, options = {}) {
 // Reads Postgres, not the filesystem — the engine's output directory does not
 // survive a container restart, and it was keyed on a store id derived from the
 // brand, which does not always match the shop domain we look up by.
-async function readLatestRun({ shopDomain } = {}) {
-  if (!shopDomain) return null;
-
-  const { rows } = await query(
-    // The shop's currency rides along: the engine's dollar figures are in the
-    // store's own currency, and the presenter no longer assumes USD.
-    `SELECT r.run_id, r.store_id, r.engine_run, r.manifest, r.narration, r.sync_run_id,
-            r.input_provenance, r.created_at, s.currency
-       FROM clean.engine_run_snapshots r
-       LEFT JOIN clean.shop s ON s.shop_domain = r.shop_domain
-      WHERE r.shop_domain = $1
-      ORDER BY r.created_at DESC
-      LIMIT 1`,
-    [shopDomain]
-  );
-  if (!rows.length) return null;
-
-  const row = rows[0];
+function rowToRun(row) {
   return {
     runId: row.run_id,
     storeId: row.store_id,
@@ -330,6 +313,30 @@ async function readLatestRun({ shopDomain } = {}) {
     createdAt: row.created_at,
     currency: row.currency || null,
   };
+}
+
+// The shop's currency rides along: the engine's dollar figures are in the
+// store's own currency, and the presenter no longer assumes USD.
+const RUN_SELECT = `SELECT r.run_id, r.store_id, r.engine_run, r.manifest, r.narration, r.sync_run_id,
+                           r.input_provenance, r.created_at, s.currency
+                      FROM clean.engine_run_snapshots r
+                      LEFT JOIN clean.shop s ON s.shop_domain = r.shop_domain`;
+
+async function readLatestRun({ shopDomain } = {}) {
+  if (!shopDomain) return null;
+  const { rows } = await query(
+    `${RUN_SELECT} WHERE r.shop_domain = $1 ORDER BY r.created_at DESC LIMIT 1`,
+    [shopDomain]
+  );
+  return rows.length ? rowToRun(rows[0]) : null;
+}
+
+// A specific run — a campaign's ORIGINATING run, not today's. Scoped to the
+// shop, so a run id alone cannot read another store's analysis.
+async function readRunById({ shopDomain, runId } = {}) {
+  if (!shopDomain || !runId) return null;
+  const { rows } = await query(`${RUN_SELECT} WHERE r.shop_domain = $1 AND r.run_id = $2`, [shopDomain, runId]);
+  return rows.length ? rowToRun(rows[0]) : null;
 }
 
 async function narrateAtulRun(result, options = {}) {
@@ -374,5 +381,6 @@ print(json.dumps(payload))
 module.exports = {
   narrateAtulRun,
   readLatestRun,
+  readRunById,
   runAtulEngine,
 };

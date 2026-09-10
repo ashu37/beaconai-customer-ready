@@ -8,7 +8,7 @@ const {
   getEngineInput,
   getWeeklySeries,
 } = require("./services/shopifyRepository");
-const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
+const { narrateAtulRun, readLatestRun, readRunById, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 
 // What the presenter needs from the stored run row: when the analysis ran, and
@@ -107,6 +107,7 @@ const {
   measureCampaign,
   summarizeCampaign,
   summarizeProgram,
+  sourceFreshness,
   staleCampaignIds,
 } = require("./services/measurementService");
 const {
@@ -1387,49 +1388,130 @@ router.get("/campaigns/:id/results", async (req, res) => {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;
     }
+    const source = await resultsSource(existing.shopDomain);
     const summary = req.query.refresh === "false"
-      ? await summarizeCampaign(id)
-      : await measureCampaign(id);
+      ? await summarizeCampaign(id, { source })
+      : await measureCampaign(id, { source });
     res.json({ ok: true, ...summary });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
 
-// Every sent campaign for a shop, measured. Stale ones are recomputed first, so
-// the page never reports numbers that are a week old without saying so.
+// The store data results are read from: when the last successful sync finished,
+// and how far its orders reach. Both come from the ACTIVE sync, never from a
+// calculation timestamp — recalculating old data must not make it look fresh.
+async function resultsSource(shopDomain) {
+  const status = await getSyncStatus(shopDomain);
+  return {
+    lastSuccessfulSyncAt: status.active?.publishedAt || null,
+    ordersCoveredThrough: status.active?.startedAt || null,
+  };
+}
+
+// Every handed-off campaign for a shop, measured where a send is confirmed.
+// Stale measurements are recomputed first; a recomputation that fails is
+// reported on its row rather than swallowed, and the last result stays.
 router.get("/results/:shopDomain", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.params.shopDomain);
     if (!shopDomain) return;
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 100, 1), 500);
+    const source = await resultsSource(shopDomain);
+
+    const failed = new Set();
     for (const id of await staleCampaignIds(shopDomain)) {
-      await measureCampaign(id).catch(() => {});
+      await measureCampaign(id, { source }).catch(() => failed.add(id));
     }
-    const campaigns = await listCampaigns(shopDomain);
+
+    // One extra row tells us whether older campaigns exist, so "Show older
+    // campaigns" is offered only when it would load something.
+    const campaigns = await listCampaigns(shopDomain, { limit: limit + 1 });
+    const hasMore = campaigns.length > limit;
     // Every campaign that has been handed off, by Ticket D's durable delivery
     // state — a provider-created draft has no send time of any kind, and
     // filtering on timestamps made exactly those disappear. Legacy campaigns
-    // marked sent only locally are kept too. Each carries its delivery record,
-    // so the page states created / scheduled / needs-checking in the
-    // contract's words; none is measured until the provider confirms a send.
-    const handedOff = campaigns.filter((c) => c.deliveryState !== "not_started" || c.sentAt || c.providerSentAt);
+    // marked sent only locally are kept too.
+    const handedOff = campaigns.slice(0, limit)
+      .filter((c) => c.deliveryState !== "not_started" || c.sentAt || c.providerSentAt)
+      .sort((a, b) => new Date(b.providerSentAt || b.createdAt) - new Date(a.providerSentAt || a.createdAt));
+
     const results = [];
     for (const campaign of handedOff) {
-      const summary = await summarizeCampaign(campaign.id);
+      const summary = await summarizeCampaign(campaign.id, { source });
       const delivery = await getDelivery(campaign.id);
       results.push({
         ...summary,
         campaignId: campaign.id,
         playId: campaign.playId,
+        displayName: campaign.displayName || null,
         // Only a confirmed send has a send time. Never a local stamp.
         sentAt: summary.measurable ? campaign.providerSentAt : null,
         delivery: delivery ? { ...delivery, campaignName: campaign.providerCampaignName || campaign.displayName || null } : null,
-        audienceSize: campaign.audienceSize,
-        holdoutSize: campaign.holdoutSize,
+        calculationFailed: failed.has(campaign.id),
       });
     }
     const program = await summarizeProgram(shopDomain);
-    res.json({ ok: true, program, results });
+    res.json({
+      ok: true,
+      program,
+      results,
+      source: sourceFreshness(source),
+      hasMore,
+      limit,
+      loadedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// What was actually sent, and why it was suggested: the campaign's frozen email
+// and the recommendation from its ORIGINATING run. Loaded when the merchant
+// opens "Original campaign", so the results list stays light.
+router.get("/campaigns/:id/original", async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const campaign = await getCampaign(id);
+    if (!campaign || !authorizedForShop(req, campaign.shopDomain)) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+
+    let recommendation = null;
+    const run = campaign.runId ? await readRunById({ shopDomain: campaign.shopDomain, runId: campaign.runId }) : null;
+    if (run) {
+      const presented = presentEngineRun(run.engineRun, run.manifest, run.narration || null, presenterOptions(run));
+      const play = [...(presented.recommendations || []), ...(presented.considered || [])]
+        .find((p) => p.play_id === campaign.playId);
+      if (play) {
+        recommendation = {
+          playName: play.play_name,
+          role: play.role,
+          rank: play.rank ?? null,
+          evidenceLine: play.evidence_line || null,
+          observedChange: play.evidence_facts?.observed_change || null,
+          audienceSize: play.audience_size ?? null,
+          audienceDefinition: play.audience_archetype || null,
+          analysedAt: presented.generated_at || null,
+        };
+      }
+    }
+
+    res.json({
+      ok: true,
+      campaignId: id,
+      frozen: campaign.frozen,
+      displayName: campaign.displayName || null,
+      approvedCopy: campaign.approvedCopy || null,
+      renderedHtml: campaign.renderedHtml || null,
+      destinationUrl: campaign.destinationUrl || null,
+      recommendation,
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

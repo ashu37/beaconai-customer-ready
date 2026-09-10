@@ -1,200 +1,201 @@
 # Results UI specification — Ticket G pilot scope
 
-**Status: DRAFT for founder review. Ticket G's UI implementation waits for approval.** Measurement-correctness fixes that don't change the screen may proceed meanwhile.
+**Status: revised September 10, 2026 with the founder's UX choices, and implemented in Ticket G (PR #42).** **Ticket G's UI is separate from program measurement**, which stays gated by Ticket F's draft protocol. No program figure appears until Ticket H.
 
-Scope authority: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), "Before Ticket G" and Ticket G. Baseline: `main` at `86f939d` (Ticket F collection merged). Design context: [SELLABILITY_UX_REVIEW.md](SELLABILITY_UX_REVIEW.md) §4 — used for wording and hierarchy only. This spec does **not** bring back its deferred items: tabs, search, date filters, a separate detail route, four comparison cards, or daily charts.
+Scope authority: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), "Before Ticket G" and Ticket G. Design context: [SELLABILITY_UX_REVIEW.md](SELLABILITY_UX_REVIEW.md) §4, used for wording and hierarchy only. Excluded: tabs, search, date filters, a detail route, metric cards, charts, and an analytics framework.
 
-All example numbers here are **seed examples**, and are labelled as such wherever they appear.
+Example numbers are **seed examples**.
 
-## 1. What changes from the existing UI
+## 1. Founder decisions (resolved)
 
-Keep the Results page, the chronological campaign list, the one-row-at-a-time inline expansion, the 30/60/90 selector, and the existing typography and buttons.
+| Question | Decision |
+|---|---|
+| Early numbers while measuring | Show each group's revenue per customer, labelled **"Early observation"**. No difference, interval, verdict or winner colour until the selected window is complete **and** its reporting checks pass. |
+| Outcome wording | **Higher spending / Lower spending / No clear difference / Insufficient data / Measuring / Comparison unavailable** |
+| Original campaign | Collapsed inside the expanded result. |
+| Freshness | 24 hours. Source-data freshness and calculation freshness are checked and shown **separately**. |
+| Program band | "Program comparison isn't available yet. Campaign-level observations appear below; they should not be added together." No program number before Ticket H. |
 
-| Today | Pilot change | Why |
-|---|---|---|
-| A row's verdict follows the 30-day window, while its detail follows whichever window is selected | The row **always** shows the 30-day window, labelled "30-day result". The detail selector changes only the detail. | This removes the mixed-window state (a row saying "Worked" while its detail was at day 45 of 60). |
-| "4,680 sent · 456 held" | "4,224 assigned to receive · 456 held back", plus "Klaviyo sent 4,130" or "sent count unavailable" | The whole audience was never sent. Assignment and provider sends are different counts. |
-| An interval shown on a campaign still measuring | While measuring: "Early observation · day 5 of 30" with each group's revenue per customer. No difference, no interval, no verdict. | Early data is factual; a verdict isn't earned yet. |
-| Verdicts: Worked / Cost you money / No effect found / Too small to tell | **Positive result / Negative result / No clear difference / More data needed / Measuring / Comparison unavailable** | "No effect found" overclaims. "No clear difference" doesn't mean the campaign had no effect. |
-| A "more data" floor counted orders | Floors count **unique purchasers** | Ten orders from one customer are one purchaser (protocol §4.9). |
-| The program band showed an invalid pooled number | The band states the program's measurement status (§7). No figure until Ticket H. | The comparison was withdrawn in Ticket F. |
-| A selected campaign is lost on refresh | `?campaign=<id>` in the URL; refresh reopens that row expanded | Uses the existing URL parameter mechanism. No router. |
-| Original email and rationale aren't shown | An "Original campaign" section in the detail | The merchant should see what was sent and why, beside the result. |
-| Stale or failed measurement is silent | A freshness line, and a failed refresh that keeps the last result visible | Old numbers must be labelled as old, not hidden or passed off as current. |
+## 2. What changes from the existing UI
 
-**Not included:** tabs, search or filters, date pickers, pagination beyond a "Load more" button, a separate detail page, purchase-rate / orders-per-100 / AOV cards, daily or cumulative charts, a revision timeline, export, or a program figure before Ticket H.
+Kept: the Results page, the chronological list, one-row inline expansion, the 30/60/90 selector, delivery-state presentation, and the existing styles.
 
-## 2. What a merchant can answer from this page
-
-What did we send, and when did Klaviyo confirm it? Which result is this, and how far through its window is it? What can be concluded now — or why nothing can? When should I look again? What did the email say, and why was it suggested?
+| Before | Now |
+|---|---|
+| The row's verdict and the detail could show different windows without saying so | The row always shows the **30-day result**, labelled. The detail defaults to 30 and can switch to 60 or 90. Everything in the detail follows the selected window. |
+| "4,680 sent · 456 held" | "4,224 assigned to receive · 456 held back", and separately "Klaviyo sent 4,130" or "Sent count unavailable". |
+| Verdicts from a boolean ("Worked", "No effect found") | A typed assessment from the API, with reasons, rendered in the §1 vocabulary. |
+| Floors counted orders | Unique purchasers are counted separately from orders. |
+| Invalid program number | The program band text from §1. |
+| Selection lost on refresh | `?campaign=<id>` reopens the expanded result. |
+| No original email | "Original campaign", collapsed: the frozen email plus the recommendation from its originating run. |
+| Stale or failed calculation was silent | Persistent messages with a recovery action. |
 
 ## 3. Desktop wireframe (≥ 1024px)
 
 ```text
-┌ Results ───────────────────────────────────────────────────────────────────┐
-│ Campaign results                                                            │
-│ What happened after each campaign, compared with customers held back.       │
-│                                                                             │
-│ ┌ PROGRAM ─────────────────────────────────────────────────────────── [§7] ┐│
-│ │ Program results haven't started.                                        ││
-│ │ They need a fixed group of customers held back from every BeaconAI      ││
-│ │ campaign. Until then, each campaign below is measured on its own.       ││
-│ └──────────────────────────────────────────────────────────────────────────┘│
-│                                                                             │
-│ CAMPAIGNS · 30-DAY RESULT                              Newest first · 4 shown│
-│ ┌──────────────────────────────────────────────────────────────────────────┐│
-│ │ Bring back lapsed customers            [Measuring]     Early observation ││
-│ │ Sent Sep 2 · 211 assigned · 23 held back day 5 of 30    $4.10 vs $3.95  ▸││
-│ ├──────────────────────────────────────────────────────────────────────────┤│
-│ │ Reduce discount dependency       [No clear difference]   +$1.20 / cust  ▾││
-│ │ Sent Aug 1 · 499 assigned · 56 held back                 −$3.40 to +$5.80 ││
-│ │ ┌ DETAIL (expanded; §5.2) ──────────────────────────────────────────────┐││
-│ │ │ …                                                                     │││
-│ │ └───────────────────────────────────────────────────────────────────────┘││
-│ ├──────────────────────────────────────────────────────────────────────────┤│
-│ │ Turn first-time buyers into repeat…  [Draft created]  Results start when ││
-│ │ Not sent yet                                          Klaviyo confirms ▸ ││
-│ └──────────────────────────────────────────────────────────────────────────┘│
-│                                              [ Load more ]  (only if capped) │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+Campaign results
+What happened after each campaign, compared with customers held back.
 
-Annotations:
-- **A. Row grid:** campaign (name, then sent line) | status chip | 30-day figure (value, then range or sub-label) | chevron. The chevron is decorative; the whole row is the button.
-- **B. Sent line:** "Sent {provider-confirmed date}" — or the delivery label (§6.1) when there is no confirmed send — then assigned and held-back counts. The word "sent" is never paired with an assignment count.
-- **C. 30-day figure:** a completed window shows the per-customer difference and its 95% range; measuring shows each group's per-customer value; otherwise "—" with the reason.
-- **D. Order:** newest send first, by provider-confirmed time. Unconfirmed campaigns sort by handoff time. Nothing is ever dropped.
+┌ PROGRAM ───────────────────────────────────────────────────────────────┐
+│ Program comparison isn't available yet. Campaign-level observations    │
+│ appear below; they should not be added together.                      │
+└────────────────────────────────────────────────────────────────────────┘
+[source/stale banner, only when needed — §6.4]
+
+CAMPAIGNS · NEWEST FIRST
+┌────────────────────────────────────────────────────────────────────────┐
+│ Bring back lapsed customers        [Measuring]        30-DAY RESULT    │
+│ Sent Sep 2 · 211 assigned to receive · 23 held back   Early observation│
+│                                                       $4.10 · $3.95   ▸│
+├────────────────────────────────────────────────────────────────────────┤
+│ Reduce discount dependency  [Comparison unavailable]  30-DAY RESULT    │
+│ Sent Aug 1 · 499 assigned to receive · 56 held back   $6.02 · $5.10   ▾│
+│ ┌ EXPANDED ──────────────────────────────────────────────────────────┐ │
+│ │ Sent Aug 1, 2026, 9:05 AM, confirmed by Klaviyo · Klaviyo sent 471 │ │
+│ │ Window: (•) 30 days  ( ) 60 days  ( ) 90 days                      │ │
+│ │ Aug 1 – Aug 31, 2026 · complete                                    │ │
+│ │ Last successful sync Sep 10, 8:12 AM · Calculated Sep 10, 8:15 AM  │ │
+│ │ OUTCOME  one sentence for the selected window (§6)                 │ │
+│ │ Assigned to receive $6.02 / customer · Held back $5.10 / customer  │ │
+│ │ [Difference and 95% range — only when the assessment permits]      │ │
+│ │ Group table (§5.3)                                                 │ │
+│ │ Notes: exposure note (§6.5) · other marketing (§6.6)               │ │
+│ │ ▸ How this is measured       ▸ Original campaign                   │ │
+│ └────────────────────────────────────────────────────────────────────┘ │
+├────────────────────────────────────────────────────────────────────────┤
+│ Turn first-time buyers into…   [Draft created]        30-DAY RESULT    │
+│ Not sent yet                                          Results start    │
+│                                                       once Klaviyo…   ▸│
+└────────────────────────────────────────────────────────────────────────┘
+                                   [ Show older campaigns ]  (only if more exist)
+```
 
 ## 4. Narrow screens (< 720px)
 
-The list becomes stacked cards in the same order:
+Each row becomes a stacked card: name → status chip → sent line → "30-day result" block. Group values are labelled **"Assigned to receive $4.10"** and **"Held back $3.95"**, one per line; values are never shown unlabelled. The expanded detail follows the same order as desktop, full width. The group table becomes label/value pairs, one group at a time. The window radio buttons wrap. Touch targets are at least 44px, and the page never scrolls sideways.
 
-```text
-┌──────────────────────────────────────┐
-│ Bring back lapsed customers          │
-│ [Measuring]  Early observation · 5/30│
-│ Sent Sep 2 · 211 assigned · 23 held  │
-│ Received $4.10 · Held back $3.95     │
-│                         View result ▸│
-└──────────────────────────────────────┘
-```
+## 5. Components and exact wording
 
-The detail opens inline below its card, full width. The comparison becomes one group per line, and the group table becomes a two-column list (label, then Received / Held back). Touch targets are at least 44px. The window selector wraps; the page never scrolls sideways.
+### 5.1 Row (collapsed) — always the 30-day window
+- **Name:** `campaigns.display_name` (saved), falling back to the play's display name. Never today's slate.
+- **Sent line:** `Sent {Mon D, YYYY}` from the provider-confirmed send, then `· {assigned} assigned to receive · {held} held back`. With no confirmed send, the delivery label from `presentDelivery` replaces "Sent …".
+- **Status chip:** the 30-day assessment (§6.2), or the delivery label (§6.1). Colour only for Higher / Lower spending.
+- **30-day block:** the label **"30-day result"**, then one of:
+  - early observation: `Early observation` over `{assigned $} · {held $}`
+  - a permitted comparison: `+$1.20 / customer` over `−$3.40 to +$5.80`
+  - descriptive only: both per-customer values
+  - otherwise: `—` over the reason
+- **Interaction:** the whole row is a `button` with `aria-expanded` and `aria-controls`.
 
-## 5. Exact components, order and wording
+### 5.2 Expanded detail — follows the selected window
+1. **Header:** `Sent {date, time}, confirmed by Klaviyo` · `Klaviyo sent {n}` or `Sent count unavailable`.
+2. **Window selector:** a radio group, `30 days` (default) · `60 days` · `90 days`, each with ` · open` until complete.
+3. **Window dates:** `{start} – {end}` · `complete` or `day {d} of {n}`.
+4. **Freshness:** `Last successful sync {date time}` · `Calculated {date time}`, with the §6.4 messages when needed.
+5. **Outcome sentence** for the selected window (§6).
+6. **Comparison:** `Assigned to receive $X.XX per customer` · `Held back $Y.YY per customer`. Then `Difference +$Z.ZZ per customer (95% range $L to $H)` **only** when the assessment permits it.
+7. **Group table** (§5.3).
+8. **Notes:** the exposure note (§6.5) when applicable, and the other-marketing note (§6.6) always.
+9. **"How this is measured"** (collapsed): the window dates, and "Revenue is net of refunds; cancelled and test orders are excluded. Not profit. Customers Klaviyo did not deliver to stay in the assigned group."
+10. **"Original campaign"** (collapsed; loaded when opened): subject, preview text, destination link, a `View email` frame (the frozen rendered email, sandboxed), and "Why it was suggested" (the originating run's recommendation — evidence source and observed change, as in Ticket E — with its audience size and definition).
 
-### 5.1 Row
-| Element | Wording / rule |
-|---|---|
-| Name | The campaign's saved display name (`campaigns.display_name`), never today's slate. |
-| Sent line | `Sent {Mon D, YYYY}` from `provider_sent_at`, then ` · {assigned} assigned · {held} held back`. With no confirmed send: the delivery label (§6.1) instead of "Sent …". |
-| Status chip | §6 vocabulary. Text always present; colour only reinforces it. |
-| 30-day figure | Completed: `+$1.20 / customer` over `−$3.40 to +$5.80`. Measuring: `Early observation` over `day 5 of 30`, then `$4.10 vs $3.95` (received vs held back). Other states: `—` over the reason. |
-| Action | The entire row is a `button` with `aria-expanded`. |
+### 5.3 Group table (selected window)
+| | Assigned to receive | Held back |
+|---|---|---|
+| Customers | 211 | 23 |
+| Unique purchasers | 31 | 3 |
+| Orders | 38 | 3 |
+| Revenue, net of refunds | $1,240.00 | $96.00 |
+| Revenue per customer | $5.88 | $4.17 |
 
-### 5.2 Detail (expanded row), top to bottom
-1. **Header line:** `Sent {date and time}, confirmed by Klaviyo` · `Klaviyo sent {n}` or `Sent count unavailable` · delivery label if not sent.
-2. **Window selector:** `30 days (primary)` · `60 days` · `90 days`, each with ` · open` until complete. A radio group. Default: 30.
-3. **Freshness:** `Orders synced through {date} · Calculated {date time}`. If older than 24 hours: `Last calculated {relative} ago` plus the refresh action (§6).
-4. **Outcome and next step:** one sentence from the selected window's typed state (§6). For example, "Still measuring. Review the 30-day result on Oct 2."
-5. **Comparison** (all three values from the selected window only):
-   `Received campaign  $X.XX per customer` · `Held back  $Y.YY per customer` · `Difference  +$Z.ZZ (95% range $L to $H)`. The difference and range appear only when the window is complete and the floors pass.
-6. **Group table:**
-
-   | | Assigned to receive | Held back |
-   |---|---|---|
-   | Customers | 211 | 23 |
-   | Unique purchasers | 31 | 3 |
-   | Orders | 38 | 3 |
-   | Revenue, net of refunds | $1,240 | $96 |
-   | Revenue per customer | $5.88 | $4.17 |
-
-7. **"How this is measured"** (collapsed): the fixed text in §6.3, the window dates, "Revenue is net of refunds; cancelled and test orders are excluded. Not profit." and the repeated-exposure note when it applies (§6.3).
-8. **"Original campaign"** (collapsed): subject line, preview text, destination link, `View email` (the frozen rendered HTML in a sandboxed frame), the audience definition and size, and "Why it was suggested" (the evidence line and observed change from the originating run's presenter output, as in Ticket E).
-9. **Footer:** `Open in Klaviyo` only when the provider gave a URL; otherwise "Find “{name}” in Klaviyo".
+"Unique purchasers" means customers with at least one qualifying order in the window. It is never an order count.
 
 ## 6. States
 
-Each state has: what shows, the chip, the outcome sentence, and the recovery action. Seed examples are in brackets.
-
-### 6.1 Not measurable yet (delivery)
-The label comes from `presentDelivery`, the same as the Campaigns page.
-
-| Delivery | Chip | Row text | Recovery |
-|---|---|---|---|
-| created / awaiting_send | Draft created / Awaiting send confirmation | "Results start once Klaviyo confirms the send." | Open the draft in Klaviyo |
-| scheduled | Scheduled in Klaviyo | same | none |
-| uncertain | Needs checking | same | Founder: Check Klaviyo status |
-| failed | Draft not created | "The draft wasn't created, so nothing was sent." | Go to Campaigns |
-| sent, no time | Sent | "Klaviyo reports this as sent but not when, so results can't start yet." | Founder: Check Klaviyo status |
-| local only | Not confirmed | "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send." | none |
-
-### 6.2 Measurement states (selected window)
-| State | Chip | Outcome sentence | Shows |
-|---|---|---|---|
-| Loading | — | "Loading results…" (skeleton rows) | Last rows, if cached |
-| No campaigns | — | "Results appear after Klaviyo confirms your first campaign was sent." | Link: Go to Campaigns |
-| Measuring [day 5 of 30] | Measuring | "Still measuring. Review the 30-day result on Oct 2." | Early per-customer values for both groups; no difference or range |
-| Positive [+$4.80, range $1.10 to $8.50] | Positive result | "Customers who received the campaign spent more per customer. The range is above zero for this window." | Full comparison |
-| Negative [−$3.90, range −$7.20 to −$0.60] | Negative result | "Customers who received the campaign spent less per customer. The range is below zero for this window." | Full comparison |
-| No clear difference [+$1.20, range −$3.40 to +$5.80] | No clear difference | "The result isn't clear. The range includes both a decrease and an increase." | Full comparison. **Never** "no effect". |
-| Insufficient data [2 held-back purchasers] | More data needed | "Too few customers bought in one group to compare them reliably." | Group table; no difference or range |
-| No holdout | Comparison unavailable | "No customers were held back, so there's nothing to compare against." | Received group's figures only |
-| Stale [calculated 3 days ago] | *unchanged* | Freshness line: "Last calculated 3 days ago." | Last result stays, plus `Recalculate` |
-| Failed refresh | *unchanged* | "Couldn't recalculate. Showing the result from {date}." | Last result stays, plus `Try again` |
-
-Green and red appear only on Positive and Negative results. A positive point estimate alone never turns the row green.
-
-### 6.3 Fixed measurement text
-> "We compare customers assigned to receive this campaign with customers held back from it, over the same days after the send. Held-back customers were chosen at random and received no BeaconAI campaigns. Your other marketing reached both groups."
-
-**Repeated exposure,** shown when the customers had earlier BeaconAI campaigns:
-> "Some of these customers received earlier BeaconAI campaigns and the held-back group received none, so this compares BeaconAI campaigns so far — not this email alone."
-
-## 7. Program summary — placement and states (Ticket H)
-A band at the top of the page, above the list. Its data contract depends on Ticket F's approved protocol; until then only the first state exists.
-
-| State | Band text |
-|---|---|
-| Not started *(today)* | "Program results haven't started. They need a fixed group of customers held back from every BeaconAI campaign. Until then, each campaign below is measured on its own." |
-| Enrolled, not yet started | "Program cohort set on {T0}: {n} customers, {h} held back. Measurement starts when Klaviyo confirms the first BeaconAI send." |
-| Measuring | "Program measurement · day {d} of 90 · {n} customers assigned to receive, {h} held back. First result {date}." No figure. |
-| Result | Per-customer difference with its 95% range, the cohort's dates and sizes, and the §6.2 vocabulary (it may say "No clear difference"). A total only as per-customer difference × assigned customers, labelled as an estimate. |
-| Unavailable | "Program result unavailable: {reason}." For example, the cohort closed without a confirmed send, or an identity or contamination flag needs review. |
-
-## 8. Field mapping (existing / planned)
-| Element | Source | Null handling |
+### 6.1 Before a confirmed send (from the delivery contract)
+| Delivery state | Chip (`presentDelivery`) | Text |
 |---|---|---|
-| Name | `campaigns.display_name` (existing) | Fall back to the play's display name; never the latest slate |
-| Sent date | `delivery.providerSentAt` when state is `sent` (existing) | No date is shown; the delivery label replaces it |
-| Assigned / held back | recipient counts by arm (existing: `audience_size` minus `holdout_size`, and `holdout_size`) — **planned:** count from `campaign_recipients` | "—" |
-| Klaviyo sent | `delivery.providerSentCount` (existing) | "Sent count unavailable" (never 0) |
-| Window, day N, complete | `windows[].windowDays`, `daysElapsed`, `complete` (existing) | — |
-| Window start/end dates | **planned** `windows[].start`, `windows[].end` | Hide the dates line |
-| Calculated at | **planned** `windows[].calculatedAt` (the stored `measured_at`) | "Not calculated yet" |
-| Orders synced through | **planned** from the active sync (`sync/status` `active.publishedAt`) | "Sync time unavailable" |
-| State | **planned** typed `windows[].assessment` (measuring / insufficient / unclear / positive / negative / unavailable) and `reasons[]`; replaces `verdict` | Never inferred in React from a boolean |
-| Group figures | `treated` / `holdout`: `n_customers`, `n_orders`, `revenue` (existing); **planned** `purchasers` | Unique purchasers "—" until provided; zero shown only when known |
-| Difference / range | `comparison.perCustomer` (existing) | Omitted unless the assessment permits it |
-| Repeated-exposure note | **planned** `windows[].priorExposure: boolean` | Omitted |
-| Original email | `campaigns.approved_copy`, `rendered_html`, `destination_url` (existing, frozen) | "Original email not stored" for pre-freeze campaigns |
-| Why suggested | the originating run's presenter output, looked up by `run_id` and `play_id` (existing) | "Recommendation details not available for this run" |
-| Selection | `?campaign=<id>` (planned; the existing URL-parameter mechanism) | An unknown id opens nothing and shows no error |
-| Load more | `listCampaigns` limit 200 (existing) | The button is shown only when 200 are returned |
+| created / awaiting_send | Draft created / Awaiting send confirmation | "Results start once Klaviyo confirms the send." |
+| scheduled | Scheduled in Klaviyo | same |
+| uncertain | Needs checking | same |
+| failed | Draft not created | "The draft wasn't created, so nothing was sent." |
+| sent, no time | Sent | "Klaviyo reports this as sent but not when, so results can't start yet." |
+| local only | Not confirmed | "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send, so results can't be measured." |
+
+### 6.2 Assessment (selected window; typed by the API)
+| Assessment | Chip | Sentence | Numbers shown |
+|---|---|---|---|
+| `measuring` | Measuring | "Still measuring. Review the {n}-day result on {end date}." | Early observation only |
+| `insufficient_data` | Insufficient data | "Too few customers or purchasers in one group to compare them." | Group table |
+| `awaiting_order_data` | Comparison unavailable | "This window ended {end}, but order data only runs to {coverage}. Re-sync the store to complete it." | Group table, labelled incomplete |
+| `no_holdout` | Comparison unavailable | "No customers were held back, so there's nothing to compare against." | Assigned group only |
+| `assessment_policy_pending` | Comparison unavailable | "Group figures are shown as observations. A comparison isn't reported yet." | Group table; no difference |
+| `higher_spending` | Higher spending | "Customers assigned to receive the campaign spent more per customer. The 95% range is above zero for this window." | Full comparison |
+| `lower_spending` | Lower spending | "Customers assigned to receive the campaign spent less per customer. The 95% range is below zero for this window." | Full comparison |
+| `no_clear_difference` | No clear difference | "The result isn't clear. The 95% range includes both lower and higher spending." | Full comparison |
+
+**The campaign assessment policy is unresolved.** Numeric floors, the estimator and the critical value await the statistical review (protocol §10). Until a policy is configured, a complete window with adequate data reports `assessment_policy_pending`.
+
+`insufficient_data` is used only for **structural** impossibility: fewer than 2 customers, or zero purchasers, in either group. No other threshold is invented. The last three rows apply only once a policy exists.
+
+### 6.3 Page-level
+| State | Shows | Recovery |
+|---|---|---|
+| Loading | "Loading results…" | — |
+| No campaigns | "Results appear after your first campaign is created in Klaviyo." | Go to Campaigns |
+| Load failed (nothing cached) | "Couldn't load results." | Try again |
+| Load failed (results shown) | Persistent banner: "Couldn't refresh results. Showing what was loaded at {time}." | Try again |
+
+### 6.4 Freshness (each checked independently; threshold 24 hours)
+| Condition | Message | Recovery |
+|---|---|---|
+| Last successful sync more than 24h ago | "Store data last synced {relative} ago. Results can't include orders since then." Shown even when the calculation itself is recent — recalculating old data doesn't make it fresh. | Re-sync store |
+| No successful sync | "No successful store sync, so results can't be checked against complete order data." | Re-sync store |
+| Calculated more than 24h ago | "Last calculated {relative} ago." | Recalculate |
+| Recalculation failed | "Couldn't recalculate. Showing the result calculated {date}." | Try again |
+
+### 6.5 Repeated exposure (checked per selected window)
+The API checks whether any of this campaign's customers were assigned to receive another BeaconAI campaign that was confirmed sent **before this campaign's send or during the selected window**.
+
+- **Found:** "These customers may have been included in other BeaconAI campaigns. This comparison does not isolate this email's effect."
+- **Unknown** (another campaign's send time isn't confirmed, so it could fall in the window): "Other BeaconAI campaigns may have reached these customers; their send times aren't confirmed, so this comparison does not isolate this email's effect."
+- **None established:** no note, and nothing claiming there were none.
+
+### 6.6 Other marketing (always shown)
+> "Your other marketing may also affect these results."
+
+The page never claims the held-back group received no BeaconAI campaigns unless the records establish it.
+
+## 7. Program band (Ticket H placement)
+Today it shows only the §1 text. Its later states (enrolled / measuring / estimate / unavailable) follow Ticket H and the approved protocol. The band never shows a sum of campaign results.
+
+## 8. Field mapping
+| Element | API field | Null handling |
+|---|---|---|
+| Name | `displayName` (saved) | The play's display name |
+| Sent date | `sentAt` — the provider send, only when confirmed | The delivery label replaces it |
+| Assigned / held back | `assignment.assigned`, `assignment.heldBack` (counted from `campaign_recipients`) | "—" |
+| Klaviyo sent | `delivery.providerSentCount` | "Sent count unavailable" |
+| Window dates and progress | `windows[].start`, `.end`, `.complete`, `.daysElapsed` | — |
+| Calculated | `windows[].calculatedAt` | "Not calculated yet" |
+| Last successful sync | `source.lastSuccessfulSyncAt` (the active sync's `publishedAt`) | §6.4, no successful sync |
+| Order coverage | `source.ordersCoveredThrough` (the active sync's start time) | Assessment becomes `awaiting_order_data` |
+| Assessment | `windows[].assessment.state`, `.reasons[]` | Never inferred in React |
+| Group figures | `windows[].assigned` / `windows[].heldBack`: `customers`, `purchasers`, `orders`, `revenue` | Zero only when known |
+| Difference / range | `windows[].comparison` — present only when the assessment permits it | Omitted |
+| Exposure | `windows[].otherExposure.status` (none / present / unknown), `.customers` | §6.5 |
+| Original campaign | `GET /campaigns/:id/original` → frozen `approvedCopy`, `renderedHtml`, `destinationUrl`, `recommendation` | "Not stored for this campaign" |
+| Selection | `?campaign=<id>` | An unknown id opens nothing |
+| Older campaigns | `GET /results/:shop?limit=N` → `hasMore` | The button appears only when `hasMore` is true |
 
 ## 9. Accessibility
-- Each row is a button with `aria-expanded` and `aria-controls`. Enter or Space toggles it, and the detail receives focus on open.
-- The window selector is a radio group operated with the arrow keys.
-- Every status is carried by text as well as colour.
-- A 2px focus ring is visible on the rows, the selector and every action.
-- The table uses `<th scope>`. The frozen email frame is sandboxed and has a title.
+- Rows are buttons with `aria-expanded` and `aria-controls`; the detail region is labelled.
+- The window selector is a native radio group, so arrow keys work.
+- Every status is stated in text; colour appears only on Higher / Lower spending.
+- A visible focus ring on every control; table headers use `scope`; the email frame is sandboxed and titled.
 
-## 10. Acceptance (seed examples)
-The seed shop shows every state in §6, visibly labelled "Sample data". The page is checked at 1440, 1024 and 390px, with keyboard only, and after a refresh with `?campaign=`. The row and its detail never show different windows. No page ever shows "sent" beside an assignment count.
-
-## 11. Decisions for the founder
-1. **Early observations while measuring:** show each group's per-customer value with no difference (proposed), or hide all numbers until the window closes?
-2. **Verdict wording** in §6.2: "Positive result / Negative result / No clear difference / More data needed / Comparison unavailable".
-3. **Original campaign** placement: collapsed inside the detail (proposed), or open by default?
-4. **Freshness threshold** for "stale": 24 hours (proposed).
-5. **Program band wording** for the "Not started" state (§7).
+## 10. Acceptance
+- **Seed screenshots** at 1440, 1024 and 390px, labelled as sample data: measuring, completed (policy pending), insufficient data, stale source / failed load, and an unconfirmed send.
+- **Windows:** the row and the detail may show different windows **when each is labelled**. The row always reads "30-day result", and every figure, date and sentence in the detail follows the selected window.
+- **Wording:** no page uses "received" or "sent" for an assignment count.

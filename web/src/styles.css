@@ -792,3 +792,48 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
    the global focus ring and left a 1px line at 38% opacity — a Tab press that
    visibly went nowhere. */
 .recommendation-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------------------
+   Ticket G — Results (RESULTS_UI_SPEC.md)
+   --------------------------------------------------------------------------- */
+.results-head h2 { font-family: var(--font-display); font-size: var(--fs-h2); color: var(--ink-strong); margin: 0; }
+.results-head p { color: var(--muted); margin: 4px 0 0; }
+.result-item { border-bottom: 1px solid var(--rule); }
+.result-row, .result-row-pending { grid-template-columns: minmax(0, 1.6fr) 190px minmax(180px, 1fr) 18px; border-bottom: 0; }
+.result-row-pending { display: grid; gap: 18px; align-items: center; padding: 14px 6px; }
+.result-30 { display: flex; flex-direction: column; gap: 2px; text-align: right; font-variant-numeric: tabular-nums; }
+.result-30-label { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; }
+.result-30-main { font-size: 14px; font-weight: 600; }
+.result-30-sub { display: flex; flex-direction: column; font-size: 12px; color: var(--ink-soft); }
+.result-chevron { color: var(--ink-soft); }
+.result-detail { background: var(--surface); padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+.result-detail:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.result-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.window-radios { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.window-radios legend { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); font-weight: 600; margin-bottom: 6px; padding: 0; }
+.window-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 6px 12px; border: 1px solid var(--rule); border-radius: 4px; min-height: 36px; cursor: pointer; background: var(--surface); }
+.window-radio:has(input:checked) { border-color: var(--accent); font-weight: 600; }
+.window-radio input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.result-outcome { margin: 0; font-size: 14px; line-height: 1.55; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.result-comparison { display: flex; flex-wrap: wrap; gap: 6px 24px; font-size: 14px; font-variant-numeric: tabular-nums; align-items: baseline; }
+.result-early { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; color: #8a6015; }
+.group-table-wrap { overflow-x: auto; }
+.group-table { border-collapse: collapse; width: 100%; min-width: 320px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.group-table th, .group-table td { padding: 7px 10px; border-bottom: 1px solid var(--rule); }
+.group-table thead th { text-align: right; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+.group-table tbody th { text-align: left; font-weight: 500; color: var(--ink-soft); }
+.group-table td { text-align: right; }
+.result-notes { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.55; }
+.result-warn { margin: 0; font-size: 12.5px; color: #8a6015; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.disclosure-btn { background: none; border: 0; padding: 6px 0; font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); cursor: pointer; display: inline-flex; gap: 8px; align-items: center; min-height: 36px; }
+.disclosure-body { font-size: 13px; line-height: 1.55; color: var(--ink-soft); display: flex; flex-direction: column; gap: 8px; }
+.disclosure-body p { margin: 0; }
+.original-email-frame { width: 100%; height: 420px; border: 1px solid var(--rule); border-radius: 4px; background: #fff; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+@media (max-width: 720px) {
+  .result-row, .result-row-pending { grid-template-columns: minmax(0, 1fr); gap: 8px; min-height: 44px; }
+  .result-30 { text-align: left; }
+  .result-chevron { display: none; }
+  .window-radio, .disclosure-btn { min-height: 44px; }
+  .result-detail { padding: 12px; }
+}

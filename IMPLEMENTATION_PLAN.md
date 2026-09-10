@@ -214,21 +214,31 @@ The specification must include:
 
 Use clearly labeled seed examples. Keep the existing campaign list and simple detail interaction unless a small change is necessary for readability. Daily charts, advanced search/filtering, a full registry redesign and the four-card analytics redesign remain deferred.
 
-**Status: DRAFT ready for founder review — [RESULTS_UI_SPEC.md](RESULTS_UI_SPEC.md).** It covers:
-- desktop and narrow wireframes
-- exact wording
-- every required state, with seed examples and recovery actions
-- the program band's states, aligned with Ticket H
-- field mapping, marking what exists and what Ticket G must add
-- accessibility
-
-Five decisions are listed in its §11. Ticket G's UI implementation waits for approval.
+**Status: founder decisions recorded; the spec is revised in [RESULTS_UI_SPEC.md](RESULTS_UI_SPEC.md) and implemented in Ticket G (PR #42).** The decisions:
+- early observations with no verdict
+- Higher spending / Lower spending / No clear difference / Insufficient data / Measuring / Comparison unavailable
+- Original campaign collapsed
+- 24-hour source and calculation freshness, checked separately
+- the program band text
 
 **Exit criterion:** the founder reviews the wireframe, wording and state examples and confirms the intended pilot UI before the engineer implements it. Store the agreed specification as `RESULTS_UI_SPEC.md` and link it from Ticket G. Resolve open layout choices here rather than leaving them implicit in implementation. This is a scope-clarification checkpoint, not another product redesign phase.
 
 ## Ticket G — truthful minimal Results (P2 fixes; P3 presentation)
 
 **UI dependency:** complete the Results UI clarification step above and attach the agreed `RESULTS_UI_SPEC.md` before implementing the screen. Ticket G's UI acceptance includes matching that specification.
+
+**Status: Ticket G's UI is implemented (PR #42); program measurement is NOT ready (Ticket F gate open; Ticket H not built).**
+
+- **Rows:** the saved campaign name, the durable delivery state, "assigned to receive" and "held back" counts, and the provider's sent count shown separately (or "unavailable").
+- **Windows:** the row always shows a labelled 30-day result. The detail follows its own 30/60/90 selection for every figure, date, assessment and note.
+- **Assessment:** each window gets a typed assessment. Before a window closes there are early observations only. A closed window isn't assessed until order coverage reaches its end.
+- **Floors:** unique purchasers are counted separately from orders. Only structural minimums apply until a campaign assessment policy is set; until then, comparable windows report "comparison unavailable" with descriptive figures.
+- **Notes:** exposure is checked per window (present / unknown / none), and the other-marketing note is always shown.
+- **Freshness:** source and calculation freshness are checked separately. Stale data and failed recalculations keep persistent messages with recovery actions.
+- **Original campaign:** collapsed, loading the frozen email and its originating recommendation.
+- **Navigation:** `?campaign=` survives a refresh, and "Show older campaigns" appears only when more exist.
+
+**Open:** the campaign assessment policy (floors and critical value), which awaits the statistical review.
 
 **Files:** `measurementService.js`, Results routes, `schema.js`, `web/src/App.jsx`.
 

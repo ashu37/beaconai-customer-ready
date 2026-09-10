@@ -10,7 +10,7 @@ import { usePreview } from "./usePreview";
 import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
 import { signInState } from "./signInState";
 import {
-  BASELINE_REVENUE_NOTE, briefingHeadline, dataStatusItems, evidenceChipItems,
+  BASELINE_REVENUE_NOTE, briefingHeadline, dataStatusItems, evidenceChipItems, formatChange,
   heldLaneEmptyText, holdsAreDataVolume, truncatedNote,
 } from "./briefingPresentation";
 import "./styles.css";
@@ -1245,17 +1245,30 @@ function IntervalBar({ low, high, point, tone = "null" }) {
   );
 }
 
-// The verdict vocabulary is deliberately small. "Worked" is claimed only when the
-// interval excludes zero; everything else says what is actually known.
-const VERDICTS = {
-  worked:          { label: "Worked",            tone: "pos" },
-  hurt:            { label: "Cost you money",    tone: "neg" },
-  no_effect_found: { label: "No effect found",   tone: "null" },
-  measuring:       { label: "Measuring",         tone: "warn" },
-  too_small:       { label: "Too small to tell", tone: "null" },
-  no_holdout:      { label: "Not measurable",    tone: "null" },
-  not_measured:    { label: "Not measured yet",  tone: "null" },
+// ---------------------------------------------------------------------------
+// Results — Ticket G, as specified in RESULTS_UI_SPEC.md.
+//
+// Every figure, date and sentence in an expanded result comes from ONE window
+// entry of the API response, so the detail can never mix windows. The row always
+// shows the 30-day window and says so. Assessments are typed by the API; nothing
+// here infers a verdict from numbers.
+// ---------------------------------------------------------------------------
+
+const RESULT_WINDOWS = [30, 60, 90];
+
+// Colour only for a supported higher/lower result (§6.2).
+const ASSESSMENT_CHIP = {
+  measuring: { label: "Measuring", tone: "warn" },
+  insufficient_data: { label: "Insufficient data", tone: "null" },
+  awaiting_order_data: { label: "Comparison unavailable", tone: "null" },
+  no_holdout: { label: "Comparison unavailable", tone: "null" },
+  assessment_policy_pending: { label: "Comparison unavailable", tone: "null" },
+  not_calculated: { label: "Comparison unavailable", tone: "null" },
+  higher_spending: { label: "Higher spending", tone: "pos" },
+  lower_spending: { label: "Lower spending", tone: "neg" },
+  no_clear_difference: { label: "No clear difference", tone: "null" },
 };
+const UNKNOWN_CHIP = { label: "Comparison unavailable", tone: "null" };
 
 // Why a handed-off campaign has no results yet. The delivery label itself comes
 // from presentDelivery, so Results and Campaigns say the same thing.
@@ -1265,221 +1278,426 @@ const UNMEASURED_NOTE = {
   no_provider_record: "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send, so results can't be measured.",
 };
 
-function VerdictChip({ verdict }) {
-  const v = VERDICTS[verdict] || VERDICTS.not_measured;
-  return <span className={`verdict verdict-${v.tone}`}><span className="verdict-dot" />{v.label}</span>;
+const PROGRAM_BAND_TEXT =
+  "Program comparison isn't available yet. Campaign-level observations appear below; they should not be added together.";
+const OTHER_MARKETING_NOTE = "Your other marketing may also affect these results.";
+const EXPOSURE_NOTE = {
+  present: "These customers may have been included in other BeaconAI campaigns. This comparison does not isolate this email's effect.",
+  unknown: "Other BeaconAI campaigns may have reached these customers; their send times aren't confirmed, so this comparison does not isolate this email's effect.",
+};
+
+function formatDay(value, { time = false } = {}) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+    ...(time ? { hour: "numeric", minute: "2-digit" } : {}),
+  });
 }
 
-// Program band: everyone who received any campaign against everyone held out of
-// all of them. The only comparison here that is reliably well-powered, because
-// it pools every send — and the one that answers "is this software making me
-// money" rather than "did campaign #3 work".
-function ProgramBand({ program }) {
-  // Ticket F: the pooled comparison this band used to show was not a valid
-  // program measurement, and is withdrawn until the measurement protocol ships.
-  // Say so, rather than showing a number or silently showing nothing.
-  if (program && program.available === false) {
-    return (
-      <div className="program-band">
-        <span className="program-label">Program to date</span>
-        <p className="program-note">
-          Program-level results haven't started yet. They need a group of customers held back from every
-          BeaconAI campaign from a fixed start date. Until then, each campaign below is measured on its own.
-        </p>
-      </div>
-    );
-  }
-  const c = program?.comparison;
-  if (!program?.treated || !program?.holdout) return null;
+function relativeAge(value, now = Date.now()) {
+  const ms = now - new Date(value).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const hours = Math.round(ms / 3600000);
+  if (hours < 48) return `${Math.max(hours, 1)} hour${hours === 1 ? "" : "s"}`;
+  return `${Math.round(hours / 24)} days`;
+}
 
-  if (!c) {
-    return (
-      <div className="program-band">
-        <span className="program-label">Program to date · {program.campaigns} campaigns</span>
-        <p className="program-note">
-          Not enough customers in both groups yet to compare. This fills in as more campaigns go out.
-        </p>
-      </div>
-    );
-  }
+function perCustomer(value) {
+  return value == null ? "—" : money(value, { cents: true });
+}
 
-  const positive = c.perCustomer.low > 0;
+function signedMoney(value) {
+  return `${value >= 0 ? "+" : "−"}${money(Math.abs(value), { cents: true })}`;
+}
+
+function countOrDash(value) {
+  return value == null ? "—" : Number(value).toLocaleString("en-US");
+}
+
+function Chip({ label, tone }) {
+  return <span className={`verdict verdict-${tone}`}><span className="verdict-dot" aria-hidden="true" />{label}</span>;
+}
+
+function assessmentSentence(w, source) {
+  switch (w?.assessment?.state) {
+    case "measuring":
+      return `Still measuring. Review the ${w.windowDays}-day result on ${formatDay(w.end)}.`;
+    case "insufficient_data":
+      return "Too few customers or purchasers in one group to compare them.";
+    case "awaiting_order_data":
+      return w.assessment.reasons.includes("no_successful_sync")
+        ? "This window has ended, but there's no successful store sync to check it against. Re-sync the store to complete it."
+        : `This window ended ${formatDay(w.end)}, but order data only runs to ${formatDay(source?.ordersCoveredThrough)}. Re-sync the store to complete it.`;
+    case "no_holdout":
+      return "No customers were held back, so there's nothing to compare against.";
+    case "assessment_policy_pending":
+      return "Group figures are shown as observations. A comparison isn't reported yet.";
+    case "not_calculated":
+      return "This window hasn't been calculated yet.";
+    case "higher_spending":
+      return "Customers assigned to receive the campaign spent more per customer. The 95% range is above zero for this window.";
+    case "lower_spending":
+      return "Customers assigned to receive the campaign spent less per customer. The 95% range is below zero for this window.";
+    case "no_clear_difference":
+      return "The result isn't clear. The 95% range includes both lower and higher spending.";
+    default:
+      return "";
+  }
+}
+
+// Program band (Ticket H placement). No figure of any kind until H ships.
+function ProgramBand() {
   return (
-    <div className="program-band">
-      <div className="program-top">
-        <div>
-          <span className="program-label">
-            Program to date · {program.campaigns} campaign{program.campaigns === 1 ? "" : "s"} · last {program.sinceDays} days
-          </span>
-          <div className={`program-figure ${positive ? "pos" : ""}`}>
-            {c.incremental.total >= 0 ? "+" : ""}{money(c.incremental.total)}
-          </div>
-          <div className="program-range">range {money(c.incremental.low)} to {money(c.incremental.high)}</div>
-        </div>
-        <IntervalBar
-          low={c.incremental.low} high={c.incremental.high} point={c.incremental.total}
-          tone={c.significant ? (c.perCustomer.difference > 0 ? "pos" : "neg") : "null"}
-        />
-      </div>
-      <p className="program-note">
-        Customers held out of every campaign earned you {money(c.perCustomer.holdout, { cents: true })} each.
-        Customers who received them earned {money(c.perCustomer.treated, { cents: true })}. The difference is what BeaconAI added.
-        {c.significant ? "" : " The range still crosses zero, so this isn't yet a difference we'd stand behind."}
-      </p>
-      <dl className="program-stats">
-        <div><dt>Received campaigns</dt><dd>{formatAudience(program.treated.n_customers)}</dd></div>
-        <div><dt>Held out</dt><dd>{formatAudience(program.holdout.n_customers)}</dd></div>
-        <div><dt>Per customer</dt><dd>{c.perCustomer.difference >= 0 ? "+" : ""}{money(c.perCustomer.difference, { cents: true })}</dd></div>
-      </dl>
+    <div className="program-band" role="note">
+      <span className="program-label">Program</span>
+      <p className="program-note">{PROGRAM_BAND_TEXT}</p>
     </div>
   );
 }
 
-function ResultRow({ result, playTitle, expanded, onToggle }) {
-  const w = (result.windows || []).find((x) => x.windowDays === 30) || (result.windows || [])[0];
+// Store-data freshness, independent of when anything was calculated.
+function SourceNotice({ source, onResync, busy }) {
+  if (!source || !source.stale) return null;
+  const text = source.reason === "no_successful_sync"
+    ? "No successful store sync, so results can't be checked against complete order data."
+    : `Store data last synced ${relativeAge(source.lastSuccessfulSyncAt)} ago. Results can't include orders since then.`;
+  return (
+    <div className="data-state-banner warn" role="status">
+      <div className="data-state-main"><strong>Store data is out of date</strong><span>{text}</span></div>
+      {onResync ? <button type="button" className="btn small" onClick={onResync} disabled={busy}>{busy ? "Syncing…" : "Re-sync store"}</button> : null}
+    </div>
+  );
+}
+
+// The collapsed row's figure — always the 30-day window, always labelled.
+function ThirtyDayBlock({ w }) {
+  let main = "—";
+  let sub = null;
+  if (w?.comparison) {
+    main = `${signedMoney(w.comparison.difference)} / customer`;
+    sub = `${signedMoney(w.comparison.low)} to ${signedMoney(w.comparison.high)}`;
+  } else if (w?.assigned) {
+    main = w.assessment.state === "measuring" ? "Early observation" : null;
+    sub = (
+      <>
+        <span>Assigned to receive {perCustomer(w.assigned.revenuePerCustomer)}</span>
+        <span>Held back {perCustomer(w.heldBack?.revenuePerCustomer)}</span>
+      </>
+    );
+  }
+  return (
+    <span className="result-30">
+      <span className="result-30-label">30-day result</span>
+      {main ? <span className="result-30-main">{main}</span> : null}
+      {sub ? <span className="result-30-sub">{sub}</span> : null}
+      {w?.assessment?.state === "measuring" ? <span className="result-30-sub">day {w.daysElapsed} of {w.windowDays}</span> : null}
+    </span>
+  );
+}
+
+function Disclosure({ label, children, onOpen }) {
+  const [open, setOpen] = useState(false);
+  const id = useRef(`disclosure-${Math.random().toString(36).slice(2)}`).current;
+  return (
+    <div className="disclosure">
+      <button
+        type="button"
+        className="disclosure-btn"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => { if (!open && onOpen) onOpen(); setOpen(!open); }}
+      >
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>{label}
+      </button>
+      {open ? <div id={id} className="disclosure-body">{children}</div> : null}
+    </div>
+  );
+}
+
+// What was sent and why it was suggested — the frozen email and the
+// recommendation from the campaign's ORIGINATING run. Loaded when opened.
+function OriginalCampaign({ campaignId }) {
+  const [state, setState] = useState({ status: "idle" });
+  const load = () => {
+    setState({ status: "loading" });
+    api.campaignOriginal(campaignId)
+      .then((data) => setState({ status: "ready", data }))
+      .catch((err) => setState({ status: "error", message: err.message }));
+  };
+  const data = state.data;
+  const copy = data?.approvedCopy || {};
+  const rec = data?.recommendation;
+  const change = rec?.observedChange ? formatChange(rec.observedChange) : null;
+  return (
+    <Disclosure label="Original campaign" onOpen={() => { if (state.status === "idle") load(); }}>
+      {state.status === "loading" ? <p>Loading the original campaign…</p> : null}
+      {state.status === "error" ? (
+        <p className="result-warn" role="alert">
+          Couldn't load the original campaign.
+          <button type="button" className="btn small" onClick={load}>Try again</button>
+        </p>
+      ) : null}
+      {state.status === "ready" ? (
+        <>
+          {!data.approvedCopy && !data.renderedHtml ? <p>The original email wasn't stored for this campaign.</p> : null}
+          {copy.subject ? <p><strong>Subject</strong> · {copy.subject}</p> : null}
+          {copy.previewText ? <p><strong>Preview text</strong> · {copy.previewText}</p> : null}
+          {data.destinationUrl ? (
+            <p><strong>Button link</strong> · <a href={data.destinationUrl} target="_blank" rel="noopener noreferrer">{data.destinationUrl}</a></p>
+          ) : null}
+          {data.renderedHtml ? (
+            <iframe className="original-email-frame" title="Original email as sent" sandbox="" srcDoc={data.renderedHtml} />
+          ) : null}
+          <p><strong>Why it was suggested</strong></p>
+          {rec ? (
+            <ul className="result-notes">
+              <li>{rec.playName}{rec.evidenceLine ? ` — ${rec.evidenceLine}` : ""}</li>
+              {change ? <li>{change.label}: {change.value}{change.note ? ` (${change.note})` : ""}</li> : null}
+              {rec.audienceSize != null ? <li>{Number(rec.audienceSize).toLocaleString("en-US")} customers{rec.audienceDefinition ? ` · ${rec.audienceDefinition}` : ""}</li> : null}
+            </ul>
+          ) : <p>Recommendation details aren't available for this campaign's analysis.</p>}
+        </>
+      ) : null}
+    </Disclosure>
+  );
+}
+
+function ResultDetail({ result, onRetry }) {
   const [windowDays, setWindowDays] = useState(30);
-  const shown = (result.windows || []).find((x) => x.windowDays === windowDays) || w;
+  const ref = useRef(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  const windows = result.windows || [];
+  const w = windows.find((x) => x.windowDays === windowDays) || windows[0];
+  const chip = ASSESSMENT_CHIP[w?.assessment?.state] || UNKNOWN_CHIP;
+  const count = result.delivery?.providerSentCount;
+  const exposureNote = EXPOSURE_NOTE[w?.otherExposure?.status] || null;
+  const detailId = `result-detail-${result.campaignId}`;
+
+  return (
+    <div id={detailId} className="result-detail" role="region" aria-label={`Result details, ${windowDays} days`} tabIndex={-1} ref={ref}>
+      <div className="result-meta">
+        <span>Sent {formatDay(result.sentAt, { time: true })}, confirmed by Klaviyo</span>
+        <span>{count == null ? "Sent count unavailable" : `Klaviyo sent ${count.toLocaleString("en-US")}`}</span>
+      </div>
+
+      <fieldset className="window-radios">
+        <legend>Window</legend>
+        {RESULT_WINDOWS.map((days) => {
+          const entry = windows.find((x) => x.windowDays === days);
+          return (
+            <label key={days} className="window-radio">
+              <input
+                type="radio"
+                name={`window-${result.campaignId}`}
+                value={days}
+                checked={windowDays === days}
+                onChange={() => setWindowDays(days)}
+              />
+              {days} days{entry && !entry.complete ? " · open" : ""}
+            </label>
+          );
+        })}
+      </fieldset>
+
+      {w ? (
+        <>
+          <div className="result-meta">
+            <span>{formatDay(w.start)} – {formatDay(w.end)} · {w.complete ? "complete" : `day ${w.daysElapsed} of ${w.windowDays}`}</span>
+            <span>
+              Last successful sync {formatDay(result.source?.lastSuccessfulSyncAt, { time: true }) || "not available"}
+              {" · "}Calculated {formatDay(w.calculatedAt, { time: true }) || "not yet"}
+            </span>
+          </div>
+          {result.source?.stale ? (
+            <p className="result-warn">Store data is over 24 hours old, so recent orders may be missing from this window.</p>
+          ) : null}
+          {result.calculationFailed ? (
+            <p className="result-warn" role="alert">
+              Couldn't recalculate. Showing the result calculated {formatDay(w.calculatedAt, { time: true }) || "earlier"}.
+              <button type="button" className="btn small" onClick={onRetry}>Try again</button>
+            </p>
+          ) : w.calculationStale && w.calculatedAt ? (
+            <p className="result-warn">
+              Last calculated {relativeAge(w.calculatedAt)} ago.
+              <button type="button" className="btn small" onClick={onRetry}>Recalculate</button>
+            </p>
+          ) : null}
+
+          <p className="result-outcome"><Chip {...chip} /> {assessmentSentence(w, result.source)}</p>
+
+          {w.assigned ? (
+            <div className="result-comparison">
+              {w.assessment.state === "measuring" ? <span className="result-early">Early observation</span> : null}
+              <span>Assigned to receive <strong>{perCustomer(w.assigned.revenuePerCustomer)}</strong> per customer</span>
+              <span>Held back <strong>{perCustomer(w.heldBack?.revenuePerCustomer)}</strong> per customer</span>
+              {w.comparison ? (
+                <span>
+                  Difference <strong>{signedMoney(w.comparison.difference)}</strong> per customer
+                  {" "}(95% range {signedMoney(w.comparison.low)} to {signedMoney(w.comparison.high)})
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+          {w.comparison ? (
+            <IntervalBar
+              low={w.comparison.low} high={w.comparison.high} point={w.comparison.difference}
+              tone={chip.tone === "pos" ? "pos" : chip.tone === "neg" ? "neg" : "null"}
+            />
+          ) : null}
+
+          {w.assigned ? (
+            <div className="group-table-wrap">
+              <table className="group-table">
+                <caption className="sr-only">Group figures for the {w.windowDays}-day window</caption>
+                <thead>
+                  <tr><td /><th scope="col">Assigned to receive</th><th scope="col">Held back</th></tr>
+                </thead>
+                <tbody>
+                  <tr><th scope="row">Customers</th><td>{countOrDash(w.assigned.customers)}</td><td>{countOrDash(w.heldBack?.customers)}</td></tr>
+                  <tr><th scope="row">Unique purchasers</th><td>{countOrDash(w.assigned.purchasers)}</td><td>{countOrDash(w.heldBack?.purchasers)}</td></tr>
+                  <tr><th scope="row">Orders</th><td>{countOrDash(w.assigned.orders)}</td><td>{countOrDash(w.heldBack?.orders)}</td></tr>
+                  <tr><th scope="row">Revenue, net of refunds</th><td>{w.assigned.revenue == null ? "—" : money(w.assigned.revenue, { cents: true })}</td><td>{w.heldBack?.revenue == null ? "—" : money(w.heldBack.revenue, { cents: true })}</td></tr>
+                  <tr><th scope="row">Revenue per customer</th><td>{perCustomer(w.assigned.revenuePerCustomer)}</td><td>{perCustomer(w.heldBack?.revenuePerCustomer)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <ul className="result-notes">
+            {exposureNote ? <li>{exposureNote}</li> : null}
+            <li>{OTHER_MARKETING_NOTE}</li>
+          </ul>
+
+          <Disclosure label="How this is measured">
+            <p>
+              We compare customers assigned to receive this campaign with customers held back from it, from{" "}
+              {formatDay(w.start)} to {formatDay(w.end)}. Revenue is net of refunds; cancelled and test orders are
+              excluded. It is not profit. Customers Klaviyo did not deliver to stay in the assigned group.
+            </p>
+          </Disclosure>
+        </>
+      ) : null}
+
+      <OriginalCampaign campaignId={result.campaignId} />
+    </div>
+  );
+}
+
+function ResultRow({ result, title, open, onToggle, onRetry }) {
   // Handed off but not confirmed by the provider: listed with the reason, never
-  // dropped. Measurement runs from the confirmed send time.
+  // dropped, and not expandable — there is nothing measured to show.
   if (result.measurable === false) {
     const delivery = presentDelivery(result.delivery ?? null);
     const note = result.deliveryState === "failed"
       ? "The draft wasn't created, so nothing was sent."
       : UNMEASURED_NOTE[result.reason] || "Not measured.";
     return (
-      <div className="result-row result-row-pending">
-        <span className="result-name">
-          <strong>{playTitle}</strong>
-          <span>{note}</span>
-        </span>
-        <span className="verdict verdict-warn"><span className="verdict-dot" />{delivery.label}</span>
-        <span className="result-money">—<small>measured from the confirmed send</small></span>
-        <span />
+      <div className="result-item">
+        <div className="result-row result-row-pending">
+          <span className="result-name">
+            <strong>{title}</strong>
+            <span>{note}</span>
+          </span>
+          <Chip label={delivery.label} tone="warn" />
+          <span className="result-30">
+            <span className="result-30-label">30-day result</span>
+            <span className="result-30-sub">Starts at the confirmed send</span>
+          </span>
+          <span />
+        </div>
       </div>
     );
   }
-  if (!w) return null;
 
-  const c = shown.comparison;
-  const sentLabel = new Date(result.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const tone = VERDICTS[w.verdict]?.tone || "null";
-
+  const w30 = (result.windows || []).find((x) => x.windowDays === 30);
+  const chip = ASSESSMENT_CHIP[w30?.assessment?.state] || UNKNOWN_CHIP;
+  const detailId = `result-detail-${result.campaignId}`;
   return (
-    <>
-      <button type="button" className={`result-row ${expanded ? "open" : ""}`} onClick={onToggle}>
+    <div className="result-item">
+      <button
+        type="button"
+        className={`result-row ${open ? "open" : ""}`}
+        aria-expanded={open}
+        aria-controls={detailId}
+        onClick={onToggle}
+      >
         <span className="result-name">
-          <strong>{playTitle}</strong>
+          <strong>{title}</strong>
           <span>
-            {sentLabel} · {formatAudience(result.audienceSize ?? w.treated?.n_customers)} sent
-            {result.holdoutSize ? ` · ${formatAudience(result.holdoutSize)} held` : ""}
+            Sent {formatDay(result.sentAt)} · {countOrDash(result.assignment?.assigned)} assigned to receive
+            {" · "}{countOrDash(result.assignment?.heldBack)} held back
           </span>
         </span>
-        <VerdictChip verdict={w.verdict} />
-        <span className="result-money">
-          {w.verdict === "measuring" ? (
-            <>—<small>day {w.daysElapsed} of {w.windowDays}</small></>
-          ) : c ? (
-            <>{c.incremental.total >= 0 ? "+" : ""}{money(c.incremental.total)}
-              <small>{money(c.incremental.low)} – {money(c.incremental.high)}</small></>
-          ) : <>—<small>no comparison</small></>}
-        </span>
-        {c ? (
-          <IntervalBar low={c.incremental.low} high={c.incremental.high} point={c.incremental.total} tone={tone} />
-        ) : <span />}
+        <Chip {...chip} />
+        <ThirtyDayBlock w={w30} />
+        <span className="result-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
-
-      {expanded ? (
-        <div className="result-drawer">
-          {shown.treated && shown.holdout ? (
-            <div className="arms">
-              <div className="arm">
-                <span className="arm-name">Received</span>
-                <span className="arm-val">{money(shown.treated.revenue / Math.max(1, shown.treated.n_customers), { cents: true })}</span>
-                <span className="arm-sub">per customer · {shown.treated.n_orders} orders · {formatAudience(shown.treated.n_customers)} people</span>
-              </div>
-              <div className="arm held">
-                <span className="arm-name">Held out</span>
-                <span className="arm-val">{money(shown.holdout.revenue / Math.max(1, shown.holdout.n_customers), { cents: true })}</span>
-                <span className="arm-sub">per customer · {shown.holdout.n_orders} orders · {formatAudience(shown.holdout.n_customers)} people</span>
-              </div>
-              <div className="arm">
-                <span className="arm-name">Difference</span>
-                <span className={`arm-val ${c && c.significant ? (c.perCustomer.difference > 0 ? "pos" : "neg") : ""}`}>
-                  {c ? `${c.perCustomer.difference >= 0 ? "+" : ""}${money(c.perCustomer.difference, { cents: true })}` : "—"}
-                </span>
-                <span className="arm-sub">
-                  {c ? `95% range ${money(c.perCustomer.low, { cents: true })} to ${money(c.perCustomer.high, { cents: true })}` : "not comparable"}
-                </span>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="drawer-sect">
-            <h6>Measurement window</h6>
-            <div className="windows">
-              {(result.windows || []).map((x) => (
-                <button
-                  key={x.windowDays}
-                  type="button"
-                  className={`window ${x.windowDays === windowDays ? "on" : ""}`}
-                  onClick={() => setWindowDays(x.windowDays)}
-                >
-                  {x.windowDays} days{x.complete ? "" : " (open)"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <p className="drawer-note">
-            {shown.verdict === "no_holdout"
-              ? "No group was held back for this send, so we can show what these customers did afterwards but not how much of it the campaign caused."
-              : shown.verdict === "measuring"
-                ? `Day ${shown.daysElapsed} of ${shown.windowDays}. We report a result once the window closes — a partial window would read as a verdict it hasn't earned.`
-                : shown.verdict === "too_small"
-                  ? "Too few purchases to compare the groups at all. This isn't a null result — there simply isn't enough here to draw a line through yet. Larger audiences, or a larger holdout, would change that."
-                  : c?.thinEvidence
-                    ? "This rests on few purchases in one group, so treat the size of the difference loosely — the direction is better supported than the exact figure. It firms up as the window fills."
-                  : shown.verdict === "no_effect_found"
-                    ? "The two groups are close enough that the difference could be chance. That's a real answer, not a missing one."
-                    : "Revenue is net of refunds and excludes cancelled and test orders. It is not profit — product costs aren't connected."}
-          </p>
-        </div>
-      ) : null}
-    </>
+      {open ? <ResultDetail result={result} onRetry={onRetry} /> : null}
+    </div>
   );
 }
 
-function ResultsPage({ results, program, loading, error, playTitleFor }) {
-  const [openId, setOpenId] = useState(null);
-
+function ResultsPage({ data, loading, error, openId, onToggle, onRetry, onLoadMore, onResync, resyncBusy, onGoToCampaigns, playTitleFor }) {
+  const results = data?.results;
   if (loading && !results) return <div className="empty-panel">Loading results…</div>;
-  if (error) return <div className="empty-panel">Couldn't load results. {error}</div>;
-  if (!results?.length) {
+  if (error && !results) {
     return (
-      <div className="empty-panel">
-        Results appear here after your first campaign goes out. For each one we compare the customers who
-        received it against the customers we held back — that difference is what the campaign earned.
+      <div className="empty-panel" role="alert">
+        Couldn't load results. {error}{" "}
+        <button type="button" className="btn small" onClick={onRetry}>Try again</button>
       </div>
     );
   }
 
   return (
     <div className="results-page">
-      <ProgramBand program={program} />
-      <div className="ledger-head">
-        <span className="program-label">Every campaign · nothing is removed</span>
+      <div className="results-head">
+        <h2>Campaign results</h2>
+        <p>What happened after each campaign, compared with customers held back.</p>
       </div>
-      <div className="ledger">
-        {results.map((result) => (
-          <ResultRow
-            key={result.campaignId}
-            result={result}
-            playTitle={playTitleFor(result.playId)}
-            expanded={openId === result.campaignId}
-            onToggle={() => setOpenId(openId === result.campaignId ? null : result.campaignId)}
-          />
-        ))}
-      </div>
+      <ProgramBand />
+      {error ? (
+        <div className="data-state-banner warn" role="status">
+          <div className="data-state-main">
+            <strong>Couldn't refresh results</strong>
+            <span>Showing what was loaded {formatDay(data?.loadedAt, { time: true }) ? `at ${formatDay(data.loadedAt, { time: true })}` : "earlier"}.</span>
+          </div>
+          <button type="button" className="btn small" onClick={onRetry}>Try again</button>
+        </div>
+      ) : null}
+      <SourceNotice source={data?.source} onResync={onResync} busy={resyncBusy} />
+
+      {!results?.length ? (
+        <div className="empty-panel">
+          Results appear after your first campaign is created in Klaviyo.{" "}
+          {onGoToCampaigns ? <button type="button" className="link-btn" onClick={onGoToCampaigns}>Go to Campaigns</button> : null}
+        </div>
+      ) : (
+        <>
+          <div className="ledger-head">
+            <span className="program-label">Campaigns · newest first</span>
+          </div>
+          <div className="ledger">
+            {results.map((result) => (
+              <ResultRow
+                key={result.campaignId}
+                result={result}
+                title={result.displayName || playTitleFor(result.playId)}
+                open={openId === result.campaignId}
+                onToggle={() => onToggle(result.campaignId)}
+                onRetry={onRetry}
+              />
+            ))}
+          </div>
+          {data?.hasMore ? (
+            <button type="button" className="btn" onClick={onLoadMore} disabled={loading}>
+              {loading ? "Loading…" : "Show older campaigns"}
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -1606,7 +1824,16 @@ function useCountUp(target, duration = 500) {
 }
 
 export function App() {
-  const [activePage, setActivePage] = useState("briefing");
+  // A shared or refreshed Results link (`?campaign=<id>`) reopens that result.
+  // Read once at mount; cleared as soon as the merchant navigates, so it only
+  // decides where a page LOAD lands.
+  const initialCampaignParam = useRef(
+    Number.parseInt(new URLSearchParams(window.location.search).get("campaign") || "", 10) || null
+  );
+  const [activePage, setActivePage] = useState(initialCampaignParam.current ? "results" : "briefing");
+  const [openResultId, setOpenResultId] = useState(initialCampaignParam.current);
+  const [resultsLimit, setResultsLimit] = useState(100);
+  const [resultsReload, setResultsReload] = useState(0);
   const [loading, setLoading] = useState(false);
   // Distinct from generic `loading`: true ONLY while a briefing recompute is in
   // flight (not sync). Drives the in-lane skeleton state so the store cards +
@@ -1961,17 +2188,28 @@ export function App() {
   // Load measured results when the Results page is opened. The server
   // recomputes anything stale on read, so this is also what refreshes the
   // numbers as windows mature.
+  //
+  // A failed refresh keeps the last loaded results on screen with a persistent
+  // banner — clearing them would turn "couldn't refresh" into "no results".
   useEffect(() => {
     if (activePage !== "results" || !shopDomain) return;
     let cancelled = false;
     setResultsLoading(true);
     setResultsError("");
-    api.getResults()
+    api.getResults(resultsLimit)
       .then((data) => { if (!cancelled) setResultsData(data); })
-      .catch((err) => { if (!cancelled) setResultsError(err.message); })
+      .catch((err) => { if (!cancelled) setResultsError(err.message || "Request failed."); })
       .finally(() => { if (!cancelled) setResultsLoading(false); });
     return () => { cancelled = true; };
-  }, [activePage, shopDomain]);
+  }, [activePage, shopDomain, resultsLimit, resultsReload]);
+
+  // Keep the open result in the URL, so a refresh reopens it.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (activePage === "results" && openResultId) url.searchParams.set("campaign", String(openResultId));
+    else url.searchParams.delete("campaign");
+    window.history.replaceState({}, "", url.toString());
+  }, [activePage, openResultId]);
 
   // Rehydrate pipeline state from the database once the run is known.
   //
@@ -2465,7 +2703,7 @@ export function App() {
   // Shared result-handling path for both a fresh engine run and O1 rehydration.
   function applyEngineResult(result) {
     setAtulEngineResult(result);
-    setActivePage("briefing");
+    if (!initialCampaignParam.current) setActivePage("briefing");
     // Cache the presented run (incl. embedded narration) so a BROWSER refresh
     // repaints the briefing instantly from localStorage — independent of the
     // server /latest round-trip (which can miss on store_id mismatch or an
@@ -2510,7 +2748,7 @@ export function App() {
         const cached = JSON.parse(cachedRaw);
         if (cached?.presentedRun?.recommendations?.length) {
           setAtulEngineResult({ presentedRun: cached.presentedRun });
-          setActivePage("briefing");
+          if (!initialCampaignParam.current) setActivePage("briefing");
           setLatestRunFound(true);
           hadCache = true;
         }
@@ -3052,7 +3290,7 @@ export function App() {
         <div className="wordmark" aria-label="beacon">beac<span className="wordmark-dot" />n</div>
         <div className="store-name">{shopDomain || "No store selected"}</div>
         {nav.map(([key, label]) => (
-          <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => setActivePage(key)}>
+          <button key={key} className={`nav-item ${activePage === key ? "active" : ""}`} onClick={() => { initialCampaignParam.current = null; setActivePage(key); }}>
             {label}
             {key === "campaigns" && campaignsBadgeCount ? <span className="badge">{campaignsBadgeCount}</span> : null}
           </button>
@@ -3724,10 +3962,16 @@ export function App() {
 
           {activePage === "results" && (
             <ResultsPage
-              results={resultsData?.results}
-              program={resultsData?.program}
+              data={resultsData}
               loading={resultsLoading}
               error={resultsError}
+              openId={openResultId}
+              onToggle={(id) => setOpenResultId((current) => (current === id ? null : id))}
+              onRetry={() => setResultsReload((n) => n + 1)}
+              onLoadMore={() => setResultsLimit((n) => n + 100)}
+              onResync={async () => { await syncShopify(); setResultsReload((n) => n + 1); }}
+              resyncBusy={loading}
+              onGoToCampaigns={() => setActivePage("campaigns")}
               playTitleFor={(playId) =>
                 workflowPlays.find((p) => (p.play_id || p.id) === playId)?.play_name
                 || finalCampaigns.find((c) => c.id === playId)?.playTitle

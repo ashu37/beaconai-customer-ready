@@ -182,24 +182,30 @@ async function seed() {
   let failures = 0;
 
   for (const c of checks) {
-    const summary = await measureCampaign(c.campaignId);
+    // SELF-CHECK ONLY. The product's campaign assessment policy is unresolved
+    // (RESULTS_UI_SPEC §6.2); this script supplies one explicitly so it can
+    // check the interval against the planted lift. It is not what merchants see.
+    const summary = await measureCampaign(c.campaignId, {
+      policy: { minCustomersPerArm: 2, minPurchasersPerArm: 1, criticalValue: 1.96 },
+      source: { lastSuccessfulSyncAt: new Date(), ordersCoveredThrough: new Date() },
+    });
     const w30 = summary.windows.find((w) => w.windowDays === 30);
     const cmp = w30.comparison;
 
-    const line = `  ${c.playId.padEnd(34)} verdict=${w30.verdict}`;
-    if (w30.verdict === "measuring") {
+    const line = `  ${c.playId.padEnd(34)} assessment=${w30.assessment.state}`;
+    if (w30.assessment.state === "measuring") {
       console.log(`${line}  (day ${w30.daysElapsed} of 30 — correct, window still open)`);
       continue;
     }
     if (!cmp) { console.log(`${line}  (no comparison)`); continue; }
 
-    const contains = c.actualLift >= cmp.perCustomer.low && c.actualLift <= cmp.perCustomer.high;
+    const contains = c.actualLift >= cmp.low && c.actualLift <= cmp.high;
     if (!contains) failures += 1;
     console.log(
       `${line}\n` +
       `      planted lift  $${c.actualLift.toFixed(4)} per customer\n` +
-      `      measured      $${cmp.perCustomer.difference.toFixed(4)}  ` +
-      `[${cmp.perCustomer.low.toFixed(4)}, ${cmp.perCustomer.high.toFixed(4)}]\n` +
+      `      measured      $${cmp.difference.toFixed(4)}  ` +
+      `[${cmp.low.toFixed(4)}, ${cmp.high.toFixed(4)}]\n` +
       `      interval contains the planted lift: ${contains ? "YES" : "NO  <-- WRONG"}`
     );
   }
