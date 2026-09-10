@@ -10,6 +10,16 @@ const {
 } = require("./services/shopifyRepository");
 const { narrateAtulRun, readLatestRun, runAtulEngine } = require("./services/atulEngineService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
+
+// What the presenter needs from the stored run row: when the analysis ran, and
+// the currency its dollar figures are in.
+function presenterOptions(latest) {
+  const createdAt = latest?.createdAt;
+  return {
+    analysedAt: createdAt ? new Date(createdAt).toISOString() : null,
+    currency: latest?.currency || null,
+  };
+}
 const {
   testKlaviyo,
   getKlaviyoLists,
@@ -526,7 +536,7 @@ router.post("/copy/generate", async (req, res) => {
 
     // Find the play in the latest run (read-only; never triggers an engine run).
     const latest = await readLatestRun({ shopDomain });
-    const presented = latest ? presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null) : null;
+    const presented = latest ? presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null, presenterOptions(latest)) : null;
     const play = presented
       ? [...(presented.recommendations || []), ...(presented.considered || [])].find((p) => p.play_id === playId || p.id === playId)
       : null;
@@ -805,7 +815,10 @@ router.post("/engine/atul/run", async (req, res) => {
         error: narrationError.message,
       };
     }
-    const presentedRun = presentEngineRun(result.engineRun, result.manifest, narration);
+    const presentedRun = presentEngineRun(result.engineRun, result.manifest, narration, {
+      analysedAt: new Date().toISOString(),
+      currency: input?.shop?.currency || null,
+    });
 
     res.json({
       ok: true,
@@ -844,7 +857,7 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
     // Serve the narration PERSISTED at run time (keyed to run_id). No LLM call
     // on refresh — same run → same prose. null when a run predates persistence,
     // in which case the presenter renders data chips (no templated prose).
-    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null);
+    const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null, presenterOptions(latest));
     res.json({
       ok: true,
       found: true,

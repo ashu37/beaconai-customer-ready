@@ -729,3 +729,66 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
    confirming something the merchant cannot see. */
 .final-review-preview { display: grid; gap: 8px; }
 .final-review-frame { width: 100%; height: 420px; border: 1px solid var(--rule); border-radius: 4px; background: #fff; }
+
+/* ---------------------------------------------------------------------------
+   Ticket E — evidence wording and briefing status
+   --------------------------------------------------------------------------- */
+.evidence-chip-note { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.4; margin-top: 4px; }
+.evidence-source-detail, .revenue-note { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin: 10px 0 0; }
+.recommendation-stat-strip strong.stat-evidence { font-size: 15px; line-height: 1.3; }
+.briefing-titlebar p.briefing-decision-detail { color: var(--ink); margin-bottom: 8px; max-width: 720px; line-height: 1.5; }
+.briefing-dq-flags { margin: -12px 0 16px; padding-left: 18px; color: var(--ink); font-size: 13px; line-height: 1.5; }
+
+/* Three facts, three times. Words carry the state; colour only reinforces. */
+.briefing-status { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: -12px 0 20px; font-size: 12.5px; }
+.briefing-status-item { display: flex; gap: 7px; align-items: baseline; min-width: 0; }
+.briefing-status dt { color: var(--muted); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
+.briefing-status dd { margin: 0; color: var(--ink); }
+.briefing-status-item.warn dd { color: var(--warn); font-weight: 600; }
+
+.lane-note { padding: 10px 16px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--rule); }
+.watching-list { list-style: none; margin: 0; padding: 0; }
+.watching-list li { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.watching-list li:last-child { border-bottom: 0; }
+.watching-trend { color: var(--muted); font-size: 12px; }
+.watching-threshold { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+
+/* Ticket E — laptop widths. With the 260px sidebar, a 1024px window left the
+   detail pane ~300px wide beside the 360px list, and its three fixed stat
+   columns broke "~$4,500 typical" and "Observed in your store" mid-word. Below
+   1180px the list sits above the detail instead, and the stat strip wraps by
+   content width rather than squeezing three columns into whatever is left. */
+.recommendation-stat-strip { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.recommendation-stat-strip strong { overflow-wrap: normal; word-break: normal; }
+@media (max-width: 1180px) {
+  .briefing-workbench { grid-template-columns: minmax(0, 1fr); }
+  .recommendation-detail { position: static; }
+}
+
+/* Phone fallback: readable, reachable, not bespoke. */
+@media (max-width: 640px) {
+  .briefing-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .briefing-titlebar { flex-direction: column; gap: 12px; }
+  .briefing-titlebar h2 { font-size: 28px; }
+  .briefing-refresh { width: 100%; }
+  .briefing-refresh .btn { width: 100%; min-height: 44px; }
+  .recommendation-row { min-height: 44px; }
+  .recommendation-tabs button { min-height: 44px; }
+  .recommendation-detail { padding: 16px; }
+}
+
+/* Phone navigation: the sidebar stacked above the page as a full-height column,
+   so the whole first screen was four nav buttons. It becomes a compact bar with
+   the destinations in one wrapping row — still every destination, one tap each. */
+@media (max-width: 640px) {
+  .sidebar { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px 16px; }
+  .sidebar .wordmark { font-size: 24px; }
+  .sidebar .store-name { margin: 0 0 0 auto; font-size: 10px; }
+  .sidebar .nav-item { width: auto; flex: 1 1 auto; justify-content: center; margin: 0; min-height: 44px; padding: 10px 12px; }
+  .topbar, .page { padding: 16px; }
+}
+
+/* Keyboard focus on a recommendation row. The row's own border rule outranked
+   the global focus ring and left a 1px line at 38% opacity — a Tab press that
+   visibly went nowhere. */
+.recommendation-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

@@ -304,10 +304,14 @@ async function readLatestRun({ shopDomain } = {}) {
   if (!shopDomain) return null;
 
   const { rows } = await query(
-    `SELECT run_id, store_id, engine_run, manifest, narration, sync_run_id, input_provenance
-       FROM clean.engine_run_snapshots
-      WHERE shop_domain = $1
-      ORDER BY created_at DESC
+    // The shop's currency rides along: the engine's dollar figures are in the
+    // store's own currency, and the presenter no longer assumes USD.
+    `SELECT r.run_id, r.store_id, r.engine_run, r.manifest, r.narration, r.sync_run_id,
+            r.input_provenance, r.created_at, s.currency
+       FROM clean.engine_run_snapshots r
+       LEFT JOIN clean.shop s ON s.shop_domain = r.shop_domain
+      WHERE r.shop_domain = $1
+      ORDER BY r.created_at DESC
       LIMIT 1`,
     [shopDomain]
   );
@@ -322,6 +326,9 @@ async function readLatestRun({ shopDomain } = {}) {
     narration: row.narration,
     syncRunId: row.sync_run_id,
     inputProvenance: row.input_provenance || (row.sync_run_id == null ? "legacy_unverified" : "verified"),
+    // When the analysis ran — distinct from when the store was last synced.
+    createdAt: row.created_at,
+    currency: row.currency || null,
   };
 }
 

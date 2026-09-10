@@ -128,31 +128,249 @@ function playOneLiner(playId) {
   return playDisplay(playId)?.one_liner || null;
 }
 
-// P1-4: merchant-facing reasons for held / considered plays.
-// Pattern: state the gap + what unlocks it.
+// Ticket E: every reason code the engine contract defines (engine_run.py
+// ReasonCode), each translated for what it actually means. The previous table
+// was keyed on codes the engine never emits — `insufficient_sample`,
+// `low_confidence` — so every real hold except `audience_too_small` fell through
+// to "needs more store data", including holds that more orders will never fix.
+//
+// `category` lets the screen tell a store that is simply young (more data
+// fixes it) from one where the held plays are blocked for other reasons.
 const REASON_DISPLAY = {
-  insufficient_sample: "Not enough order history yet — this unlocks as more orders sync.",
-  insufficient_data: "Not enough store data yet — this unlocks as more orders sync.",
-  audience_too_small: "Only a few customers match right now — this unlocks as the audience grows.",
-  low_confidence: "The signal isn't strong enough yet — this unlocks as more orders sync.",
-  no_measurement: "Not enough measured history yet — this unlocks as more orders sync.",
-  guardrail: "Held by a safety guardrail — this unlocks as the supporting data strengthens.",
-  cooldown: "Recently active for this audience — this unlocks again after a short cooldown.",
-  monitor_only: "This is a signal to watch, not a campaign to send right now.",
+  audience_too_small: {
+    category: "audience",
+    text: "Too few customers match this play right now.",
+    next: "It becomes available as more customers qualify.",
+  },
+  audience_overlap_with_higher_priority: {
+    category: "overlap",
+    text: "These customers are already in a higher-ranked recommendation.",
+    next: "Sending both would email the same people twice.",
+  },
+  inventory_blocked: {
+    category: "inventory",
+    text: "The products this play would feature are low or out of stock.",
+    next: "It becomes available when stock recovers.",
+  },
+  no_measured_signal: {
+    category: "signal",
+    text: "Your store data doesn't show a signal for this play.",
+    next: "It's re-checked each time the store is analysed.",
+  },
+  signal_inconsistent_across_windows: {
+    category: "signal",
+    text: "The signal points in different directions depending on the time period looked at, so it isn't reliable yet.",
+    next: "It's re-checked each time the store is analysed.",
+  },
+  window_disagreement: {
+    category: "signal",
+    text: "Recent and longer-term data disagree about this signal.",
+    next: "It's re-checked each time the store is analysed.",
+  },
+  anomalous_window: {
+    category: "data_quality",
+    text: "The analysis period includes unusual activity, so the signal can't be trusted yet.",
+    next: "It's re-checked once the period is behind you.",
+  },
+  cold_start_insufficient_data: {
+    category: "data_volume",
+    text: "There isn't enough order history yet to assess this play.",
+    next: "It becomes available as more orders sync.",
+  },
+  cannibalization_demoted: {
+    category: "overlap",
+    text: "This play would compete with a higher-ranked recommendation for the same sales.",
+    next: null,
+  },
+  recently_run_fatigue: {
+    category: "timing",
+    text: "A similar campaign reached these customers recently.",
+    next: "It becomes available again after a cooldown.",
+  },
+  materiality_below_floor: {
+    category: "impact",
+    text: "The potential impact is too small to be worth a campaign right now.",
+    next: null,
+  },
+  data_quality_flag: {
+    category: "data_quality",
+    text: "A data-quality issue in the analysis period is holding this back.",
+    next: null,
+  },
+  cap_exceeded: {
+    category: "slate",
+    text: "Other plays ranked higher, and BeaconAI recommends at most three at a time.",
+    next: null,
+  },
+  targeting_held_under_abstain: {
+    category: "slate",
+    text: "No campaign is recommended from this analysis, so this audience is held as well.",
+    next: null,
+  },
+  supplement_cadence_outside_window: {
+    category: "signal",
+    text: "Your customers reorder on a longer cycle than this analysis can see.",
+    next: null,
+  },
+  prior_unvalidated: {
+    category: "benchmark",
+    text: "The benchmark this play relies on hasn't been validated for your kind of store.",
+    next: null,
+  },
+  // Contractually never emitted on a held play (ML fit never demotes), but a
+  // code the contract defines is still mapped rather than left to a fallback.
+  model_fit_insufficient_data: {
+    category: "data_volume",
+    text: "There isn't enough history to fit the customer model for this play.",
+    next: "It becomes available as more orders sync.",
+  },
+  model_fit_refused: {
+    category: "signal",
+    text: "The customer model for this play didn't fit your data reliably.",
+    next: null,
+  },
 };
 
-const REASON_FALLBACK = "BeaconAI needs more store data before recommending this.";
+// An unrecognised code is reported as unrecognised. Guessing "more data" is how
+// this screen used to tell merchants their store was too small when it wasn't.
+const REASON_UNKNOWN = {
+  category: "unknown",
+  text: "The analysis held this play for a reason this screen doesn't recognise.",
+  next: null,
+};
+
+function heldReason(reasonCode, card) {
+  const key = reasonCode ? String(reasonCode).toLowerCase() : null;
+  const entry = (key && REASON_DISPLAY[key]) || REASON_UNKNOWN;
+  let text = entry.text;
+  // The engine's structured detail, when it supplies one. Only the observed
+  // count and its floor are used; anything else in the dict stays internal.
+  const detail = card?.held_reason_detail;
+  const observed = Number(detail?.observed);
+  const floor = Number(detail?.floor);
+  if (key === "audience_too_small" && Number.isFinite(observed) && Number.isFinite(floor) && floor > 0) {
+    text = `Only ${observed.toLocaleString()} customers match; this play needs at least ${floor.toLocaleString()}.`;
+  }
+  return { code: key, category: entry.category, text, next: entry.next };
+}
 
 function reasonDisplay(reasonCode, card) {
-  if (!reasonCode) return REASON_FALLBACK;
-  const key = String(reasonCode).toLowerCase();
-  if (key === "audience_too_small") {
-    const n = Number(card?.audience_size);
-    if (Number.isFinite(n) && n > 0) {
-      return `Only ${n.toLocaleString()} customers match right now — this unlocks as the audience grows.`;
-    }
-  }
-  return REASON_DISPLAY[key] || REASON_FALLBACK;
+  const reason = heldReason(reasonCode, card);
+  return reason.next ? `${reason.text} ${reason.next}` : reason.text;
+}
+
+// Every evidence_source value the contract defines (EvidenceSourceChip), mapped
+// explicitly. The old mapping sent everything that wasn't STORE_MEASURED to
+// "Modeled from similar stores" — so every STORE_OBSERVED recommendation, which
+// is built from this store's own data, was labelled as coming from other stores.
+const EVIDENCE_SOURCE_DISPLAY = {
+  STORE_MEASURED: {
+    label: "Measured in your store",
+    detail: "Estimated from a controlled comparison in your store's own data.",
+  },
+  STORE_OBSERVED: {
+    label: "Observed in your store",
+    detail: "A metric in your store's data moved in a way that suggests this campaign. That change is not a measurement of what the campaign itself will do.",
+  },
+  INDUSTRY_PRIOR: {
+    label: "Based on industry benchmarks",
+    detail: "The audience comes from your store. How it's expected to respond comes from published benchmarks, not your store's history.",
+  },
+  OBSERVATIONAL: {
+    label: "Audience identified",
+    detail: "BeaconAI found this audience in your data. It makes no claim about how the audience will respond.",
+  },
+};
+
+const EVIDENCE_SOURCE_MISSING = {
+  label: "Evidence source not recorded",
+  detail: "This analysis didn't record where its evidence came from.",
+};
+
+function evidenceSourceDisplay(source) {
+  if (!source) return EVIDENCE_SOURCE_MISSING;
+  return EVIDENCE_SOURCE_DISPLAY[String(source).toUpperCase()] || EVIDENCE_SOURCE_MISSING;
+}
+
+// Engine metric identifiers, in words. Unknown ones are titleized rather than
+// dropped, so a new metric still reads as a metric.
+const MEASUREMENT_METRIC_LABELS = {
+  reactivation_rate: "Reactivation rate",
+  first_to_second_conversion_rate: "Second-purchase rate",
+  discount_dependency_hygiene_full_price_conversion_rate: "Full-price purchase rate",
+  aov_threshold_crossing_conversion_rate: "Spend-threshold crossing rate",
+  replenishment_conversion_rate: "Reorder rate",
+  returning_customer_share: "Returning-customer share",
+  repeat_rate_within_window: "Repeat purchase rate",
+  conversion: "Conversion rate",
+  aov: "Average order value",
+  orders: "Orders",
+  net_sales: "Net sales",
+};
+
+function metricLabel(metric) {
+  if (!metric) return null;
+  return MEASUREMENT_METRIC_LABELS[metric] || titleizeId(metric);
+}
+
+// "L56" → the last 56 days. The engine compares a recent window with the
+// window of the same length immediately before it.
+function windowDisplay(windowId) {
+  const match = /^L(\d+)$/i.exec(String(windowId || ""));
+  if (!match) return null;
+  const days = Number(match[1]);
+  return {
+    id: String(windowId).toUpperCase(),
+    days,
+    label: `last ${days} days`,
+    comparison: `compared with the ${days} days before`,
+  };
+}
+
+// What one unit of `measurement.n` is, per metric — only where the engine code
+// establishes it (engine/src/measurement_builder.py, measurement_observed.py).
+// The contract gives `n` no unit and the builders disagree, so a metric not
+// listed shows no sample figure rather than a guessed one. "Orders analyzed",
+// the old label, was wrong for every one of them. Notably:
+//   - discount_dependency_hygiene_full_price_conversion_rate: `n` is NET SALES
+//     in the window, in currency (_revenue_in_window). A store with 670 orders
+//     showed "60,528 orders analyzed".
+//   - aov_threshold_crossing_conversion_rate: two tests feed it; which `n`
+//     lands on the card is not stated. Omitted until it is.
+const SAMPLE_UNITS = {
+  // compute_winback_observed_effect: the dormant cohort at the window's anchor.
+  reactivation_rate: "lapsed customers tracked",
+  // compute_replenishment_observed_effect: customers due to reorder at the anchor.
+  replenishment_conversion_rate: "customers due to reorder",
+  // compute_journey_first_to_second_observed_effect: first-time buyers in the cell.
+  first_to_second_conversion_rate: "first-time buyers tracked",
+  // Directional builder: unique identified customers ordering in the window.
+  returning_customer_share: "customers who ordered in the period",
+  repeat_rate_within_window: "customers who ordered in the period",
+};
+
+function observedChange(measurement) {
+  const effect = Number(measurement?.observed_effect);
+  if (measurement?.observed_effect == null || !Number.isFinite(effect)) return null;
+  const pct = Math.round(effect * 1000) / 10;
+  return {
+    metric: measurement.metric || null,
+    metric_label: metricLabel(measurement.metric),
+    change_pct: pct,
+    direction: pct > 0 ? "up" : pct < 0 ? "down" : "flat",
+    window: windowDisplay(measurement.primary_window),
+  };
+}
+
+function sampleFor(measurement) {
+  // No observed change means the builder filled `n` with the audience size,
+  // which is already shown as the audience. Repeating it as a "sample" would
+  // present one number as two pieces of evidence.
+  if (!observedChange(measurement)) return null;
+  const n = Number(measurement?.n);
+  const unit = SAMPLE_UNITS[measurement?.metric];
+  if (!unit || !Number.isFinite(n) || n <= 0) return null;
+  return { size: n, unit };
 }
 
 function compactSentence(value, fallback) {
@@ -172,17 +390,31 @@ function roundMoney(value) {
   return Math.round(num / 100) * 100;
 }
 
-function normalizeRevenueRange(range) {
-  if (!range || range.suppressed) {
+// DS lock 8: the only dollar figure a merchant sees is a non-suppressed
+// revenue_range whose source is BLEND. Anything else — a suppressed range, a
+// prior-only range — carries no amount, and says why.
+//
+// DS lock 2: for any card that is not STORE_MEASURED (today, every card) the
+// range is "a prior-anchored posterior on a baseline rate, not predicted lift":
+// what this audience would spend at the expected purchase rate. It is labelled
+// as that, never as upside, lift or revenue from sending.
+function isDisplayableRange(range) {
+  if (!range || range.suppressed) return false;
+  if (String(range.source || "").toLowerCase() !== "blend") return false;
+  return [range.p10 ?? range.low, range.p90 ?? range.high].every((v) => v != null && Number.isFinite(Number(v)));
+}
+
+function normalizeRevenueRange(range, currency = null) {
+  if (!isDisplayableRange(range)) {
     return {
       low: null,
       mid: null,
       high: null,
       median: null,
-      currency: "USD",
+      currency,
       source: range?.source || null,
-      suppressed: Boolean(range?.suppressed),
-      suppression_reason: range?.suppression_reason || null,
+      suppressed: true,
+      suppression_reason: range?.suppression_reason || (range && !range.suppressed ? "not_blend" : null),
     };
   }
 
@@ -195,41 +427,34 @@ function normalizeRevenueRange(range) {
     mid,
     median: mid,
     high,
-    currency: "USD",
+    currency,
     source: range.source || null,
     suppressed: false,
     suppression_reason: null,
+    // Rendered beside the number wherever it appears.
+    meaning: "baseline",
   };
 }
 
-// P1-3: short evidence line for the card face.
+// The card face: where the evidence comes from, in words.
 function evidenceLineForCard(card) {
-  if (card.evidence_source === "STORE_MEASURED") {
-    const n = Number(card.measurement?.n);
-    return Number.isFinite(n) && n > 0
-      ? `Based on ${n.toLocaleString()} orders from your store`
-      : "Based on your store's order history";
-  }
-  return "Based on patterns from similar stores";
+  return evidenceSourceDisplay(card.evidence_source).label;
 }
 
-// Phase 1: the formal chip payload per card. These are DATA-DERIVED VALUES the
-// frontend renders as chips — never hand-written marketing prose. When the LLM
-// authors no thesis, this grid is the merchant's "understand & trust why"
-// surface. The frontend reads ONLY from here, never from `raw`.
-// (Prose was formerly assembled here by `narrationForCard`; deleted per
-// Pivot 2 / PROSE_ARCHITECTURE_PLAN.md §3 — no templated sentences.)
-function evidenceFactsForCard(card) {
-  const range = normalizeRevenueRange(card.revenue_range);
+// The formal chip payload per card. DATA-DERIVED VALUES the frontend renders —
+// never hand-written marketing prose. The frontend reads ONLY from here, never
+// from `raw`.
+function evidenceFactsForCard(card, currency) {
+  const range = normalizeRevenueRange(card.revenue_range, currency);
+  const source = evidenceSourceDisplay(card.evidence_source);
   return {
-    sample_size: card.measurement?.n ?? null,
     audience_size: card.audience?.size ?? null,
     audience_fraction_of_base: card.audience?.fraction_of_base ?? null,
     evidence_source: card.evidence_source || null,
-    evidence_class: card.evidence_class || null,
-    observed_effect: card.measurement?.observed_effect ?? null,
-    measurement_metric: card.measurement?.metric || null,
-    primary_window: card.measurement?.primary_window || null,
+    evidence_source_label: source.label,
+    evidence_source_detail: source.detail,
+    observed_change: observedChange(card.measurement),
+    sample: sampleFor(card.measurement),
     confidence_label: card.confidence_label || null,
     revenue_range: range,
   };
@@ -278,9 +503,9 @@ function buildTemplatePrompt(card, id) {
   };
 }
 
-function normalizeCard(card, role, index, manifest, narrationMap) {
+function normalizeCard(card, role, index, manifest, narrationMap, currency) {
   const id = card.play_id || `${role}-${index + 1}`;
-  const revenueRange = normalizeRevenueRange(card.revenue_range);
+  const revenueRange = normalizeRevenueRange(card.revenue_range, currency);
   const rawGuardedNarration = narrationFor(narrationMap, id, role);
   // If the narration service itself fell back, its text is the templated
   // "This play targets the <play_id> opportunity..." sentence — prefer our
@@ -320,15 +545,10 @@ function normalizeCard(card, role, index, manifest, narrationMap) {
     confidence: card.confidence_label || "Review",
     evidence_line: evidenceLineForCard(card),
     evidence_source: card.evidence_source || null,
-    evidence: {
-      evidence_source: card.evidence_source || null,
-      evidence_class: card.evidence_class || null,
-      measurement_metric: card.measurement?.metric || null,
-      observed_effect: card.measurement?.observed_effect ?? null,
-      sample_size: card.measurement?.n ?? null,
-      primary_window: card.measurement?.primary_window || null,
-    },
-    evidence_facts: evidenceFactsForCard(card),
+    // The engine's order within this lane. Stable across selection: the row a
+    // merchant clicks is "selected", never promoted to "primary".
+    rank: index + 1,
+    evidence_facts: evidenceFactsForCard(card, currency),
     measurement: card.measurement || null,
     revenue_range: revenueRange,
     mechanism_intent: card.mechanism_intent || null,
@@ -353,8 +573,9 @@ function normalizeRejectedCard(card, index, narrationMap) {
     play_one_liner: playOneLiner(id),
     role: "considered",
     reason_code: card.reason_code || null,
-    // reason_display is DATA-DERIVED from the engine's reason_code (the gap +
-    // what unlocks it) — a chip value, not invented marketing prose. OK to keep.
+    // DATA-DERIVED from the engine's typed reason_code (and its structured
+    // detail) — what is holding the play and, where true, what would release it.
+    reason: heldReason(card.reason_code, card),
     reason_display: reasonDisplay(card.reason_code, card),
     audience_size: card.audience_size ?? 0,
     audience_archetype: card.audience_definition || "Held for more evidence",
@@ -417,16 +638,75 @@ function stateOfStoreObservations(engineRun) {
   return chips.map(({ metric, ...chip }) => chip);
 }
 
-function presentEngineRun(engineRun, manifest = null, narration = null) {
+// A run that recommends nothing is a result, not an empty screen. The engine
+// says why in a typed state and mode; each is given its own sentence rather than
+// collapsing into "needs more data".
+const ABSTAIN_DISPLAY = {
+  soft_awaiting_measurement: "Your store data doesn't yet show a strong enough signal for any play.",
+  soft_prior_unvalidated: "The benchmarks these plays rely on haven't been validated for your kind of store.",
+  soft_below_floor: "Each play's potential impact is too small to be worth a campaign right now.",
+  soft_audience_too_small: "The audiences these plays would target are too small right now.",
+};
+
+const DATA_QUALITY_LABELS = {
+  bfcm_overlap: "The analysis period overlaps Black Friday / Cyber Monday.",
+  post_promo_window: "The analysis period follows a promotion.",
+  refund_storm: "Refunds were unusually high in the analysis period.",
+  test_order_anomaly: "Test orders were detected in the store data.",
+  insufficient_clean_history: "There isn't enough clean order history to analyse.",
+  vertical_not_supported: "This store's category isn't supported by the analysis yet.",
+  metric_incoherent_for_cadence: "Customers reorder on a longer cycle than the analysis window, so repeat-rate figures are unreliable.",
+};
+
+function dataQualityFlags(engineRun) {
+  return (engineRun?.data_quality_flags || []).map((flag) => ({
+    code: String(flag),
+    label: DATA_QUALITY_LABELS[String(flag).toLowerCase()] || `Data-quality flag: ${titleizeId(flag)}.`,
+  }));
+}
+
+function decisionFor(engineRun) {
+  const state = String(engineRun?.abstain?.state || "publish").toLowerCase();
+  const mode = engineRun?.abstain?.mode ? String(engineRun.abstain.mode).toLowerCase() : null;
+  if (state === "abstain_hard") {
+    return {
+      state,
+      mode,
+      headline: "BeaconAI couldn't make recommendations from this analysis",
+      detail: "A problem with the store data stopped the analysis from recommending anything. The issues found are listed below.",
+    };
+  }
+  if (state === "abstain_soft") {
+    return {
+      state,
+      mode,
+      headline: "No campaign is recommended from this analysis",
+      detail: ABSTAIN_DISPLAY[mode] || "None of the plays cleared the bar for a recommendation this time.",
+    };
+  }
+  return { state: "publish", mode, headline: null, detail: null };
+}
+
+// Watching entries carry no measurement claim — the engine is only saying which
+// metric it is keeping an eye on and what would make it act.
+function watchingFor(engineRun) {
+  return (engineRun?.watching || []).map((signal) => ({
+    metric: signal.metric || null,
+    metric_label: metricLabel(signal.metric) || "Metric",
+    trend: ["up", "down", "flat"].includes(signal.trend) ? signal.trend : null,
+    threshold_to_act: signal.threshold_to_act || null,
+  }));
+}
+
+function presentEngineRun(engineRun, manifest = null, narration = null, options = {}) {
   const narrationMap = narrationByPlay(narration);
+  const currency = options.currency || null;
   const recommendations = [
-    ...(engineRun?.recommendations || []).map((card, index) => normalizeCard(card, "recommendation", index, manifest, narrationMap)),
-    ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest, narrationMap)),
+    ...(engineRun?.recommendations || []).map((card, index) => normalizeCard(card, "recommendation", index, manifest, narrationMap, currency)),
+    ...(engineRun?.recommended_experiments || []).map((card, index) => normalizeCard(card, "recommended_experiment", index, manifest, narrationMap, currency)),
   ];
   // Briefing header prose is LLM-authored by the narration MCP (guarded) or
   // NOTHING — the observation chips carry the data when no summary was authored.
-  // The former presenter-synthesized sentence (stateOfStoreSentence) is retired
-  // per Pivot 2 (no templated prose outside the MCP).
   const summaryPayload = narration?.state_of_store_summary || null;
   const stateOfStore = summaryPayload && !summaryPayload.used_fallback && summaryPayload.summary
     ? summaryPayload.summary
@@ -438,13 +718,21 @@ function presentEngineRun(engineRun, manifest = null, narration = null) {
     run_id: engineRun?.run_id || manifest?.run_id || null,
     store_id: manifest?.store_id || engineRun?.store_id || null,
     engine_schema_version: engineRun?.schema_version || null,
-    generated_at: engineRun?.created_at || manifest?.created_at || null,
+    // When the ANALYSIS ran. The engine run carries no timestamp of its own, so
+    // this comes from the stored run row; it is never the sync time.
+    generated_at: options.analysedAt || engineRun?.created_at || manifest?.created_at || null,
+    currency,
     recommendation_count: recommendations.length,
     ...(stateOfStore ? { state_of_store: stateOfStore } : {}),
     ...(stateOfStoreObs.length ? { state_of_store_observations: stateOfStoreObs } : {}),
+    decision: decisionFor(engineRun),
+    data_quality_flags: dataQualityFlags(engineRun),
     recommendations,
     considered: (engineRun?.considered || []).map((card, index) => normalizeRejectedCard(card, index, narrationMap)),
-    watching: engineRun?.watching || [],
+    // Held plays the engine dropped from the list. Without this, a truncated
+    // list reads as the complete set.
+    considered_truncated_count: Number(engineRun?.considered_truncated_count) || 0,
+    watching: watchingFor(engineRun),
     abstain: engineRun?.abstain || null,
     manifest: manifest ? {
       schema_version: manifest.schema_version,
@@ -458,4 +746,7 @@ function presentEngineRun(engineRun, manifest = null, narration = null) {
 
 module.exports = {
   presentEngineRun,
+  // Exported for the presenter fixtures.
+  REASON_DISPLAY,
+  EVIDENCE_SOURCE_DISPLAY,
 };
