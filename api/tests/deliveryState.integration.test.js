@@ -504,3 +504,45 @@ suite("the name search is scoped to this attempt", async () => {
     "scoped to when this attempt began"
   );
 });
+
+suite("the route forwards the attempt scope to the provider lookup", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  const { reserveCampaignForHandoff } = require("../src/services/campaignService");
+  const reserved = await reserveCampaignForHandoff(campaign.id, campaign.revision);
+  await query(`UPDATE clean.campaigns SET provider_campaign_name = 'BeaconAI - Winback' WHERE id = $1`, [campaign.id]);
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  // The service was scoping correctly and the ROUTE was dropping it: its
+  // `findByName: (name) => ...` discarded the options argument, so the real
+  // endpoint could still adopt an older campaign sharing this name.
+  const klaviyoClient = require("../src/services/klaviyoClient");
+  const original = klaviyoClient.findKlaviyoCampaigns;
+  let received;
+  klaviyoClient.findKlaviyoCampaigns = async (_key, name, options) => {
+    received = { name, options };
+    return { matches: [], complete: true };
+  };
+
+  process.env.BEACONAI_ADMIN_TOKEN = "test-token";
+  try {
+    const response = await fetch(`${api.base}/campaigns/${campaign.id}/reconcile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-beaconai-admin-token": "test-token" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 200);
+  } finally {
+    klaviyoClient.findKlaviyoCampaigns = original;
+    delete process.env.BEACONAI_ADMIN_TOKEN;
+  }
+
+  assert.equal(received.name, "BeaconAI - Winback");
+  assert.ok(received.options, "the options argument reached the provider client");
+  assert.equal(
+    new Date(received.options.createdAtOrAfter).toISOString(),
+    new Date(reserved.handoffReservedAt).toISOString(),
+    "scoped to when this attempt began"
+  );
+});

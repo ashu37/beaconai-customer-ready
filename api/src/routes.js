@@ -19,10 +19,13 @@ const {
   sendCampaign,
   saveKlaviyoAsset,
   campaignNameForProvider,
-  findKlaviyoCampaigns,
-  getKlaviyoCampaign,
   getKlaviyoSender,
 } = require("./services/klaviyoClient");
+// Referenced through the module object rather than destructured, so the provider
+// lookups the reconcile route performs can be intercepted. The bug this guards
+// against was a lambda quietly dropping an argument on its way to the client —
+// invisible at every level except the wiring itself.
+const klaviyoClient = require("./services/klaviyoClient");
 const {
   buildShopifyStartUrl,
   handleShopifyCallback,
@@ -1231,8 +1234,11 @@ router.post("/campaigns/:id/reconcile", async (req, res) => {
     // against another shop's Klaviyo account.
     const privateKey = await resolveStoredKlaviyoToken(campaign.shopDomain);
     const result = await reconcileCampaign(id, {
-      lookupById: (providerCampaignId) => getKlaviyoCampaign(privateKey, providerCampaignId),
-      findByName: (name) => findKlaviyoCampaigns(privateKey, name),
+      lookupById: (providerCampaignId) => klaviyoClient.getKlaviyoCampaign(privateKey, providerCampaignId),
+      // Options forwarded. Dropping them silently discarded the attempt-time
+      // scope, so the real endpoint could still adopt an older campaign that
+      // happened to share this one's name.
+      findByName: (name, options) => klaviyoClient.findKlaviyoCampaigns(privateKey, name, options),
     });
     res.json({ ok: true, ...result });
   } catch (error) {

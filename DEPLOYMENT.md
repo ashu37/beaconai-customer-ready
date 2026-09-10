@@ -181,3 +181,29 @@ merchant should review the actual Klaviyo draft — footer, sender identity, lin
 destinations and the mobile rendering — and send a test to an authorized
 recipient. The tests here prove the bytes previewed are the bytes sent; they do
 not prove those bytes look right in a real inbox.
+
+## Cross-origin and sessions
+
+The app authenticates with a signed, HttpOnly session cookie set on the API's
+origin, so browser calls send `credentials: "include"`. A browser refuses a
+credentialed response carrying `Access-Control-Allow-Origin: *`, which means the
+API cannot use a wildcard CORS policy — it would break every authenticated call
+while leaving the HTTP tests green, because CORS is enforced by the browser and
+invisible to a Node client.
+
+**Set `CORS_ORIGINS`** to the exact frontend origin(s) in any deployment where
+the frontend is served from a different origin than the API, comma-separated.
+`WEB_BASE_URL` is allowed automatically. Same-origin deployments (the frontend
+served by the API, or behind one proxy) need nothing.
+
+The list is explicit rather than reflected: with credentials enabled, echoing
+back any origin would let a page a merchant happens to visit call this API as
+them.
+
+In development (`NODE_ENV !== "production"`) any loopback origin is accepted,
+because the dev server's port moves and a hardcoded port list fails silently and
+looks like a broken app. That allowance does not apply in production.
+
+Verify a change here **in a browser**, not with curl: a credentialed fetch from
+the frontend origin must succeed, and the auth guard must answer 401 rather than
+the request failing at the CORS layer.
