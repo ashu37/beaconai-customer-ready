@@ -1257,6 +1257,14 @@ const VERDICTS = {
   not_measured:    { label: "Not measured yet",  tone: "null" },
 };
 
+// Why a handed-off campaign has no results yet. The delivery label itself comes
+// from presentDelivery, so Results and Campaigns say the same thing.
+const UNMEASURED_NOTE = {
+  send_not_confirmed: "Results start once Klaviyo confirms the send.",
+  send_time_unknown: "Klaviyo reports this as sent but not when, so results can't start yet.",
+  no_provider_record: "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send, so results can't be measured.",
+};
+
 function VerdictChip({ verdict }) {
   const v = VERDICTS[verdict] || VERDICTS.not_measured;
   return <span className={`verdict verdict-${v.tone}`}><span className="verdict-dot" />{v.label}</span>;
@@ -1267,6 +1275,20 @@ function VerdictChip({ verdict }) {
 // it pools every send — and the one that answers "is this software making me
 // money" rather than "did campaign #3 work".
 function ProgramBand({ program }) {
+  // Ticket F: the pooled comparison this band used to show was not a valid
+  // program measurement, and is withdrawn until the measurement protocol ships.
+  // Say so, rather than showing a number or silently showing nothing.
+  if (program && program.available === false) {
+    return (
+      <div className="program-band">
+        <span className="program-label">Program to date</span>
+        <p className="program-note">
+          Program-level results haven't started yet. They need a group of customers held back from every
+          BeaconAI campaign from a fixed start date. Until then, each campaign below is measured on its own.
+        </p>
+      </div>
+    );
+  }
   const c = program?.comparison;
   if (!program?.treated || !program?.holdout) return null;
 
@@ -1317,6 +1339,25 @@ function ResultRow({ result, playTitle, expanded, onToggle }) {
   const w = (result.windows || []).find((x) => x.windowDays === 30) || (result.windows || [])[0];
   const [windowDays, setWindowDays] = useState(30);
   const shown = (result.windows || []).find((x) => x.windowDays === windowDays) || w;
+  // Handed off but not confirmed by the provider: listed with the reason, never
+  // dropped. Measurement runs from the confirmed send time.
+  if (result.measurable === false) {
+    const delivery = presentDelivery(result.delivery ?? null);
+    const note = result.deliveryState === "failed"
+      ? "The draft wasn't created, so nothing was sent."
+      : UNMEASURED_NOTE[result.reason] || "Not measured.";
+    return (
+      <div className="result-row result-row-pending">
+        <span className="result-name">
+          <strong>{playTitle}</strong>
+          <span>{note}</span>
+        </span>
+        <span className="verdict verdict-warn"><span className="verdict-dot" />{delivery.label}</span>
+        <span className="result-money">—<small>measured from the confirmed send</small></span>
+        <span />
+      </div>
+    );
+  }
   if (!w) return null;
 
   const c = shown.comparison;

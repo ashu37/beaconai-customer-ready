@@ -131,10 +131,40 @@ function compareArms(treated, holdout) {
   };
 }
 
+// Windows run from the PROVIDER-CONFIRMED send (Ticket D contract, Ticket F).
+// `sent_at` is local bookkeeping stamped when a status changed; measuring from
+// it would count orders placed before any customer could have seen the email.
+//
+// Measurement starts only when BOTH hold: the durable delivery state is `sent`
+// (which only a provider response can write), and the provider gave a send
+// time. A scheduled campaign can carry a scheduled time, and a created draft
+// carries none; neither is a send.
+function sendConfirmed(campaign) {
+  return campaign.deliveryState === "sent" && Boolean(campaign.providerSentAt);
+}
+
+// Why a campaign has no measurement, in the contract's own terms. Nothing here
+// invents a send time or starts a window.
+function notMeasurable(campaign) {
+  const state = campaign.deliveryState || "not_started";
+  let reason;
+  if (state === "sent") reason = "send_time_unknown";
+  else if (state !== "not_started") reason = "send_not_confirmed";
+  else if (campaign.sentAt) reason = "no_provider_record";
+  else reason = "not_handed_off";
+  return {
+    measurable: false,
+    reason,
+    deliveryState: state,
+    campaignId: campaign.id,
+    playId: campaign.playId,
+  };
+}
+
 // Measure one window and store the per-arm aggregates. Idempotent: re-measuring
 // the same window overwrites, which is what happens as a window matures.
 async function measureWindow(campaign, windowDays) {
-  const sentAt = new Date(campaign.sentAt);
+  const sentAt = new Date(campaign.providerSentAt);
   const windowEnd = new Date(sentAt.getTime() + windowDays * 86400000);
 
   const { rows } = await query(PER_CUSTOMER_SQL, [
@@ -174,7 +204,7 @@ async function measureWindow(campaign, windowDays) {
 async function measureCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
   const campaign = await getCampaign(campaignId);
   if (!campaign) return { measurable: false, reason: "no_campaign" };
-  if (!campaign.sentAt) return { measurable: false, reason: "not_sent" };
+  if (!sendConfirmed(campaign)) return notMeasurable(campaign);
 
   for (const windowDays of windows) await measureWindow(campaign, windowDays);
   return summarizeCampaign(campaignId, { windows });
@@ -185,7 +215,7 @@ async function measureCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
 async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
   const campaign = await getCampaign(campaignId);
   if (!campaign) return { measurable: false, reason: "no_campaign" };
-  if (!campaign.sentAt) return { measurable: false, reason: "not_sent" };
+  if (!sendConfirmed(campaign)) return notMeasurable(campaign);
 
   const { rows } = await query(
     `SELECT window_days, arm, n_customers, n_orders, revenue, revenue_sq, measured_at
@@ -195,7 +225,7 @@ async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {})
     [campaignId]
   );
 
-  const daysElapsed = (Date.now() - new Date(campaign.sentAt).getTime()) / 86400000;
+  const daysElapsed = (Date.now() - new Date(campaign.providerSentAt).getTime()) / 86400000;
 
   const results = windows.map((windowDays) => {
     const forWindow = rows.filter((r) => r.window_days === windowDays);
@@ -244,96 +274,35 @@ async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {})
     measurable: true,
     campaignId,
     playId: campaign.playId,
-    sentAt: campaign.sentAt,
+    sentAt: campaign.providerSentAt,
     holdoutPct: campaign.holdoutPct,
     windows: results,
   };
 }
 
-// The program-level number: everyone who received ANY campaign in the period,
-// against everyone held out of all of them.
+// The program-level number is WITHDRAWN until the Ticket F protocol is live.
 //
-// This is the only comparison here that is reliably well-powered, because it
-// pools every send. A single campaign's holdout may be a few hundred people; the
-// program's is every held-out customer across the quarter. It is also the number
-// that answers the question a merchant actually renews on — "is this software
-// making me money" — rather than "did campaign #3 work".
-//
-// It is valid only because the holdout is GLOBAL and STABLE (see
-// holdoutService): a customer is on the same side of the line in every campaign,
-// so the two groups stay clean when pooled. A customer who somehow appears on
-// both sides is counted as treated — the conservative direction, since it can
-// only shrink the measured lift.
+// It used to group every recipient by BOOL_OR(arm = 'treated') — ever-treated
+// against never-treated — and count revenue from a fixed date 90 days ago, so a
+// customer's pre-exposure spending landed in the outcome, and its order count was
+// hard-coded to zero. That is not a valid program comparison (plan, Ticket F),
+// and the seed review showed it producing a contradictory hero. The replacement
+// is a prospective cohort with stored enrollment and assignment
+// (docs/MEASUREMENT_PROTOCOL.md); until it exists, this reports that no program
+// number is available and why, rather than a number nobody should act on.
 async function summarizeProgram(shopDomain, { sinceDays = 90 } = {}) {
   const since = new Date(Date.now() - sinceDays * 86400000).toISOString();
-
   const { rows } = await query(
-    `WITH members AS (
-       SELECT r.customer_id,
-              BOOL_OR(r.arm = 'treated') AS ever_treated
-         FROM clean.campaign_recipients r
-         JOIN clean.campaigns c ON c.id = r.campaign_id
-        WHERE c.shop_domain = $1
-          AND c.sent_at IS NOT NULL
-          AND c.sent_at >= $2
-        GROUP BY r.customer_id
-     ),
-     revenue AS (
-       SELECT m.customer_id,
-              m.ever_treated,
-              COALESCE(SUM(
-                GREATEST(
-                  COALESCE(o.total_price, 0)
-                  - COALESCE((SELECT SUM(f.transaction_amount)
-                                FROM clean.refunds f
-                               WHERE f.shop_domain = o.shop_domain
-                                 AND f.order_id = o.id), 0),
-                  0
-                )
-              ), 0) AS revenue
-         FROM members m
-         LEFT JOIN clean.orders o
-           ON (o.customer_id = m.customer_id OR o.email = m.customer_id)
-          AND o.shop_domain = $1
-          AND o.processed_at >= $2
-          AND o.cancelled_at IS NULL
-          AND COALESCE(o.test, false) = false
-        GROUP BY m.customer_id, m.ever_treated
-     )
-     SELECT ever_treated,
-            COUNT(*)::int        AS n_customers,
-            SUM(revenue)         AS revenue,
-            SUM(revenue*revenue) AS revenue_sq
-       FROM revenue
-      GROUP BY ever_treated`,
-    [shopDomain, since]
-  );
-
-  const pick = (everTreated) => {
-    const row = rows.find((r) => r.ever_treated === everTreated);
-    if (!row) return null;
-    return {
-      n_customers: Number(row.n_customers),
-      revenue: Number(row.revenue) || 0,
-      revenue_sq: Number(row.revenue_sq) || 0,
-      n_orders: 0,
-    };
-  };
-
-  const treated = pick(true);
-  const holdout = pick(false);
-  const { rows: campaignRows } = await query(
     `SELECT COUNT(*)::int AS n FROM clean.campaigns
-      WHERE shop_domain = $1 AND sent_at IS NOT NULL AND sent_at >= $2`,
+      WHERE shop_domain = $1 AND delivery_state = 'sent'
+        AND provider_sent_at IS NOT NULL AND provider_sent_at >= $2`,
     [shopDomain, since]
   );
-
   return {
+    available: false,
+    reason: "protocol_not_live",
     sinceDays,
-    campaigns: Number(campaignRows[0]?.n || 0),
-    treated,
-    holdout,
-    comparison: compareArms(treated, holdout),
+    campaigns: Number(rows[0]?.n || 0),
   };
 }
 
@@ -350,7 +319,8 @@ async function staleCampaignIds(shopDomain, { olderThanHours = 24 } = {}) {
           WHERE m.campaign_id = c.id
        ) m ON true
       WHERE c.shop_domain = $1
-        AND c.sent_at IS NOT NULL
+        AND c.delivery_state = 'sent'
+        AND c.provider_sent_at IS NOT NULL
         AND (m.measured_at IS NULL OR m.measured_at < NOW() - ($2 || ' hours')::interval)`,
     [shopDomain, String(olderThanHours)]
   );

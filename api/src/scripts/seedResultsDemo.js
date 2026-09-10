@@ -141,7 +141,9 @@ async function seed() {
     const campaign = await upsertCampaign({
       shopDomain: SEED_SHOP, runId: SEED_RUN, playId, status: "sent",
     });
-    await query(`UPDATE clean.campaigns SET sent_at = $2, audience_size = $3, holdout_size = $4 WHERE id = $1`,
+    // Demo campaigns are "confirmed sent" by construction: measurement anchors on
+    // the provider send time, never on local status.
+    await query(`UPDATE clean.campaigns SET sent_at = $2, provider_sent_at = $2, delivery_state = 'sent', audience_size = $3, holdout_size = $4 WHERE id = $1`,
       [campaign.id, sentAt, customers.length, split.holdout.length]);
     await recordRecipients(campaign.id, split);
 
@@ -203,7 +205,9 @@ async function seed() {
   }
 
   const program = await summarizeProgram(SEED_SHOP, { sinceDays: 90 });
-  if (program.comparison) {
+  if (program.available === false) {
+    console.log(`\n  PROGRAM  not reported (${program.reason}) — see docs/MEASUREMENT_PROTOCOL.md`);
+  } else if (program.comparison) {
     const p = program.comparison;
     console.log(
       `\n  PROGRAM  ${program.campaigns} campaigns · ` +

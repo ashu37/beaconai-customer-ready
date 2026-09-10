@@ -160,6 +160,10 @@ async function resolveCampaignAudience(shopDomain, campaign = {}, options = {}) 
   // suppressedCount = engine members whose email we could not resolve in the DB
   // (data gap, not a consent decision — R3 leaves consent to Klaviyo).
   const suppressedCount = Math.max(0, customerIds.length - recipients.length);
+  // Which members those were, so the handoff can record them as excluded
+  // rather than letting them disappear before the split.
+  const resolved = new Set(recipients.map((r) => String(r.customerId)));
+  const unresolvedIds = customerIds.map(String).filter((id) => !resolved.has(id));
 
   return {
     count: recipients.length,
@@ -170,6 +174,7 @@ async function resolveCampaignAudience(shopDomain, campaign = {}, options = {}) 
     audienceDefinitionId: entry.audienceDefinitionId,
     memberCount: customerIds.length,
     suppressedCount,
+    unresolvedIds,
   };
 }
 

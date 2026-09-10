@@ -960,7 +960,11 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // Recipients are persisted BEFORE the send, deliberately. If this write
       // fails we must not send: a campaign whose split was never recorded can
       // never be measured, and an unmeasurable send is worse than a late one.
-      await recordRecipients(campaignRow.id, split);
+      await recordRecipients(campaignRow.id, {
+        ...split,
+        // Engine members with no email never reach the split. Recorded, not dropped.
+        excluded: (audience.unresolvedIds || []).map((customerRef) => ({ customerRef, reason: "no_email" })),
+      });
       // Quotes the revision the reservation just returned. This route holds the
       // campaign, so it is not guessing — but it still names what it is writing
       // over, the same rule every other caller follows.
@@ -1402,12 +1406,27 @@ router.get("/results/:shopDomain", async (req, res) => {
       await measureCampaign(id).catch(() => {});
     }
     const campaigns = await listCampaigns(shopDomain);
-    const sent = campaigns.filter((c) => c.sentAt);
+    // Every campaign that has been handed off, by Ticket D's durable delivery
+    // state — a provider-created draft has no send time of any kind, and
+    // filtering on timestamps made exactly those disappear. Legacy campaigns
+    // marked sent only locally are kept too. Each carries its delivery record,
+    // so the page states created / scheduled / needs-checking in the
+    // contract's words; none is measured until the provider confirms a send.
+    const handedOff = campaigns.filter((c) => c.deliveryState !== "not_started" || c.sentAt || c.providerSentAt);
     const results = [];
-    for (const campaign of sent) {
+    for (const campaign of handedOff) {
       const summary = await summarizeCampaign(campaign.id);
-      results.push({ ...summary, playId: campaign.playId, sentAt: campaign.sentAt,
-        audienceSize: campaign.audienceSize, holdoutSize: campaign.holdoutSize });
+      const delivery = await getDelivery(campaign.id);
+      results.push({
+        ...summary,
+        campaignId: campaign.id,
+        playId: campaign.playId,
+        // Only a confirmed send has a send time. Never a local stamp.
+        sentAt: summary.measurable ? campaign.providerSentAt : null,
+        delivery: delivery ? { ...delivery, campaignName: campaign.providerCampaignName || campaign.displayName || null } : null,
+        audienceSize: campaign.audienceSize,
+        holdoutSize: campaign.holdoutSize,
+      });
     }
     const program = await summarizeProgram(shopDomain);
     res.json({ ok: true, program, results });

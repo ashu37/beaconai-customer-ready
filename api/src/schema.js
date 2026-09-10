@@ -404,6 +404,25 @@ async function initSchema() {
       ON clean.campaign_recipients (campaign_id, arm);
   `);
 
+  // Ticket F collection. The email a recipient was reached at, so a later
+  // analysis can reconcile a person who carries two ids (a Shopify id and an
+  // email) instead of treating them as two customers.
+  await query(`ALTER TABLE clean.campaign_recipients ADD COLUMN IF NOT EXISTS email TEXT;`);
+
+  // Engine members who never reached the split, and why. They were previously
+  // dropped without a trace; a design that needs to know who was excluded
+  // cannot recover that later.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.campaign_recipient_exclusions (
+      campaign_id INTEGER NOT NULL
+        REFERENCES clean.campaigns(id) ON DELETE CASCADE,
+      customer_ref TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (campaign_id, customer_ref)
+    );
+  `);
+
   // One row per campaign per window per arm. Recomputed as windows mature, so
   // this is the one table here that is updated rather than append-only.
   await query(`
