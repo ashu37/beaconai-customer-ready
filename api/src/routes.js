@@ -18,6 +18,7 @@ const {
   sendCampaign,
   saveKlaviyoAsset,
   findKlaviyoCampaigns,
+  getKlaviyoSender,
 } = require("./services/klaviyoClient");
 const {
   buildShopifyStartUrl,
@@ -483,6 +484,23 @@ router.post("/copy/generate", async (req, res) => {
   } catch (error) {
     // Fail soft: the Copy step must never show an error. available:false => static.
     res.json({ ok: true, available: false, reason: error.message });
+  }
+});
+
+// The verified sender identity, or an explicit absence.
+//
+// There is no sender-management feature here and none is needed: the merchant
+// finishes in Klaviyo, where the sender is set. This exists so the review screen
+// can show a REAL from-address when the provider gives us one and say "Check in
+// Klaviyo" when it does not — never a guess assembled from the store domain.
+router.get("/klaviyo/sender", async (req, res) => {
+  try {
+    const sender = await getKlaviyoSender(await resolveKlaviyoKey(req.query));
+    res.json({ ok: true, sender });
+  } catch (error) {
+    // An unreachable provider is not evidence of a missing sender. Both render
+    // the same way to the merchant, but the reason is recorded.
+    res.json({ ok: true, sender: null, reason: error.response?.data || error.message });
   }
 });
 
@@ -1236,14 +1254,43 @@ router.post("/campaigns/audience/preview", async (req, res) => {
 
     const provenance = runId ? await getRunProvenance(runId) : null;
     const foreign = Boolean(provenance && provenance.shopDomain !== shopDomain);
+    // A typed breakdown, because "matched", "planned to email" and "actually
+    // sent" are three different numbers and collapsing them is how a merchant
+    // ends up believing an email reached people it never reached.
+    //
+    // `exclusions` carries only what we can EVIDENCE. The engine matched N
+    // customers; some have no email address on file, which is a data gap, not a
+    // consent decision — and we say exactly that. Consent and suppression are
+    // applied by Klaviyo at send, and we do not claim to have applied them.
+    const matched = audience.memberCount ?? audience.count ?? null;
+    const noEmail = audience.suppressedCount ?? null;
+    const breakdown = audience.materialized ? {
+      matched,
+      plannedEmailGroup: holdout ? holdout.treated : audience.count ?? null,
+      comparisonGroup: holdout ? holdout.held : null,
+      comparisonPct: holdout ? holdout.pct : null,
+      exclusions: noEmail
+        ? [{
+            code: "no_email_on_file",
+            count: noEmail,
+            label: `${noEmail} matched customer${noEmail === 1 ? "" : "s"} have no email address on file.`,
+          }]
+        : [],
+      // Named so the UI cannot present provider behaviour as ours.
+      providerAppliesAtSend: "Klaviyo applies consent and suppression at send. The actual sent count is confirmed afterwards.",
+      // Never inferred. Populated only by provider reconciliation.
+      actualSentCount: null,
+    } : null;
+
     res.json({
       ok: true,
       shopDomain,
       audience,
       holdout,
+      breakdown,
+      originRunId: runId,
       // So the UI can say why a send is blocked before the merchant clicks it,
       // rather than only after.
-      runId,
       inputProvenance: foreign ? "foreign_run" : provenance?.provenance || (runId ? "unknown_run" : null),
       sendable: Boolean(provenance) && !foreign && !["fixture", "legacy_unverified"].includes(provenance.provenance),
     });

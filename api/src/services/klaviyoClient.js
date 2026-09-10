@@ -348,6 +348,35 @@ async function findKlaviyoCampaigns(privateKey, campaign) {
   return { matches };
 }
 
+/**
+ * The account's configured sender, if the provider reports one.
+ *
+ * Returns null rather than anything derived. A from-address assembled from the
+ * store domain would look verified and be a guess, and the merchant would only
+ * find out when the email arrived from an address that does not exist.
+ */
+async function getKlaviyoSender(privateKey) {
+  const client = createKlaviyoClient(privateKey);
+  const response = await client.get("/accounts");
+  const account = response.data?.data?.[0]?.attributes || null;
+  if (!account) return null;
+
+  const contact = account.contact_information || {};
+  const name = contact.default_sender_name || null;
+  const email = contact.default_sender_email || null;
+  if (!name && !email) return null;
+
+  return {
+    name,
+    email,
+    // Klaviyo does not report a reply-to on the account; it is set per campaign.
+    // Saying so is better than leaving the field to be read as "same as sender".
+    replyTo: null,
+    source: "klaviyo_account",
+    organizationName: account.contact_information?.organization_name || null,
+  };
+}
+
 async function sendCampaign(privateKey, campaignId) {
   const client = createKlaviyoClient(privateKey);
   const response = await client.post("/campaign-send-jobs", {
@@ -382,6 +411,7 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 module.exports = {
   PROVIDER_STAGES,
   findKlaviyoCampaigns,
+  getKlaviyoSender,
   testKlaviyo,
   getKlaviyoLists,
   getKlaviyoProfiles,

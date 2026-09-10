@@ -659,3 +659,112 @@ suite("unknown patch fields are ignored, not forwarded", async () => {
   assert.equal(after.revision, created.revision + 1, "revision is the server's counter, not the client's");
   assert.equal(after.shopDomain, SHOP);
 });
+
+suite("the audience breakdown separates matched, planned and excluded", async () => {
+  await db.resetDatabase();
+  await configureBrandShell();
+  await seedRun("run-1");
+
+  // Ten matched customers; three of them have no email address on file.
+  for (let i = 0; i < 7; i += 1) {
+    await query(
+      `INSERT INTO clean.customers (id, shop_domain, email, created_at)
+       VALUES ($1, $2, $3, NOW()) ON CONFLICT (id) DO NOTHING`,
+      [`c-${i}`, SHOP, `c${i}@example.com`]
+    );
+  }
+  for (let i = 7; i < 10; i += 1) {
+    await query(
+      `INSERT INTO clean.customers (id, shop_domain, email, created_at)
+       VALUES ($1, $2, NULL, NOW()) ON CONFLICT (id) DO NOTHING`,
+      [`c-${i}`, SHOP]
+    );
+  }
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-1', 'aud-1', $1, 'MATERIALIZED', $2)`,
+    [PLAY, Array.from({ length: 10 }, (_, i) => `c-${i}`)]
+  );
+
+  const response = await api.post("/campaigns/audience/preview", {
+    shopDomain: SHOP, campaign: { play_id: PLAY, run_id: "run-1" },
+  });
+  assert.equal(response.status, 200);
+  const { breakdown } = response.body;
+
+  // Three different numbers, kept apart. Collapsing them is how a merchant ends
+  // up believing an email reached people it never reached.
+  assert.equal(breakdown.matched, 10);
+  assert.equal(breakdown.plannedEmailGroup + breakdown.comparisonGroup, 7,
+    "only the customers we can actually email are split");
+  assert.ok(breakdown.comparisonGroup >= 0);
+
+  // The gap is EVIDENCED and named for what it is: a data gap, not a consent
+  // decision, and not "standard suppressions applied".
+  assert.equal(breakdown.exclusions.length, 1);
+  assert.equal(breakdown.exclusions[0].code, "no_email_on_file");
+  assert.equal(breakdown.exclusions[0].count, 3);
+  assert.match(breakdown.exclusions[0].label, /no email address on file/);
+  assert.ok(!JSON.stringify(breakdown).toLowerCase().includes("unsubscrib"),
+    "we do not claim unsubscribe suppression we have not verified");
+
+  // Provider behaviour is attributed to the provider, and the real number is
+  // explicitly not known yet.
+  assert.match(breakdown.providerAppliesAtSend, /Klaviyo applies consent and suppression/);
+  assert.equal(breakdown.actualSentCount, null);
+  assert.equal(response.body.originRunId, "run-1");
+});
+
+suite("an audience with no exclusions claims none", async () => {
+  await db.resetDatabase();
+  await configureBrandShell();
+  await seedRun("run-1");
+  for (let i = 0; i < 4; i += 1) {
+    await query(
+      `INSERT INTO clean.customers (id, shop_domain, email, created_at)
+       VALUES ($1, $2, $3, NOW()) ON CONFLICT (id) DO NOTHING`,
+      [`e-${i}`, SHOP, `e${i}@example.com`]
+    );
+  }
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-1', 'aud-1', $1, 'MATERIALIZED', $2)`,
+    [PLAY, ["e-0", "e-1", "e-2", "e-3"]]
+  );
+
+  const response = await api.post("/campaigns/audience/preview", {
+    shopDomain: SHOP, campaign: { play_id: PLAY, run_id: "run-1" },
+  });
+  assert.deepEqual(response.body.breakdown.exclusions, [],
+    "an empty list, not an invented reassurance");
+  assert.equal(response.body.breakdown.matched, 4);
+});
+
+suite("an unmaterialized audience has no breakdown to show", async () => {
+  await db.resetDatabase();
+  await configureBrandShell();
+  await seedRun("run-1");
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-1', 'aud-1', $1, 'SUPPRESSED_SUBSTRATE_REFUSED', '{}')`,
+    [PLAY]
+  );
+
+  const response = await api.post("/campaigns/audience/preview", {
+    shopDomain: SHOP, campaign: { play_id: PLAY, run_id: "run-1" },
+  });
+  // A typed absence, not a breakdown full of zeroes.
+  assert.equal(response.body.breakdown, null);
+  assert.equal(response.body.audience.materialized, false);
+});
+
+suite("a sender is reported only when the provider supplies one", async () => {
+  await db.resetDatabase();
+  // No Klaviyo key configured in tests: the lookup fails, and a failure to
+  // reach the provider is not evidence of a missing sender — but it renders the
+  // same way, which is "Check in Klaviyo".
+  const response = await api.get(`/klaviyo/sender?shopDomain=${encodeURIComponent(SHOP)}`);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.sender, null);
+  assert.ok(response.body.reason, "and the reason is recorded rather than swallowed");
+});

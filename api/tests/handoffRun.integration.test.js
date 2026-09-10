@@ -107,7 +107,7 @@ suite("a verified run id cannot authorize an unverified run's audience", async (
     campaign: { play_id: PLAY, run_id: "run-verified" },
   });
   assert.equal(preview.status, 200);
-  assert.equal(preview.body.runId, "run-verified");
+  assert.equal(preview.body.originRunId, "run-verified");
   assert.equal(preview.body.inputProvenance, "verified");
   assert.equal(preview.body.sendable, true);
 

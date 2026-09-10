@@ -5,6 +5,7 @@ import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGat
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
+import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import "./styles.css";
 
@@ -497,7 +498,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               </div>
             ) : null}
             <div className="model-row">
-              <span>Suppression</span>
+              <span>At send</span>
               <strong>{STANDARD_SUPPRESSIONS_NOTE}</strong>
             </div>
             <div className="evidence-fineprint">{play.play_id || play.id}</div>
@@ -1642,6 +1643,8 @@ function App() {
   // Durable provider state per campaign, from the Ticket D contract. Never
   // inferred from local status — that is the whole point of the contract.
   const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
+  // Reported by the provider, or absent. Never derived from the store domain.
+  const [senderIdentity, setSenderIdentity] = useState(null);
 
   const loadDelivery = useCallback(async (campaignId) => {
     if (!campaignId) return null;
@@ -1858,6 +1861,7 @@ function App() {
     preloadStoreSnapshot();
     loadBrandContext();
     loadBrandEmailTemplate();
+    loadSenderIdentity();
     loadLatestRun();
   }, []);
 
@@ -2309,6 +2313,17 @@ function App() {
     }
   }
 
+  async function loadSenderIdentity() {
+    try {
+      const result = await api.klaviyoSender();
+      setSenderIdentity(result.sender || null);
+    } catch (_) {
+      // Unreachable is not the same as absent, but both render as
+      // "Check in Klaviyo" — the merchant's action is identical.
+      setSenderIdentity(null);
+    }
+  }
+
   async function loadBrandEmailTemplate() {
     try {
       const result = await api.brandEmailTemplate();
@@ -2736,7 +2751,16 @@ function App() {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
-      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: { ...result.audience, holdout: result.holdout || null } }));
+      setAudiencePreviewsByCampaign((prev) => ({
+        ...prev,
+        [campaignDraft.id]: {
+          ...result.audience,
+          holdout: result.holdout || null,
+          breakdown: result.breakdown || null,
+          originRunId: result.originRunId || null,
+          inputProvenance: result.inputProvenance || null,
+        },
+      }));
       return result;
     } finally {
       setPreviewingCampaignId("");
@@ -3316,6 +3340,48 @@ function App() {
                                   </div>
                                 </div>
                               ) : null}
+                              {(() => {
+                                const summary = summarizeAudience({
+                                  audience: preview,
+                                  breakdown: preview?.breakdown,
+                                  originRunId: preview?.originRunId,
+                                  inputProvenance: preview?.inputProvenance,
+                                });
+                                if (!summary.available) {
+                                  return <div className="notice-line">{summary.message}</div>;
+                                }
+                                return (
+                                  <div className="audience-breakdown">
+                                    <div className="audience-rows">
+                                      {summary.rows.map((row) => (
+                                        <div key={row.key} className="audience-row">
+                                          <span className="audience-row-label">{row.label}</span>
+                                          <strong className="audience-row-value">{row.value}</strong>
+                                          <span className="audience-row-help">{row.help}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    {/* Only exclusions the API can evidence, each with its
+                                        own reason. Silence where there is none. */}
+                                    {summary.exclusions.map((exclusion) => (
+                                      <p key={exclusion.code} className="audience-note">{exclusion.label}</p>
+                                    ))}
+                                    {summary.noComparisonWarning ? (
+                                      <p className="audience-note warn">{summary.noComparisonWarning}</p>
+                                    ) : null}
+                                    {summary.providerNote ? (
+                                      <p className="audience-note">{summary.providerNote}</p>
+                                    ) : null}
+                                    <p className="audience-note">
+                                      Actual sent: <strong>{summary.actualSentLabel}</strong>
+                                    </p>
+                                    {summary.stale ? (
+                                      <p className="audience-note">This campaign uses an earlier verified briefing.</p>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
+
                               <div className="recipient-preview">
                                 <div className="recipient-preview-head">
                                   <div>
@@ -3348,9 +3414,64 @@ function App() {
                             </div>
                           ) : null}
 
-                          {workspaceStep === "send" && selectedCampaign ? (
-                            <CampaignSendPanel campaign={selectedCampaign} onEditStep={setWorkspaceStep} />
-                          ) : null}
+                          {workspaceStep === "send" && selectedCampaign ? (() => {
+                            const preview = audiencePreviewsByCampaign[selectedCampaign.id] || null;
+                            const summary = summarizeAudience({
+                              audience: preview, breakdown: preview?.breakdown,
+                              originRunId: preview?.originRunId, inputProvenance: preview?.inputProvenance,
+                            });
+                            const sender = summarizeSender(senderIdentity);
+                            const rendered = approvedRender.current[reviewPlay.id] || null;
+                            return (
+                              <div className="final-review">
+                                <div className="final-review-block">
+                                  <div className="final-review-head">
+                                    <span className="section-kicker">Email</span>
+                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("copy")}>Edit email</button>
+                                  </div>
+                                  <p><strong>{selectedCampaign.subject}</strong></p>
+                                  <p className="final-review-meta">{selectedCampaign.previewText}</p>
+                                  <p className="final-review-meta">
+                                    Design: {brandDesign?.configured
+                                      ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
+                                      : "not set up yet"}
+                                  </p>
+                                  <p className="final-review-meta">Button: {selectedCampaign.cta}</p>
+                                  {/* The link the rendered button actually carries, not the
+                                      input's contents — those differ when a design default
+                                      is in play. */}
+                                  <p className="final-review-meta">
+                                    Link: <code>{rendered?.effectiveDestinationUrl || destinationByPlay[reviewPlay.id] || "Not set"}</code>
+                                  </p>
+                                </div>
+
+                                <div className="final-review-block">
+                                  <div className="final-review-head">
+                                    <span className="section-kicker">Audience</span>
+                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("audience")}>Review audience</button>
+                                  </div>
+                                  {summary.available ? (
+                                    <>
+                                      {summary.rows.map((row) => (
+                                        <p key={row.key} className="final-review-meta">{row.label}: <strong>{row.value}</strong></p>
+                                      ))}
+                                      {summary.exclusions.map((e) => (
+                                        <p key={e.code} className="final-review-meta">{e.label}</p>
+                                      ))}
+                                    </>
+                                  ) : <p className="final-review-meta">{summary.message}</p>}
+                                </div>
+
+                                <div className="final-review-block">
+                                  <span className="section-kicker">Sender</span>
+                                  {/* Reported by the provider, or an honest absence. Never
+                                      assembled from the store domain. */}
+                                  <p className="final-review-meta">Sender: <strong>{sender.display}</strong></p>
+                                  <p className="final-review-meta">Reply-to: <strong>{sender.replyTo}</strong></p>
+                                </div>
+                              </div>
+                            );
+                          })() : null}
                         </div>
 
                         {/* P-A3: sticky action bar — current step's primary action, right-aligned */}

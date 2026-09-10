@@ -63,6 +63,14 @@ const SCENARIOS = {
   "no-design": { label: "No configured design", preview: "setup" },
 };
 
+// Seed audience figures used consistently across the specification's examples.
+export const SEED_AUDIENCE = {
+  matched: 1200, plannedEmailGroup: 900, comparisonGroup: 100,
+  exclusions: [{ code: "no_email_on_file", count: 200, label: "200 matched customers have no email address on file." }],
+  providerAppliesAtSend: "Klaviyo applies consent and suppression at send. The actual sent count is confirmed afterwards.",
+  actualSentCount: null,
+};
+
 function stubApi(scenario) {
   api.previewCampaignHtml = async () => {
     if (scenario.preview === "setup") {

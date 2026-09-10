@@ -5,8 +5,13 @@
 // merchant sets and never sees applied. That is exactly how a typed destination
 // could sit in its own state while the email kept using the shop default.
 
+// This used to read "Standard suppressions apply — recent buyers and
+// unsubscribers are excluded." BeaconAI applies neither: consent and suppression
+// are the provider's, at send. Stating it as ours was a claim about a check
+// nobody had run, on the one screen where a merchant decides whether an email is
+// safe to send.
 export const STANDARD_SUPPRESSIONS_NOTE =
-  "Standard suppressions apply — recent buyers and unsubscribers are excluded.";
+  "Klaviyo applies consent and suppression at send. The actual sent count is confirmed afterwards.";
 
 export function agentCopyToDraftFields(agentCopy) {
   if (!agentCopy) return {};
