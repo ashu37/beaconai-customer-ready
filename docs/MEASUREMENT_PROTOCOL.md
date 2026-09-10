@@ -1,6 +1,6 @@
 # Program measurement protocol — Ticket F design gate
 
-**Status: DRAFT — awaiting founder approval of the merchant-facing scope, and review by someone competent in experiment analysis.** Nothing in §4–§6 is implemented. §7 lists the collection fixes needed under any design; they are safe to build before approval.
+**Status: DRAFT — awaiting founder approval of the merchant-facing scope, and review by someone competent in experiment analysis.** Nothing in §4–§6 is implemented. The §7 collection fixes, needed under any design, **are implemented** (Ticket F PR).
 
 September 10, 2026. Based on the code at `main` 1457637 and aggregate statistics from the local test store. Test-store numbers are illustrative: that store is not a merchant, and its variability may not match one.
 
@@ -106,7 +106,7 @@ At 30 days the same MDEs are 41–125% of the mean.
 
 **Reading:** a single campaign cannot resolve a realistic email effect. Even a pooled program of 2,200 customers detects only lifts of roughly 16–22% of baseline revenue. Email programs typically move far less than that. **The pilot must not promise a significant program result.** It can promise a valid estimate with an honest interval, which narrows as enrollment grows. Raising the holdout from 10% to 20% narrows the interval by about a quarter, at the cost of reach (§9).
 
-## 7. Collection fixes required under any design (not gated)
+## 7. Collection fixes required under any design (not gated) — implemented
 
 These make data *collected now* usable later. Without them, a campaign sent during the pilot cannot be analysed under any protocol.
 

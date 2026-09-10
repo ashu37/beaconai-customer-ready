@@ -142,7 +142,10 @@ function rowToCampaign(row) {
     frozenAt: row.frozen_at,
     frozen: Boolean(row.frozen_at),
     approvedAt: row.approved_at,
+    // Local bookkeeping. Measurement never anchors on it (Ticket F).
     sentAt: row.sent_at,
+    // The provider-confirmed send time: the only send anchor measurement uses.
+    providerSentAt: row.provider_sent_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -506,26 +509,54 @@ async function findCachedCopy({ shopDomain, runId, playId, templateId }) {
   return rows.length ? rows[0].copy : null;
 }
 
-// Record which arm every recipient landed in. Written once, at send time —
-// after this there is no other record of who was held back, so a campaign
-// without these rows can never be measured.
+class RecipientsFrozen extends Error {
+  constructor(campaignId) {
+    super(`Campaign ${campaignId} has been handed off; its recipients are fixed.`);
+    this.name = "RecipientsFrozen";
+    this.campaignId = campaignId;
+  }
+}
+
+// Record which arm every recipient landed in, the email each was reached at,
+// and every engine member excluded before the split — with the reason.
 //
-// Replaces the whole set for the campaign so a retried send cannot leave a
-// customer in two arms, and runs in a transaction so a partial write never
-// produces a half-recorded split.
-async function recordRecipients(campaignId, { treated = [], holdout = [] }) {
+// Replaces the whole set while the campaign is still being prepared, so a
+// retried handoff cannot leave a customer in two arms. ONCE THE CAMPAIGN IS
+// FROZEN AT HANDOFF, THE SET IS FIXED: who was treated and who was held back is
+// the record every later analysis rests on, and rewriting it after outcomes
+// exist would let the measurement choose its own sample. The frozen check takes
+// the campaign row's lock, so it cannot interleave with the freeze itself.
+async function recordRecipients(campaignId, { treated = [], holdout = [], excluded = [] }) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT frozen_at FROM clean.campaigns WHERE id = $1 FOR UPDATE`, [campaignId]
+    );
+    if (rows[0]?.frozen_at) throw new RecipientsFrozen(campaignId);
+
     await client.query(`DELETE FROM clean.campaign_recipients WHERE campaign_id = $1`, [campaignId]);
+    await client.query(`DELETE FROM clean.campaign_recipient_exclusions WHERE campaign_id = $1`, [campaignId]);
     for (const [arm, list] of [["treated", treated], ["holdout", holdout]]) {
       if (!list.length) continue;
-      const ids = list.map((r) => r.customerId ?? r).filter(Boolean);
+      const people = list
+        .map((r) => (typeof r === "string" ? { customerId: r, email: null } : r))
+        .filter((r) => r?.customerId);
       await client.query(
-        `INSERT INTO clean.campaign_recipients (campaign_id, customer_id, arm)
-         SELECT $1, unnest($2::text[]), $3
+        `INSERT INTO clean.campaign_recipients (campaign_id, customer_id, arm, email)
+         SELECT $1, t.customer_id, $3, t.email
+           FROM unnest($2::text[], $4::text[]) AS t(customer_id, email)
          ON CONFLICT (campaign_id, customer_id) DO NOTHING`,
-        [campaignId, ids, arm]
+        [campaignId, people.map((r) => String(r.customerId)), arm, people.map((r) => r.email || null)]
+      );
+    }
+    const exclusions = excluded.filter((e) => e?.customerRef && e?.reason);
+    if (exclusions.length) {
+      await client.query(
+        `INSERT INTO clean.campaign_recipient_exclusions (campaign_id, customer_ref, reason)
+         SELECT $1, t.ref, t.reason FROM unnest($2::text[], $3::text[]) AS t(ref, reason)
+         ON CONFLICT (campaign_id, customer_ref) DO NOTHING`,
+        [campaignId, exclusions.map((e) => String(e.customerRef)), exclusions.map((e) => e.reason)]
       );
     }
     await client.query("COMMIT");
@@ -538,6 +569,7 @@ async function recordRecipients(campaignId, { treated = [], holdout = [] }) {
 }
 
 module.exports = {
+  RecipientsFrozen,
   CampaignFrozen,
   CampaignRevisionConflict,
   CampaignHandoffInProgress,

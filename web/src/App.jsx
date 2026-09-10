@@ -1255,6 +1255,7 @@ const VERDICTS = {
   too_small:       { label: "Too small to tell", tone: "null" },
   no_holdout:      { label: "Not measurable",    tone: "null" },
   not_measured:    { label: "Not measured yet",  tone: "null" },
+  awaiting_send_confirmation: { label: "Awaiting send confirmation", tone: "warn" },
 };
 
 function VerdictChip({ verdict }) {
@@ -1267,6 +1268,20 @@ function VerdictChip({ verdict }) {
 // it pools every send — and the one that answers "is this software making me
 // money" rather than "did campaign #3 work".
 function ProgramBand({ program }) {
+  // Ticket F: the pooled comparison this band used to show was not a valid
+  // program measurement, and is withdrawn until the measurement protocol ships.
+  // Say so, rather than showing a number or silently showing nothing.
+  if (program && program.available === false) {
+    return (
+      <div className="program-band">
+        <span className="program-label">Program to date</span>
+        <p className="program-note">
+          Program-level results haven't started yet. They need a group of customers held back from every
+          BeaconAI campaign from a fixed start date. Until then, each campaign below is measured on its own.
+        </p>
+      </div>
+    );
+  }
   const c = program?.comparison;
   if (!program?.treated || !program?.holdout) return null;
 
@@ -1317,6 +1332,22 @@ function ResultRow({ result, playTitle, expanded, onToggle }) {
   const w = (result.windows || []).find((x) => x.windowDays === 30) || (result.windows || [])[0];
   const [windowDays, setWindowDays] = useState(30);
   const shown = (result.windows || []).find((x) => x.windowDays === windowDays) || w;
+  // Handed off but not confirmed by the provider: listed with the reason, never
+  // dropped. Measurement runs from the confirmed send time.
+  if (result.measurable === false) {
+    const awaiting = result.reason === "awaiting_send_confirmation";
+    return (
+      <div className="result-row result-row-pending">
+        <span className="result-name">
+          <strong>{playTitle}</strong>
+          <span>{awaiting ? "Waiting for Klaviyo to confirm the send · refresh its status in Campaigns" : "Not sent"}</span>
+        </span>
+        <VerdictChip verdict={awaiting ? "awaiting_send_confirmation" : "not_measured"} />
+        <span className="result-money">—<small>measured from the confirmed send</small></span>
+        <span />
+      </div>
+    );
+  }
   if (!w) return null;
 
   const c = shown.comparison;

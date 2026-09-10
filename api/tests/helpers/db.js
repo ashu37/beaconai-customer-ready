@@ -12,6 +12,7 @@ const available = Boolean(TEST_DATABASE_URL);
 const TABLES = [
   "clean.active_sync",
   "clean.campaign_measurements",
+  "clean.campaign_recipient_exclusions",
   "clean.campaign_recipients",
   "clean.campaigns",
   "clean.brand_email_active",

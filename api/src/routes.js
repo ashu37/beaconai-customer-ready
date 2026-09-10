@@ -960,7 +960,11 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // Recipients are persisted BEFORE the send, deliberately. If this write
       // fails we must not send: a campaign whose split was never recorded can
       // never be measured, and an unmeasurable send is worse than a late one.
-      await recordRecipients(campaignRow.id, split);
+      await recordRecipients(campaignRow.id, {
+        ...split,
+        // Engine members with no email never reach the split. Recorded, not dropped.
+        excluded: (audience.unresolvedIds || []).map((customerRef) => ({ customerRef, reason: "no_email" })),
+      });
       // Quotes the revision the reservation just returned. This route holds the
       // campaign, so it is not guessing — but it still names what it is writing
       // over, the same rule every other caller follows.
@@ -1402,11 +1406,17 @@ router.get("/results/:shopDomain", async (req, res) => {
       await measureCampaign(id).catch(() => {});
     }
     const campaigns = await listCampaigns(shopDomain);
-    const sent = campaigns.filter((c) => c.sentAt);
+    // Every campaign that has left BeaconAI — including ones the provider has
+    // not yet confirmed. Those are listed as awaiting confirmation rather than
+    // dropped: measurement runs from the confirmed send, and a campaign that
+    // silently vanished from Results would be worse than one that says why it
+    // has no numbers yet.
+    const sent = campaigns.filter((c) => c.sentAt || c.providerSentAt);
     const results = [];
     for (const campaign of sent) {
       const summary = await summarizeCampaign(campaign.id);
-      results.push({ ...summary, playId: campaign.playId, sentAt: campaign.sentAt,
+      results.push({ ...summary, campaignId: campaign.id, playId: campaign.playId,
+        sentAt: campaign.providerSentAt || null,
         audienceSize: campaign.audienceSize, holdoutSize: campaign.holdoutSize });
     }
     const program = await summarizeProgram(shopDomain);
