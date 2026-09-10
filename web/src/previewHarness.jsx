@@ -11,6 +11,8 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { CampaignReviewPane } from "./App";
+import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
+import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import "./styles.css";
 
 const BRAND_CONTEXT = {
@@ -96,8 +98,62 @@ function stubApi(scenario) {
   };
 }
 
+// The audience and final-review screens, seeded with the specification's
+// 1,200 / 900 / 100 / 200 example.
+const AUDIENCE_SCENARIOS = {
+  audience: { label: "Review audience", sender: null },
+  "audience-no-holdout": { label: "Review audience, no comparison group", noHoldout: true, sender: null },
+  "audience-unavailable": { label: "Audience unavailable", unavailable: true, sender: null },
+  review: { label: "Review & create draft", sender: null },
+  "review-verified-sender": { label: "Review with a verified sender", sender: { name: "Acme Skincare", email: "hello@acme.example" } },
+  "review-handed-off": { label: "Handed off — read-only snapshot", frozen: true, sender: null },
+};
+
+function AudienceHarness({ scenario }) {
+  const breakdown = scenario.unavailable ? null : {
+    ...SEED_AUDIENCE,
+    ...(scenario.noHoldout ? { comparisonGroup: 0, plannedEmailGroup: 1000 } : {}),
+  };
+  const summary = summarizeAudience({
+    audience: { materialized: !scenario.unavailable },
+    breakdown,
+  });
+  return <AudiencePanel summary={summary} />;
+}
+
+function ReviewHarness({ scenario }) {
+  const summary = summarizeAudience({ audience: { materialized: true }, breakdown: SEED_AUDIENCE });
+  return (
+    <FinalReviewPanel
+      campaign={{ subject: TEMPLATE.subject, previewText: TEMPLATE.previewText, cta: TEMPLATE.cta }}
+      summary={summary}
+      sender={summarizeSender(scenario.sender)}
+      design="Acme Skincare approved design, v2"
+      effectiveDestination="https://acme.example/collections/serums"
+      previewHtml={scenario.frozen ? null : SAMPLE_HTML}
+      frozenHtml={scenario.frozen ? SAMPLE_HTML : null}
+      frozenAt={scenario.frozen ? "Sep 9, 2026, 4:20 PM" : null}
+      onEditStep={() => {}}
+    />
+  );
+}
+
 function Harness() {
   const key = new URLSearchParams(window.location.search).get("state") || "ready";
+  const audienceScenario = AUDIENCE_SCENARIOS[key];
+  if (audienceScenario) {
+    return (
+      <div style={{ padding: 20, maxWidth: 900, margin: "0 auto", background: "#f7f5f0", minHeight: "100vh" }}>
+        <div className="sample-banner" role="note">
+          Sample campaign — no live recipients. State: {audienceScenario.label}
+        </div>
+        {key.startsWith("audience")
+          ? <AudienceHarness scenario={audienceScenario} />
+          : <ReviewHarness scenario={audienceScenario} />}
+      </div>
+    );
+  }
+
   const scenario = SCENARIOS[key] || SCENARIOS.ready;
   stubApi(scenario);
 

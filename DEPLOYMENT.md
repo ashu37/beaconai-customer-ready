@@ -204,6 +204,20 @@ In development (`NODE_ENV !== "production"`) any loopback origin is accepted,
 because the dev server's port moves and a hardcoded port list fails silently and
 looks like a broken app. That allowance does not apply in production.
 
+### Connecting Klaviyo needs the session on a top-level navigation
+
+Starting Klaviyo OAuth now requires an authenticated shop, because completing it
+writes credentials against whichever shop the OAuth state carries — accepting a
+shop name from the query let anyone overwrite another store's connection.
+
+The browser reaches that route by navigating, not by `fetch`, so the session
+cookie has to survive a top-level navigation to the API's origin. `SameSite=Lax`
+allows that **only when the API and the frontend are the same site**. A
+deployment that puts them on different registrable domains will see the Klaviyo
+connect flow answer 401 while everything else works. Serve them from one origin
+(or one site) — which is what the current Render setup does, with the API
+serving the built frontend.
+
 Verify a change here **in a browser**, not with curl: a credentialed fetch from
 the frontend origin must succeed, and the auth guard must answer 401 rather than
 the request failing at the CORS layer.

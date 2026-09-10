@@ -121,7 +121,46 @@ function authorizedForShop(req, shopDomain) {
   return Boolean(shopDomain) && req.auth.shopDomain === shopDomain;
 }
 
+/**
+ * The shop this request is entitled to act on, or null after answering.
+ *
+ * `requested` is whatever the caller named — a param, query or body field. It is
+ * a CLAIM, and this is where it gets checked against the session rather than
+ * trusted. A shop session may only ever act on its own shop; a founder
+ * credential may act on the shop it names.
+ *
+ * Routes must use the return value and never the raw request field, or the
+ * check becomes decorative.
+ */
+function authorizedShop(req, res, requested) {
+  if (!req.auth) {
+    res.status(401).json({ ok: false, error: "Sign in to this store before using this." });
+    return null;
+  }
+
+  if (req.auth.kind === "founder") {
+    const shop = requested || req.auth.shopDomain || null;
+    if (!shop) {
+      res.status(400).json({ ok: false, error: "shopDomain is required" });
+      return null;
+    }
+    return shop;
+  }
+
+  // No shop named: the session's own shop is the only one it could mean.
+  if (!requested) return req.auth.shopDomain;
+
+  if (requested !== req.auth.shopDomain) {
+    // 403, not 404: the caller IS authenticated, just not for this shop, and
+    // they already knew the shop name they sent.
+    res.status(403).json({ ok: false, error: "This store isn't the one you're signed in to." });
+    return null;
+  }
+  return requested;
+}
+
 module.exports = {
+  authorizedShop,
   DEFAULT_TTL_MS,
   SESSION_COOKIE,
   authorizedForShop,

@@ -226,8 +226,10 @@ Allocation and consent verification stay in D/F per the implementation plan. Thi
 All design screenshots use a conspicuous “Sample campaign — no live recipients” label and synthetic addresses under `example.com`. Sample mode cannot create a provider draft. For actual integration validation, use only the separately authorized test store/recipient workflow.
 
 Implementation screenshots live in `docs/screenshots/campaign-ui/`, produced from the seed harness
-at `web/preview.html?state=<name>` (states: `ready`, `empty-support`, `invalid-destination`,
-`no-destination`, `save-failed`, `save-conflict`, `design-changed`, `preview-failed`, `no-design`).
+at `web/preview.html?state=<name>` (editor/preview states: `ready`, `empty-support`, `invalid-destination`,
+`no-destination`, `save-failed`, `save-conflict`, `design-changed`, `preview-failed`, `no-design`;
+audience and review states: `audience`, `audience-no-holdout`, `audience-unavailable`, `review`,
+`review-verified-sender`, `review-handed-off`).
 The harness stubs the API, because a failed save, a changed design and an unreachable preview
 cannot be produced on demand from a healthy backend. It has no handoff action.
 
@@ -242,6 +244,6 @@ Acceptance checklist:
 - [ ] D: create → provider draft → reopen retains exact snapshot/reference. Double-click, refresh during creation, provider timeout, safe retry, and unknown-outcome reconciliation do not duplicate drafts.
 - [ ] D: only confirmed provider execution becomes Sent; unknown counts remain unknown; later Klaviyo edits do not rewrite the BeaconAI handoff snapshot.
 - [ ] Walk through keyboard operation and narrow-screen editing/recovery. Attach implementation screenshots for comparison with the wireframes.
-- [ ] Complete one authorized Klaviyo draft/preview or test-email walkthrough, checking sender, destination, footer, mobile view, recipients and holdout exclusions before live pilot handoff.
+- [ ] **Deferred until an authorized pilot account is connected.** Complete one authorized Klaviyo draft/preview or test-email walkthrough, checking sender, destination, footer, mobile view, recipients and holdout exclusions before live pilot handoff.
 
 Delivery: Ticket C-UI implements all screens in this specification, starting with editor/preview and integrating D’s handoff/reconciliation contract when ready. D backend work can proceed in parallel. Keep the Results UI checkpoint separate; this spec adds no Results screens.
