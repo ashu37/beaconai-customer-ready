@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
 import { STANDARD_SUPPRESSIONS_NOTE, buildCampaignFromSelection } from "./campaignDraft";
-import { PREVIEW_STATE, previewFreshness } from "./previewFreshness";
+import { PREVIEW_STATE } from "./previewFreshness";
+import { usePreview } from "./usePreview";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -647,90 +648,26 @@ function CampaignReviewPane({
   onChangeDestination,
   campaignSignature: currentCampaignSignature,
 }) {
-  const [previewHtml, setPreviewHtml] = useState("");
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   const [previewMode, setPreviewMode] = useState("inbox");
   const [steer, setSteer] = useState(null); // active rewrite-steer chip (adopt #4)
-  const debounceRef = useRef(null);
   const copyLoading = copyStatus === "loading";
   const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
-  // What the preview ON SCREEN was rendered from. Compared against the current
-  // draft to decide whether the merchant is looking at the email that would
-  // actually be sent.
-  const [renderedFrom, setRenderedFrom] = useState({ signature: null, templateVersion: null, fingerprint: null });
-  const [previewFailed, setPreviewFailed] = useState(false);
-  const [brandSetupRequired, setBrandSetupRequired] = useState(false);
-
-  const refreshPreview = React.useCallback(async (currentDraft) => {
-    if (!currentDraft) return;
-    setPreviewLoading(true);
-    const signature = draftSignature(currentDraft);
-    try {
-      const result = await api.previewCampaignHtml({ ...currentDraft, brandContext });
-      setPreviewHtml(result.html || "");
-      setRenderedFrom({
-        signature,
-        templateVersion: result.templateVersion ?? null,
-        fingerprint: result.renderFingerprint ?? null,
-      });
-      if (onPreviewRendered) {
-        onPreviewRendered({
-          templateVersion: result.templateVersion ?? null,
-          fingerprint: result.renderFingerprint ?? null,
-          signature,
-          campaignSignature: currentCampaignSignature,
-        });
-      }
-      setPreviewFailed(false);
-      setBrandSetupRequired(false);
-    } catch (err) {
-      // The last good preview stays on screen, but it is no longer presented as
-      // current — previewFreshness reports the failure and offers a retry.
-      // Rendering nothing would be worse; rendering it silently, worse still.
-      setPreviewFailed(true);
-      if (err.code === "brand_setup_required") {
-        setBrandSetupRequired(true);
-        setPreviewHtml("");
-      }
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [brandContext]);
-
-  const freshness = previewFreshness({
-    renderedSignature: renderedFrom.signature,
-    currentSignature: draft ? draftSignature(draft) : "",
-    renderedTemplateVersion: renderedFrom.templateVersion,
-    activeTemplateVersion: activeBrandTemplateVersion ?? null,
-    loading: previewLoading,
-    lastRefreshFailed: previewFailed,
-    setupRequired: brandSetupRequired,
+  // Preview + freshness live in usePreview so the binding between a request and
+  // what it approves is testable. See web/src/usePreview.js.
+  const { html: previewHtml, freshness, refresh: refreshPreview, flush: flushPreview } = usePreview({
+    draft,
+    campaignSignature: currentCampaignSignature,
+    campaignKey: `${play?.id || ""}:${selectedTemplate?.id || ""}`,
+    brandContext,
+    activeBrandTemplateVersion,
+    fetchPreview: (payload) => api.previewCampaignHtml(payload),
+    onPreviewRendered,
   });
 
-  // Immediate refresh when the play or selected template changes.
-  useEffect(() => {
-    if (draft) refreshPreview(draft);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [play?.id, selectedTemplate?.id]);
-
-  // Debounced refresh (600ms) while the merchant types.
-  useEffect(() => {
-    if (!draft) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => refreshPreview(draft), 600);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta]);
-
-  const handleBlur = () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    refreshPreview(draft);
-  };
+  const handleBlur = () => flushPreview();
 
   const [changeOpen, setChangeOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -2766,6 +2703,16 @@ function App() {
   // The campaign's own destination. Debounced like copy edits, and persisted:
   // an email whose button goes nowhere is not a campaign, and the value has to
   // survive a refresh like everything else the merchant sets.
+  // Retry has to resend EVERYTHING a save persists. Resending only the copy
+  // could report "Saved" while a failed destination stayed unpersisted — and the
+  // handoff would go on refusing, with the UI insisting the campaign was saved.
+  function retrySave(playId) {
+    return saveCampaignState(playId, {
+      draftEdits: draftEditsByPlay[playId] || {},
+      destinationUrl: destinationByPlay[playId] ?? null,
+    });
+  }
+
   function changeDestination(playId, value) {
     setDestinationByPlay((prev) => ({ ...prev, [playId]: value }));
     scheduleCampaignSave(playId, { destinationUrl: value });
@@ -3204,7 +3151,7 @@ function App() {
                                   edits: draftEditsByPlay[reviewPlay.id],
                                   destinationUrl: destinationByPlay[reviewPlay.id],
                                 })}
-                                onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
+                                onRetrySave={() => retrySave(reviewPlay.id)}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
                             ) : (
