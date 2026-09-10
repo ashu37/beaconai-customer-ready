@@ -7,6 +7,8 @@ import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
+import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
+import { signInState } from "./signInState";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -1579,7 +1581,7 @@ function useCountUp(target, duration = 500) {
   return value;
 }
 
-function App() {
+export function App() {
   const [activePage, setActivePage] = useState("briefing");
   const [loading, setLoading] = useState(false);
   // Distinct from generic `loading`: true ONLY while a briefing recompute is in
@@ -3706,4 +3708,9 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+// Mounts only when there is somewhere to mount. Importing this module used to
+// bootstrap the whole app as a side effect, which made it impossible to render
+// App in a test — and so nothing ever did, which is how two missing imports
+// reached a browser.
+const rootElement = typeof document !== "undefined" ? document.getElementById("root") : null;
+if (rootElement) createRoot(rootElement).render(<App />);

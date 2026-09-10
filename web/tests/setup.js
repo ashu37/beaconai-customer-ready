@@ -9,4 +9,9 @@ Object.defineProperty(globalThis, "navigator", { value: dom.window.navigator, co
 globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Node = dom.window.Node;
 globalThis.getComputedStyle = dom.window.getComputedStyle;
+globalThis.localStorage = dom.window.localStorage;
+globalThis.sessionStorage = dom.window.sessionStorage;
+globalThis.location = dom.window.location;
+globalThis.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
+globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;

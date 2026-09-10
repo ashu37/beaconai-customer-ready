@@ -1,9 +1,12 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || `${window.location.origin}/api`;
+// Optional chaining because `import.meta.env` exists only under Vite. Without
+// it this module cannot be imported by a test at all — which is why nothing
+// rendered the real app, and why two missing imports reached a browser.
+const API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || `${window.location.origin}/api`;
 const SHOP_DOMAIN_STORAGE_KEY = "beaconai:shop-domain";
 const initialShopDomain =
   new URLSearchParams(window.location.search).get("shop") ||
   localStorage.getItem(SHOP_DOMAIN_STORAGE_KEY) ||
-  import.meta.env.VITE_SHOP_DOMAIN ||
+  import.meta.env?.VITE_SHOP_DOMAIN ||
   "";
 
 let shopDomain = normalizeShopDomain(initialShopDomain);
