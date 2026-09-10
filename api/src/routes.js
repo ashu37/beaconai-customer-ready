@@ -995,10 +995,11 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
     // inputs — an intentionally emptied paragraph came back as filler.
     const finalized = finalizeCampaignForRender(draft, brandContext);
     const template = await requireActiveBrandTemplate(shopDomain);
-    const html = renderBrandEmail(template, slotValuesForCampaign(
+    const slots = slotValuesForCampaign(
       finalized,
       { ...(template.brand || {}), brandName: brandContext?.brandName }
-    ));
+    );
+    const html = renderBrandEmail(template, slots);
 
     res.json({
       ok: true,
@@ -1009,6 +1010,13 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
       templateVersion: template.version,
       renderFingerprint: renderFingerprint(html),
       renderedForRevision: req.body.expectedRevision ?? null,
+      // The link the button ACTUALLY carries, after the campaign's own
+      // destination and the shop default have been resolved. Without this the
+      // editor cannot tell an empty input that falls back to a working default
+      // from an empty input that means the email has no link at all — and it
+      // would show "add a destination" for an email that has one.
+      effectiveDestinationUrl: slots.cta_url || null,
+      brandDefaultDestinationUrl: template.brand?.ctaUrl || null,
     });
   } catch (error) {
     if (brandRenderErrorResponse(res, error)) return;

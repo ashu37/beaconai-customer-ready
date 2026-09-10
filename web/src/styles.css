@@ -642,3 +642,45 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
    a campaign, so this is editable rather than assumed. */
 .destination-field { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; font-size: 12px; color: var(--muted); }
 .destination-field input { font-size: 12px; padding: 4px 7px; border: 1px solid var(--rule); border-radius: 4px; min-width: 240px; }
+
+/* ---------------------------------------------------------------------------
+   Ticket C-UI — campaign workspace
+   --------------------------------------------------------------------------- */
+
+/* Two columns only while BOTH stay readable. Squeezing a phone frame into a
+   narrow column is worse than stacking: the merchant is checking whether they
+   recognise their own email. */
+@media (max-width: 1100px) {
+  .review-two-pane { grid-template-columns: 1fr; }
+  .review-preview-pane { position: static; }
+}
+
+/* Phone. Preview first — at this width a merchant is far more often checking
+   what the email looks like than typing into it. */
+@media (max-width: 720px) {
+  .review-two-pane { display: flex; flex-direction: column; gap: 16px; }
+  .review-preview-pane { order: -1; width: 100%; justify-items: stretch; }
+  .review-edit-pane { padding: 14px; }
+  /* 44px touch targets, and long URLs wrap rather than scrolling the page. */
+  .review-field input, .review-field textarea { min-height: 44px; font-size: 16px; }
+  .review-field-help code { word-break: break-all; }
+  .preview-toggle-btn, .preview-viewport-btn { min-height: 44px; }
+  .starting-copy-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+}
+
+.review-field-help { font-size: 12px; color: var(--muted); margin-top: 4px; display: block; }
+.review-field-help code { background: #f4f2ee; padding: 1px 5px; border-radius: 3px; font-size: 11.5px; }
+.review-field input[aria-invalid="true"] { border-color: #a4402c; }
+
+/* Preview state sits beside the preview it describes and never disappears on
+   its own. Words as well as colour: the icon is decorative, the text carries it. */
+.preview-status { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.preview-status-icon { font-size: 12px; }
+.preview-status.fresh { color: #2f7a4d; }
+.preview-status.stale, .preview-status.failed { color: #a4402c; font-weight: 600; }
+.preview-status.unavailable { color: #8a6a1f; font-weight: 600; }
+
+.preview-viewport { display: inline-flex; gap: 4px; }
+.preview-viewport-btn { font-size: 12px; padding: 4px 10px; border: 1px solid var(--rule); background: #fff; border-radius: 4px; cursor: pointer; }
+.preview-viewport-btn.active { background: var(--ink, #151515); color: #fff; border-color: var(--ink, #151515); }
+.preview-frame-mobile { max-width: 375px; margin: 0 auto; }

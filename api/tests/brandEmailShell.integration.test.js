@@ -634,3 +634,26 @@ suite("the destination a merchant types is the one in the email", async () => {
   ));
   assert.equal(handoffHtml, preview.body.html);
 });
+
+suite("the preview reports the link the button actually carries", async () => {
+  await db.resetDatabase();
+  await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/default" }, approvedBy: "founder",
+  });
+  const { ctaUrl, ...noCtaUrl } = draft;
+
+  // An empty destination input that falls back to a working shop default is not
+  // the same as an email with no link. The editor cannot tell them apart without
+  // being told which link was used.
+  const fallback = await api.post("/klaviyo/campaigns/preview-html", {
+    shopDomain: SHOP_A, campaign: noCtaUrl,
+  });
+  assert.equal(fallback.body.effectiveDestinationUrl, "https://shop-a.example/default");
+  assert.equal(fallback.body.brandDefaultDestinationUrl, "https://shop-a.example/default");
+
+  const own = await api.post("/klaviyo/campaigns/preview-html", {
+    shopDomain: SHOP_A, campaign: { ...noCtaUrl, destinationUrl: "https://shop-a.example/restock" },
+  });
+  assert.equal(own.body.effectiveDestinationUrl, "https://shop-a.example/restock");
+});

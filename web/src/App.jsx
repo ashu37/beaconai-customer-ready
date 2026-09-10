@@ -648,16 +648,19 @@ function CampaignReviewPane({
   onChangeDestination,
   campaignSignature: currentCampaignSignature,
 }) {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
-  const [previewMode, setPreviewMode] = useState("inbox");
+  // Default to the branded EMAIL. A merchant has to recognise the email they
+  // would send; the inbox row shows a subject line, which is not that.
+  const [previewMode, setPreviewMode] = useState("email");
+  // A viewport check, not a guarantee of identical rendering in every client.
+  const [previewViewport, setPreviewViewport] = useState("desktop");
   const [steer, setSteer] = useState(null); // active rewrite-steer chip (adopt #4)
   const copyLoading = copyStatus === "loading";
   const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
   // Preview + freshness live in usePreview so the binding between a request and
   // what it approves is testable. See web/src/usePreview.js.
-  const { html: previewHtml, freshness, refresh: refreshPreview, flush: flushPreview } = usePreview({
+  const { html: previewHtml, freshness, renderedFrom, problem: previewProblem, refresh: refreshPreview, flush: flushPreview } = usePreview({
     draft,
     campaignSignature: currentCampaignSignature,
     campaignKey: `${play?.id || ""}:${selectedTemplate?.id || ""}`,
@@ -671,13 +674,25 @@ function CampaignReviewPane({
 
   const [changeOpen, setChangeOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
+  const destinationFieldRef = useRef(null);
+  const focusDestination = () => {
+    const input = destinationFieldRef.current?.querySelector("input");
+    if (input) { input.focus(); input.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  };
+  const effectiveDestination = renderedFrom?.effectiveDestinationUrl || null;
+  // A typed value that is not a usable link. Empty is NOT invalid: the approved
+  // design may supply a default, and the effective link below says which.
+  const destinationInvalid = Boolean(
+    destinationUrl && !/^https?:\/\/[^\s]+$/i.test(String(destinationUrl).trim())
+  );
   const senderName = brandContext?.brandName || "Your store";
   const editFields = [
     { field: "subject", label: "Subject", type: "input" },
     { field: "previewText", label: "Preview text", type: "input" },
     { field: "bodyH2", label: "Headline", type: "input" },
     { field: "bodyP1", label: "Body", type: "textarea" },
-    { field: "bodyP2", label: "Support line (optional)", type: "textarea" },
+    { field: "bodyP2", label: "Support paragraph (optional)", type: "textarea" },
     { field: "cta", label: "Button label", type: "input" },
   ];
   const startingName = selectedTemplate?.name || "—";
@@ -692,11 +707,39 @@ function CampaignReviewPane({
 
   return (
     <div className="review-pane">
+      {/* The approved store design, named separately from the writing style.
+          Changing words and changing branding are different actions, and the
+          merchant has no controls over the second — it is stated, not offered. */}
+      <div className="voice-chip">
+        <button type="button" className="voice-chip-line" onClick={() => setDesignOpen((p) => !p)}>
+          Email design: {brandDesign?.configured
+            ? `${brandContext?.brandName || "Your store"} approved design`
+            : "not set up yet"}
+          <span className="voice-chip-toggle">{designOpen ? "Hide" : "Design details"}</span>
+        </button>
+        {designOpen ? (
+          <div className="voice-chip-body">
+            {brandDesign?.configured ? (
+              <p>
+                Configured for your store
+                {brandDesign.active?.version ? `, version ${brandDesign.active.version}` : ""}
+                {brandDesign.active?.approvedAt
+                  ? `, approved ${new Date(brandDesign.active.approvedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+                  : ""}.
+                {" "}Contact your pilot contact for design changes.
+              </p>
+            ) : (
+              <p>Your store's email design isn't set up yet. Your pilot contact needs to finish setup.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
+
       {/* C4d: brand voice collapsed to a single line, expandable inline. */}
       {brandContext ? (
         <div className="voice-chip">
           <button type="button" className="voice-chip-line" onClick={() => setVoiceOpen((p) => !p)}>
-            Voice: {brandContext.brandName} · {brandContext.category}
+            Writing style: {brandContext.brandName} · {brandContext.category}
             <span className="voice-chip-toggle">{voiceOpen ? "Hide" : "Details"}</span>
           </button>
           {voiceOpen ? (
@@ -716,28 +759,20 @@ function CampaignReviewPane({
         <div className="notice-line">Couldn't reach Klaviyo for your existing templates — using BeaconAI starting copy.</div>
       ) : null}
 
-      {/* C3: auto-selected starting copy, one line + inline change. */}
+      {/* Starting copy chooses WORDS. It is deliberately compact and secondary:
+          the pilot has one approved design per store, and this must not read as
+          a template picker. */}
       <div className="starting-copy">
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
-          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
-          {onChangeDestination ? (
-            <label className="destination-field">
-              Button links to
-              <input
-                type="url"
-                inputMode="url"
-                placeholder="https://yourstore.com/collections/..."
-                value={destinationUrl || ""}
-                onChange={(event) => onChangeDestination(event.target.value)}
-              />
-            </label>
-          ) : null}
+          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>
+            Change starting copy
+          </button>
           {saveLabel ? (
             <span className={`save-state ${saveState}`} role="status">
               {saveLabel}
               {saveState === "failed" && onRetrySave ? (
-                <button type="button" className="link-btn" onClick={onRetrySave}>Retry</button>
+                <button type="button" className="link-btn" onClick={onRetrySave}>Retry save</button>
               ) : null}
             </span>
           ) : null}
@@ -861,37 +896,58 @@ function CampaignReviewPane({
             );
             })}
 
-            {/* C3: Advanced Klaviyo pairing moves to the bottom of the Copy step. */}
-            <button
-              type="button"
-              className="advanced-toggle"
-              onClick={() => setAdvancedOpen((prev) => !prev)}
-            >
-              Advanced: pair with an existing Klaviyo template
-            </button>
-            {advancedOpen ? (
-              <div className="advanced-panel">
-                <p className="advanced-help">Pairing keeps your Klaviyo template's name on the campaign. The email content below is still what gets sent.</p>
-                <button type="button" className="btn small" onClick={onRefreshTemplates}>Refresh templates</button>
-                <div className="template-grid">
-                  {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
-                      onClick={() => onChooseTemplate(item.id)}
-                    >
-                      <span>Klaviyo</span>
-                      <strong>{item.name}</strong>
-                      <small>{item.previewText}</small>
-                    </button>
-                  )) : <div className="empty-panel">No existing Klaviyo templates. Connect Klaviyo and refresh to pair one.</div>}
-                </div>
-              </div>
+            {/* Directly below Button label: the button's text and where it goes
+                are one decision. An empty input is not the same as "no link" —
+                the design can supply a default, so the EFFECTIVE link is shown
+                rather than left for the merchant to infer from a blank box. */}
+            {onChangeDestination ? (
+              <label className="review-field" ref={destinationFieldRef}>
+                <span className="review-field-head">
+                  <span className="review-field-label">Button destination</span>
+                </span>
+                <input
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://yourstore.example/collections/..."
+                  value={destinationUrl || ""}
+                  aria-invalid={destinationInvalid ? "true" : undefined}
+                  aria-describedby="destination-help"
+                  onChange={(event) => onChangeDestination(event.target.value)}
+                  onBlur={handleBlur}
+                />
+                <span className="review-field-help" id="destination-help">
+                  {destinationInvalid
+                    ? "Enter a valid http:// or https:// link."
+                    : effectiveDestination
+                      ? <>Where the email button takes customers. Currently: <code>{effectiveDestination}</code></>
+                      : "Add a destination for this button."}
+                </span>
+              </label>
             ) : null}
+
+            {/* The Klaviyo template picker that used to live here is gone. The
+                pilot has ONE approved design per store, configured by the
+                founder; offering a visual-template choice alongside it implied
+                the merchant could change the email's design here, and that two
+                different things — words and branding — were the same control. */}
           </div>
 
           <div className="review-preview-pane">
+            {previewMode === "email" ? (
+              <div className="preview-viewport" role="group" aria-label="Preview width">
+                {["desktop", "mobile"].map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`preview-viewport-btn ${previewViewport === mode ? "active" : ""}`}
+                    aria-pressed={previewViewport === mode}
+                    onClick={() => setPreviewViewport(mode)}
+                  >
+                    {mode === "desktop" ? "Desktop" : "Mobile"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="preview-toggle" role="tablist" aria-label="Preview mode">
               <button
                 type="button"
@@ -913,7 +969,7 @@ function CampaignReviewPane({
               </button>
             </div>
 
-            <div className="phone-frame">
+            <div className={`phone-frame ${previewMode === "email" && previewViewport === "mobile" ? "preview-frame-mobile" : ""}`}>
               {previewMode === "inbox" ? (
                 <div className="phone-inbox">
                   {/* P-A4: this is the customer's mail app, not the brand — static label. */}
@@ -956,28 +1012,44 @@ function CampaignReviewPane({
                     <div className="phone-email-subject">{draft.subject || "(no subject)"}</div>
                   </div>
                   <iframe
-                    title="Email preview"
+                    title="Rendered email preview"
                     className="phone-frame-iframe"
                     srcDoc={previewHtml}
                   />
                 </div>
               )}
             </div>
-            {freshness.state === PREVIEW_STATE.loading ? (
-              <div className="preview-status">Updating preview…</div>
-            ) : freshness.message ? (
-              // Persistent, and it stays until the preview is actually current.
-              // The whole risk here is a merchant approving a picture of an
-              // email that is not the email their customers would receive.
-              <div className={`preview-status ${freshness.state}`} role="status">
-                {freshness.message}
-                {freshness.canRetry ? (
-                  <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
-                    Refresh preview
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
+            {/* Persistent, beside the work it affects, and it stays until the
+                preview is actually current. The whole risk here is a merchant
+                approving a picture of an email that is not the email their
+                customers would receive. */}
+            <div
+              className={`preview-status ${freshness.state}`}
+              role="status"
+              aria-live="polite"
+            >
+              <span className="preview-status-icon" aria-hidden="true">
+                {freshness.state === PREVIEW_STATE.fresh ? "✓" : freshness.blocksCreation ? "⚠" : ""}
+              </span>
+              {/* A field-specific refusal names the field. "We couldn't update
+                  the preview" would send the merchant looking for a network
+                  problem when the answer is a missing link. */}
+              {previewProblem
+                ? (previewProblem.code === "missing_destination"
+                    ? "Add a destination for this button."
+                    : previewProblem.message)
+                : freshness.message}
+              {!previewProblem && freshness.action ? (
+                <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
+                  {freshness.action}
+                </button>
+              ) : null}
+              {previewProblem?.slot === "cta_url" ? (
+                <button type="button" className="link-btn" onClick={focusDestination}>
+                  Edit destination
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
@@ -2518,6 +2590,8 @@ function App() {
     const currentSignature = campaignSignature({
       edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
     });
+    // Focus the field that is actually blocking, so a keyboard user is not left
+    // hunting for it after a refused action.
     const verdict = canHandoff({
       status: saveStatusRef.current[playId],
       currentSignature,
@@ -2726,8 +2800,11 @@ function App() {
     // confirmed first — but only when there is actually something to lose.
     const edits = draftEditsByPlay[playId] || {};
     const hasEdits = Object.values(edits).some((value) => value !== undefined && value !== "");
+    // The spec's wording, and it is only accurate because the implementation
+    // really does preserve both: chooseTemplate touches copy alone.
     if (hasEdits && !window.confirm(
-      "Switching starting copy will discard your edits to this email. Continue?"
+      "Replace your edited copy?\n\n" +
+      "Your copy edits will be replaced. Your email design and button destination will stay the same."
     )) return;
 
     setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: templateId }));
@@ -3088,9 +3165,9 @@ function App() {
                     const stepOrder = ["copy", "audience", "send"];
                     const currentIndex = stepOrder.indexOf(workspaceStep);
                     const steps = [
-                      { key: "copy", label: "Copy", enabled: true },
-                      { key: "audience", label: "Audience", enabled: hasTemplate },
-                      { key: "send", label: "Send", enabled: isApproved },
+                      { key: "copy", label: "Edit email", enabled: true },
+                      { key: "audience", label: "Review audience", enabled: hasTemplate },
+                      { key: "send", label: "Review & create draft", enabled: isApproved },
                     ];
                     const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
                     const publishing = selectedCampaign && publishingCampaignId === selectedCampaign.id;

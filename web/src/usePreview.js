@@ -27,8 +27,12 @@ export function usePreview({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
+  // A typed, field-specific refusal — a missing or unusable destination — so the
+  // UI can name the field and focus it rather than saying "preview failed".
+  const [problem, setProblem] = useState(null);
   const [renderedFrom, setRenderedFrom] = useState({
     signature: null, templateVersion: null, fingerprint: null, campaignKey: null,
+    effectiveDestinationUrl: null,
   });
 
   // Refreshed every render. `refresh` keeps a stable identity — the effects
@@ -63,11 +67,15 @@ export function usePreview({
         campaignKey: request.campaignKey,
         templateVersion: result.templateVersion ?? null,
         fingerprint: result.renderFingerprint ?? null,
+        // The link the rendered button actually carries, after the campaign's
+        // own destination and the design default are resolved.
+        effectiveDestinationUrl: result.effectiveDestinationUrl ?? null,
       };
       setHtml(result.html || "");
       setRenderedFrom(record);
       setFailed(false);
       setSetupRequired(false);
+      setProblem(null);
       if (bound.onPreviewRendered) bound.onPreviewRendered(record);
       return record;
     } catch (error) {
@@ -75,6 +83,11 @@ export function usePreview({
       // The last good render stays on screen but stops being presented as
       // current. Showing nothing would be worse; showing it silently, worse still.
       setFailed(true);
+      setProblem(
+        error?.code === "missing_destination" || error?.code === "slot_value_rejected"
+          ? { code: error.code, slot: error.slot || "cta_url", message: error.message }
+          : null
+      );
       if (error?.code === "brand_setup_required") {
         setSetupRequired(true);
         setHtml("");
@@ -116,5 +129,5 @@ export function usePreview({
     setupRequired,
   });
 
-  return { html, freshness, renderedFrom, refresh, flush, PREVIEW_STATE };
+  return { html, freshness, renderedFrom, problem, refresh, flush, PREVIEW_STATE };
 }
