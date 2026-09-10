@@ -276,11 +276,13 @@ suite("reconciliation is founder-only", async () => {
   const campaign = await seedCampaign();
   delete process.env.BEACONAI_ADMIN_TOKEN;
 
-  const closed = await api.post(`/campaigns/${campaign.id}/reconcile`, {});
-  assert.equal(closed.status, 503, "closed by default, like the shell endpoint");
+  // A shop session is not a founder credential: reconciliation is an operator
+  // action and a merchant may not trigger it.
+  const asMerchant = await api.post(`/campaigns/${campaign.id}/reconcile`, {}, { session: SHOP });
+  assert.equal(asMerchant.status, 503, "closed by default, like the shell endpoint");
 
   process.env.BEACONAI_ADMIN_TOKEN = "test-token";
-  const wrong = await api.post(`/campaigns/${campaign.id}/reconcile`, {});
+  const wrong = await api.post(`/campaigns/${campaign.id}/reconcile`, {}, { session: SHOP });
   assert.equal(wrong.status, 403);
   delete process.env.BEACONAI_ADMIN_TOKEN;
 });
@@ -409,7 +411,10 @@ suite("one shop cannot read another shop's delivery state", async () => {
 
   // Naming the shop is a claim, not a credential: an unauthenticated request is
   // refused whatever shop it names.
-  const anonymous = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  const anonymous = await api.get(
+    `/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`,
+    { session: null }
+  );
   assert.equal(anonymous.status, 401, "supplying the target shop's name is not authentication");
 
   // Same 404 as a missing campaign, so an id cannot be probed for existence

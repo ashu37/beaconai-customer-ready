@@ -3473,92 +3473,21 @@ function App() {
                             const frozenHtml = storedRow?.renderedHtml || null;
                             const previewHtmlForReview = reviewPreviewHtmlByPlay[reviewPlay.id] || null;
                             return (
-                              <div className="final-review">
-                                <div className="final-review-block">
-                                  <div className="final-review-head">
-                                    <span className="section-kicker">Email</span>
-                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("copy")}>Edit email</button>
-                                  </div>
-                                  <p><strong>{selectedCampaign.subject}</strong></p>
-                                  <p className="final-review-meta">{selectedCampaign.previewText}</p>
-                                  <p className="final-review-meta">
-                                    Design: {brandDesign?.configured
-                                      ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
-                                      : "not set up yet"}
-                                  </p>
-                                  <p className="final-review-meta">Button: {selectedCampaign.cta}</p>
-                                  {/* The link the rendered button actually carries, not the
-                                      input's contents — those differ when a design default
-                                      is in play. */}
-                                  <p className="final-review-meta">
-                                    Link: <code>{rendered?.effectiveDestinationUrl || destinationByPlay[reviewPlay.id] || "Not set"}</code>
-                                  </p>
-                                </div>
-
-                                <div className="final-review-block">
-                                  <div className="final-review-head">
-                                    <span className="section-kicker">Audience</span>
-                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("audience")}>Review audience</button>
-                                  </div>
-                                  {summary.available ? (
-                                    <>
-                                      {summary.rows.map((row) => (
-                                        <p key={row.key} className="final-review-meta">{row.label}: <strong>{row.value}</strong></p>
-                                      ))}
-                                      {summary.exclusions.map((e) => (
-                                        <p key={e.code} className="final-review-meta">{e.label}</p>
-                                      ))}
-                                    </>
-                                  ) : <p className="final-review-meta">{summary.message}</p>}
-                                </div>
-
-                                <div className="final-review-block final-review-preview">
-                                  <span className="section-kicker">
-                                    {storedRow?.frozen ? "Handoff email" : "Current email preview"}
-                                  </span>
-                                  {/* The approved spec requires the actual email
-                                      here, not only its subject line. A merchant
-                                      confirming a send from a summary is
-                                      confirming something they cannot see.
-                                      After handoff this becomes the FROZEN
-                                      snapshot — labelled "handoff email", never
-                                      "final sent email", because edits made in
-                                      Klaviyo afterwards are invisible to us. */}
-                                  {frozenHtml || previewHtmlForReview ? (
-                                    <>
-                                      <iframe
-                                        title={frozenHtml ? "Email handed to Klaviyo" : "Current email preview"}
-                                        className="final-review-frame"
-                                        srcDoc={frozenHtml || previewHtmlForReview}
-                                      />
-                                      {frozenHtml ? (
-                                        <p className="final-review-meta">
-                                          Email handed to Klaviyo{storedRow?.frozenAt
-                                            ? ` on ${new Date(storedRow.frozenAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}`
-                                            : ""}. Changes made later in Klaviyo aren't reflected here.
-                                        </p>
-                                      ) : null}
-                                    </>
-                                  ) : (
-                                    // A legacy record with no stored HTML. Never
-                                    // regenerated from today's design: that would
-                                    // show an email nobody ever sent.
-                                    <p className="final-review-meta">
-                                      {storedRow?.frozen
-                                        ? "The original email wasn't recorded."
-                                        : "Go back to Edit email to load the preview."}
-                                    </p>
-                                  )}
-                                </div>
-
-                                <div className="final-review-block">
-                                  <span className="section-kicker">Sender</span>
-                                  {/* Reported by the provider, or an honest absence. Never
-                                      assembled from the store domain. */}
-                                  <p className="final-review-meta">Sender: <strong>{sender.display}</strong></p>
-                                  <p className="final-review-meta">Reply-to: <strong>{sender.replyTo}</strong></p>
-                                </div>
-                              </div>
+                              <FinalReviewPanel
+                                campaign={selectedCampaign}
+                                summary={summary}
+                                sender={sender}
+                                design={brandDesign?.configured
+                                  ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
+                                  : "not set up yet"}
+                                effectiveDestination={rendered?.effectiveDestinationUrl || destinationByPlay[reviewPlay.id]}
+                                previewHtml={previewHtmlForReview}
+                                frozenHtml={frozenHtml}
+                                frozenAt={storedRow?.frozenAt
+                                  ? new Date(storedRow.frozenAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+                                  : null}
+                                onEditStep={setWorkspaceStep}
+                              />
                             );
                           })() : null}
                         </div>
