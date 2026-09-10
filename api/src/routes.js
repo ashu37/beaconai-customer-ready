@@ -34,6 +34,13 @@ const {
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
 const {
+  authorizedForShop,
+  issueSession,
+  requireShopSession,
+  sessionCookie,
+  sessionFromRequest,
+} = require("./services/sessionService");
+const {
   DeliveryTransitionRejected,
   getDelivery,
   transitionDelivery,
@@ -311,11 +318,28 @@ router.get("/oauth/:provider/callback", (req, res) => {
         res.status(404).json({ ok: false, error: `Unsupported OAuth provider: ${provider}` });
         return;
       }
+      // The ONE place a session is minted: a completed Shopify OAuth callback is
+      // the only point at which the shop has demonstrably authorised us.
+      if (provider === "shopify" && result.shopDomain) {
+        res.setHeader("Set-Cookie", sessionCookie(issueSession(result.shopDomain)));
+      }
       res.redirect(result.redirectTo);
     })
     .catch((error) => {
       res.status(500).json({ ok: false, error: error.message });
     });
+});
+
+// The shop this caller is authenticated as, if any. The client uses it to know
+// whether to show a sign-in prompt; it is not itself a credential.
+router.get("/session", (req, res) => {
+  const session = sessionFromRequest(req);
+  res.json({
+    ok: true,
+    authenticated: Boolean(session),
+    shopDomain: session?.shopDomain || null,
+    expiresAt: session?.expiresAt || null,
+  });
 });
 
 router.get("/connections/status", async (req, res) => {
@@ -1164,27 +1188,20 @@ router.patch("/campaigns/:id", async (req, res) => {
 
 // The durable provider state for one campaign. Safe to poll: reads only.
 //
-// SCOPED, not authenticated. The caller must name the shop and the campaign must
-// belong to it, which stops one store's campaign being read by id from another
-// store's session. It is NOT an access boundary: nothing here proves the caller
-// is that shop. Ticket D still owns real authentication, and this endpoint
-// inherits whatever it establishes.
-router.get("/campaigns/:id/delivery", async (req, res) => {
+// AUTHENTICATED. The shop comes from the signed session, never from the query —
+// comparing against a name the caller supplied is not a boundary, it is a
+// formality anyone can satisfy.
+router.get("/campaigns/:id/delivery", requireShopSession, async (req, res) => {
   try {
     const id = Number.parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) {
       res.status(400).json({ ok: false, error: "campaign id must be numeric" });
       return;
     }
-    const shopDomain = req.query.shopDomain || config.shopify.shopDomain;
-    if (!shopDomain) {
-      res.status(400).json({ ok: false, error: "shopDomain is required" });
-      return;
-    }
     const campaign = await getCampaign(id);
     // Same 404 for "does not exist" and "not yours", so an id cannot be probed
     // for existence from the wrong shop.
-    if (!campaign || campaign.shopDomain !== shopDomain) {
+    if (!campaign || !authorizedForShop(req, campaign.shopDomain)) {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;
     }

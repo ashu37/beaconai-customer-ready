@@ -205,3 +205,39 @@ test("the effective destination is reported so an empty input is not read as no 
   await tick();
   assert.equal(view.getByTestId("eff").textContent, "https://shop.example/default");
 });
+
+test("a preview response does not schedule another preview", async () => {
+  // The reported loop: each response updated parent state, which rebuilt the
+  // draft object, which the hook watched by identity — so the preview refreshed
+  // forever with nobody editing anything.
+  let calls = 0;
+  const fetchPreview = async () => {
+    calls += 1;
+    return { html: `<p>${calls}</p>`, templateVersion: 1, renderFingerprint: `fp-${calls}` };
+  };
+
+  // A parent that re-renders on every response, exactly as the real one does.
+  function LoopHarness() {
+    const [, setEcho] = React.useState("");
+    // Rebuilt every render, like buildCampaignFromSelection's output.
+    const draft = { subject: "S", destinationUrl: "https://a.test/" };
+    const { html } = usePreview({
+      draft,
+      campaignSignature: "stable-signature",
+      campaignKey: "k",
+      brandContext: {},
+      activeBrandTemplateVersion: 1,
+      fetchPreview,
+      onPreviewRendered: (info) => setEcho(info.fingerprint),
+      debounceMs: 0,
+    });
+    return React.createElement("span", { "data-testid": "html" }, html);
+  }
+
+  render(React.createElement(LoopHarness));
+  await tick();
+  await tick();
+  await tick();
+
+  assert.ok(calls <= 2, `expected the preview to settle, got ${calls} requests`);
+});

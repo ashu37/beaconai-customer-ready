@@ -116,7 +116,12 @@ export function usePreview({
     clearTimeout(debounce.current);
     debounce.current = setTimeout(() => refresh(), debounceMs);
     return () => clearTimeout(debounce.current);
-  }, [campaignSignature, draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta, debounceMs, refresh, draft]);
+    // `draft` itself is deliberately NOT a dependency. It is rebuilt on every
+    // parent render, so depending on its identity meant each response updated
+    // parent state, which rebuilt the draft, which scheduled another request —
+    // a preview that refreshed forever without anyone editing anything. The
+    // VALUES that change what gets rendered are listed instead.
+  }, [campaignSignature, draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta, debounceMs, refresh]);
 
   const flush = useCallback(() => {
     clearTimeout(debounce.current);

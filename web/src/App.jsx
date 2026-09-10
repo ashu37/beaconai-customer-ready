@@ -1720,7 +1720,14 @@ function App() {
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
-  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id]) : null;
+  // Memoized so the object identity only changes when its inputs do. Rebuilding
+  // it every render is what let a preview response trigger the next request.
+  const selectedDraft = useMemo(
+    () => (reviewPlay && selectedTemplate
+      ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id])
+      : null),
+    [reviewPlay, selectedTemplate, draftEditsByPlay, agentCopyByPlay, destinationByPlay]
+  );
   const finalCampaigns = approvedPlays
     .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id], destinationByPlay[play.id]))
     .map((item) => {
@@ -2246,9 +2253,13 @@ function App() {
   useEffect(() => {
     if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
     setWorkspaceStep(reviewPlayId && approvedForSend.includes(reviewPlayId) ? "send" : "copy");
+    // The campaign id often arrives AFTER the play is selected — the row is
+    // created by the first save. Watching only the play meant no delivery
+    // request ran, and the loading guard then blocked creation until the
+    // merchant switched campaigns and back.
     if (reviewPlayId && campaignIdByPlay[reviewPlayId]) loadDelivery(campaignIdByPlay[reviewPlayId]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewPlayId]);
+  }, [reviewPlayId, campaignIdByPlay[reviewPlayId]]);
 
   // Auto-load the recipient preview when the merchant lands on the Audience step,
   // so the list isn't blank until they hunt for a "Show emails" button.
@@ -3304,7 +3315,14 @@ function App() {
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
                                 onPreviewRendered={(info) => {
                                   approvedRender.current[reviewPlay.id] = info;
-                                  setReviewPreviewHtmlByPlay((prev) => ({ ...prev, [reviewPlay.id]: info.html || "" }));
+                                  // No-op when unchanged. A new object identity
+                                  // here is enough to re-render the parent and
+                                  // restart the cycle.
+                                  setReviewPreviewHtmlByPlay((prev) => (
+                                    prev[reviewPlay.id] === (info.html || "")
+                                      ? prev
+                                      : { ...prev, [reviewPlay.id]: info.html || "" }
+                                  ));
                                 }}
                                 campaignSignature={campaignSignature({
                                   edits: draftEditsByPlay[reviewPlay.id],

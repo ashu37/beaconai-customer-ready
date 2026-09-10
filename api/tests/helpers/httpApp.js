@@ -27,8 +27,12 @@ async function startApi() {
       });
       return { status: response.status, body: await response.json() };
     },
-    async get(path) {
-      const response = await fetch(`${base}${path}`);
+    // `session` issues a signed session for that shop, so tests exercise the
+    // real boundary rather than a bypass.
+    async get(path, { session } = {}) {
+      const { issueSession } = require("../../src/services/sessionService");
+      const headers = session ? { authorization: `Bearer ${issueSession(session)}` } : {};
+      const response = await fetch(`${base}${path}`, { headers });
       return { status: response.status, body: await response.json() };
     },
     async close() {

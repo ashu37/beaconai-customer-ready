@@ -6,6 +6,7 @@ const suite = db.available ? test : test.skip;
 
 const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
+const { issueSession } = require("../src/services/sessionService");
 const { upsertCampaign, getCampaign } = require("../src/services/campaignService");
 const {
   DELIVERY_STATES,
@@ -261,12 +262,12 @@ suite("an unrecognised provider status leaves the state alone", async () => {
 suite("the delivery endpoint reports the durable state", async () => {
   await db.resetDatabase();
   const campaign = await seedCampaign();
-  const response = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  const response = await api.get(`/campaigns/${campaign.id}/delivery`, { session: SHOP });
   assert.equal(response.status, 200);
   assert.equal(response.body.delivery.state, "not_started");
   assert.equal(response.body.delivery.lastCheckedAt, null);
 
-  const missing = await api.get(`/campaigns/999999/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  const missing = await api.get("/campaigns/999999/delivery", { session: SHOP });
   assert.equal(missing.status, 404);
 });
 
@@ -406,11 +407,100 @@ suite("one shop cannot read another shop's delivery state", async () => {
   await db.resetDatabase();
   const campaign = await seedCampaign();
 
+  // Naming the shop is a claim, not a credential: an unauthenticated request is
+  // refused whatever shop it names.
+  const anonymous = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  assert.equal(anonymous.status, 401, "supplying the target shop's name is not authentication");
+
   // Same 404 as a missing campaign, so an id cannot be probed for existence
-  // from the wrong shop.
-  const foreign = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=someone-else.myshopify.com`);
+  // from another shop's authenticated session.
+  const foreign = await api.get(`/campaigns/${campaign.id}/delivery`, { session: "someone-else.myshopify.com" });
   assert.equal(foreign.status, 404);
 
-  const own = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  const own = await api.get(`/campaigns/${campaign.id}/delivery`, { session: SHOP });
   assert.equal(own.status, 200);
+});
+
+suite("an attempt that may still be running is not concluded about", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  const { reserveCampaignForHandoff, getCampaign: get } = require("../src/services/campaignService");
+  await reserveCampaignForHandoff(campaign.id, campaign.revision);
+  await transitionDelivery(campaign.id, "creating");
+
+  // The provider request is still in flight. A lookup finding nothing proves
+  // nothing — the call can create its campaign a moment later.
+  const result = await reconcileCampaign(campaign.id, {
+    findByName: async () => ({ matches: [], complete: true }),
+  });
+  assert.equal(result.reason, "attempt_in_flight");
+  assert.equal(result.delivery.state, "creating", "unchanged");
+
+  // And critically: the reservation still holds, so a second attempt cannot
+  // start alongside the first.
+  const after = await get(campaign.id);
+  assert.ok(after.handoffReservedAt, "the reservation was not released");
+  await assert.rejects(
+    () => reserveCampaignForHandoff(campaign.id, after.revision),
+    (error) => { assert.equal(error.name, "CampaignHandoffInProgress"); return true; }
+  );
+});
+
+suite("a stale attempt becomes unknown, not failed", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  const { reserveCampaignForHandoff } = require("../src/services/campaignService");
+  await reserveCampaignForHandoff(campaign.id, campaign.revision);
+  await transitionDelivery(campaign.id, "creating");
+
+  // Twenty minutes later, with nothing found. "We stopped waiting" is not
+  // "nothing was created", so this is uncertain — which offers no retry.
+  const result = await reconcileCampaign(campaign.id, {
+    findByName: async () => ({ matches: [], complete: true }),
+    now: Date.now() + 20 * 60 * 1000,
+  });
+  assert.equal(result.reason, "attempt_abandoned");
+  assert.equal(result.delivery.state, "uncertain");
+  assert.notEqual(result.delivery.state, "failed");
+});
+
+suite("an incomplete search cannot adopt a match either", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  // One match on an early page says nothing about a second on a later one.
+  // Adopting it would attach the merchant's record to a campaign that may not
+  // be theirs.
+  const result = await reconcileCampaign(campaign.id, {
+    findByName: async () => ({ matches: [{ id: "kl-maybe", status: "draft" }], complete: false }),
+  });
+  assert.equal(result.reason, "inconclusive");
+  assert.equal(result.delivery.state, "uncertain");
+  assert.equal(result.delivery.providerCampaignId, null, "nothing was adopted");
+});
+
+suite("the name search is scoped to this attempt", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  const { reserveCampaignForHandoff } = require("../src/services/campaignService");
+  const reserved = await reserveCampaignForHandoff(campaign.id, campaign.revision);
+  await query(`UPDATE clean.campaigns SET provider_campaign_name = 'BeaconAI - Winback' WHERE id = $1`, [campaign.id]);
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  let scope = null;
+  await reconcileCampaign(campaign.id, {
+    findByName: async (name, options) => { scope = options; return { matches: [], complete: true }; },
+  });
+
+  // Two attempts on the same campaign share a name; only the creation window
+  // tells them apart.
+  assert.ok(scope, "the search was given a scope");
+  assert.equal(
+    new Date(scope.createdAtOrAfter).toISOString(),
+    new Date(reserved.handoffReservedAt).toISOString(),
+    "scoped to when this attempt began"
+  );
 });

@@ -370,8 +370,9 @@ async function getKlaviyoCampaign(privateKey, campaignId) {
  * caller treats absence as permission to retry — so stopping early could
  * authorise a duplicate send.
  */
-async function findKlaviyoCampaigns(privateKey, providerCampaignName, { maxPages = 50 } = {}) {
+async function findKlaviyoCampaigns(privateKey, providerCampaignName, { maxPages = 50, createdAtOrAfter = null } = {}) {
   if (!providerCampaignName) return { matches: [], complete: false, reason: "no_recorded_name" };
+  const notBefore = createdAtOrAfter ? new Date(createdAtOrAfter).getTime() : null;
 
   const client = createKlaviyoClient(privateKey);
   let path = `/campaigns?filter=${encodeURIComponent(`equals(messages.channel,'email')`)}`;
@@ -381,9 +382,15 @@ async function findKlaviyoCampaigns(privateKey, providerCampaignName, { maxPages
   while (path && pages < maxPages) {
     const response = await client.get(path);
     for (const item of response.data?.data || []) {
-      if ((item.attributes?.name || "") === providerCampaignName) {
-        matches.push(klaviyoCampaignToMatch(item));
+      if ((item.attributes?.name || "") !== providerCampaignName) continue;
+      // Attempt-scoped: a campaign created before this attempt started belongs
+      // to an earlier one, and adopting it would resolve this attempt with
+      // someone else's evidence.
+      if (notBefore !== null) {
+        const createdAt = Date.parse(item.attributes?.created_at || "");
+        if (Number.isFinite(createdAt) && createdAt < notBefore) continue;
       }
+      matches.push(klaviyoCampaignToMatch(item));
     }
     pages += 1;
     const next = response.data?.links?.next || null;
