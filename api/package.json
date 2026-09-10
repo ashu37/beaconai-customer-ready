@@ -5,7 +5,8 @@
     "db:init": "node src/scripts/initDb.js",
     "seed:results": "node src/scripts/seedResultsDemo.js",
     "test": "node --test \"tests/**/*.test.js\"",
-    "test:db": "node scripts/testWithDb.cjs"
+    "test:db": "node scripts/testWithDb.cjs",
+    "dev:stack": "node scripts/devStack.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

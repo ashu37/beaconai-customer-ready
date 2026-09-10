@@ -34,7 +34,7 @@ Also defer billing automation, automatic re-sends, subscription LTV/profit, addi
 
 1. **P0: reconcile current state and protect real data.** Diagnose the reported partial-sync incident; verify deployment access boundaries; add isolated fixtures.
    **Status: OPEN.** Ticket A did not diagnose the incident and does not claim to have prevented its recurrence. What it does is contain the fallout: a sync now publishes whole or not at all, and every run predating verified sync — including any the incident produced — is `legacy_unverified`, readable as history and refused at handoff until the store is re-synced and re-analysed. The cause remains unestablished, and establishing it from logs and data is still required before the pilot. Until then, no recommendation produced before Ticket A may be sent.
-2. **P1: make one campaign trustworthy and sendable.** Sync publication, durable campaign state, branded email, clear evidence, and Klaviyo handoff. Between C's backend foundation and D's UI implementation, complete the shared C/D UI checkpoint below. Implement its copy/preview changes in C and its handoff/status changes in D; do not close either ticket's UI work before the agreed screens are implemented. Fix essential layout along the way.
+2. **P1: make one campaign trustworthy and sendable.** Sync publication, durable campaign state, branded email, clear evidence, and Klaviyo handoff. The shared campaign UI specification is founder-approved. Implement it in Ticket C-UI below: start the editor/preview work on C's foundation, then integrate D's handoff/reconciliation backend. C-UI and D must both pass before live handoff. Fix essential layout along the way.
 3. **P2: make measurement valid from the first send.** Settle the program measurement protocol and record required assignments/timestamps. Correct existing Results semantics before exposure to merchants.
 4. **Launch the assisted pilot when the first-send gate passes.** P2 data collection must be ready; elaborate reporting need not be.
 5. **P3: finish the first review during the observation period.** Before Ticket G's UI implementation, complete the Results UI clarification checkpoint below: annotated wireframe, exact wording and state examples reviewed by the founder. Then implement minimal campaign Results and the validated program summary. Set an internal delivery date before the first promised merchant review.
@@ -92,33 +92,50 @@ Tickets below are implementation slices. Named new fields/endpoints are proposed
 
 **Tests:** two distinct shops, isolation of configuration, missing logo/template, unsafe slot text/URL, identical preview/handoff HTML revision, a preview marked stale once the campaign revision moves past it, historical HTML unchanged after a new brand version. Review representative desktop/mobile email rendering and one provider preview/test-email flow with an authorized test recipient.
 
-**Done:** merchant can send without rebuilding the email in Klaviyo. C's copy/preview UI must match the shared C/D specification below; backend completion alone does not close C.
+**Done:** the branded renderer and preview/handoff consistency checks pass. C's accepted implementation remains closed; the newly approved campaign UI is tracked separately in Ticket C-UI. Merchant readiness still requires C-UI, D and the provider rehearsal.
 
-## Between C and D — specify and implement the campaign UI
+## Ticket C-UI — implement the approved campaign workspace (P1, before live handoff)
 
-**Timing:** complete this checkpoint now, while C's backend fixes continue, and before D's UI implementation. Do not leave it until both tickets close: the copy editor, preview and provider handoff are one merchant journey. D's independent authentication and reconciliation work may proceed in parallel.
+**Status:** READY for editor/preview implementation. Founder approved [CAMPAIGN_UI_SPEC.md](CAMPAIGN_UI_SPEC.md) on September 9, 2026. This is a new implementation ticket; it does not reopen accepted C backend fixes or renumber D–H.
 
-**Deliverable:** a compact `CAMPAIGN_UI_SPEC.md` with an annotated desktop wireframe, a narrow-screen adaptation, exact labels and a button/state table. The founder reviews the proposed flow once before implementation. This is clarification of the existing pilot scope, not a template picker or email-builder project.
+**Problem/outcome:** the existing workspace mixes copy choices with email design and uses send-oriented actions without a complete durable provider-status flow. Implement **Edit email → Review audience → Review & create draft → Open in Klaviyo → Check status**, preserving the copy agent and existing safety boundaries.
 
-The specification must settle:
+**Files:** `web/src/App.jsx`, `web/src/styles.css`, `web/src/usePreview.js`, `web/src/campaignDraft.js`, `web/src/campaignSaveGate.js`, `web/src/api.js`, focused frontend tests. Small preview-response additions may be required in `api/src/routes.js`; D owns provider/authentication/reconciliation contracts.
 
-- **Copy and branding (C):** where the active merchant shell name/version appears; which controls edit copy versus visual branding; subject, preview text, headline, body, optional support text, button label and destination URL; saved/unsaved/conflicted states; and confirmation before replacing edited starting copy. Make clear that the pilot uses one founder-configured approved shell per store. Existing copy-starting options must not look like a Klaviyo visual-template picker.
-- **Branded preview (C):** position and size beside the editor on desktop and stacked on narrow screens; inbox/email views where retained; loading, missing brand setup, invalid/missing destination, refresh failure and stale-preview states. Define retry actions and how a changed draft or shell version invalidates review. A previous render may remain visible only when explicitly marked out of date.
-- **Review and handoff (D):** a concise summary of the saved email, destination, originating audience, planned treatment/holdout counts, and sender details where known. Label unknown values honestly and identify checks completed in Klaviyo. The primary path is **Create draft in Klaviyo → Open draft in Klaviyo**; BeaconAI has no direct-send action in the pilot.
-- **Execution states (D):** ready, creating, draft created, awaiting send, sent, known failure and uncertain provider outcome requiring reconciliation. For each, specify the exact message, primary/secondary actions and disabled controls. A creating/reserved state prevents duplicate handoff; an uncertain outcome must not offer a blind retry. Only confirmed provider execution becomes “Sent.”
-- **Continuity:** returning to a saved or handed-off campaign restores its actual state and reviewed content. Define read-only behavior after handoff and explain how edits subsequently made in Klaviyo relate to the stored handoff snapshot; do not label that snapshot as the final sent email unless verified. Failed saves or unresolved conflicts block handoff, and changing the reviewed email or shell requires renewed review.
+**Dependencies and order:**
 
-Map each component/state to its API fields and owner (C or D), including the campaign revision, preview content/template version, provider reference and freshness. Include focus/keyboard behavior and status cues that do not rely only on color. Use labeled seed examples rather than live recipients for design review.
+1. Start editor/preview work now on the merged B/C foundation. Use the approved spec's wireframes, exact labels and state table.
+2. Agree D's durable status/last-check/send-count/provider-link contract before integrating the review and status screens. D backend work may proceed in parallel; labeled fixtures may support UI development, but cannot count as working integration.
+3. Connect the full journey to D, then complete the combined browser/provider rehearsal before live handoff. C-UI owns all campaign screen changes; D owns first-send safety and provider behavior. Avoid duplicate UI implementation in D.
 
-**Implementation and exit criteria:** after the specification is agreed, implement C's editor/preview changes and D's review/handoff/status changes in their respective tickets. Attach desktop and narrow-screen screenshots and walk through: edit → save → current preview → create draft → open Klaviyo → reconcile status. Also verify failed save, changed shell, failed preview and uncertain handoff recovery. C closes when its agreed screens and renderer checks pass; D closes when its agreed screens and execution checks pass. The combined flow must pass before the first live handoff.
+**Implementation scope:**
+
+- Retain automatic copy-agent generation, existing rewrite controls, merchant-edit locks and cached copy. Clearly distinguish suggested words from the single approved branded design. A merchant reviews a prepared email; they are not expected to write it from scratch. Preserve static starting-copy fallback when generation is unavailable without claiming it is newly AI-generated.
+- Default to branded Email preview, retain Inbox as secondary, support desktop/mobile viewport checks and stacked narrow-screen layout. Place destination beside button label; show the effective rendered link.
+- Implement persistent saving, failed-save retry, conflict recovery, missing design, invalid link, stale/failed preview and changed-design states. Preserve optional empty text and bind approval to the current saved/rendered content. Keep starting-copy replacement confirmation.
+- Implement origin-pinned audience review and the final email/link/audience/sender summary. Distinguish planned groups, known exclusions and actual sends; unknown values remain explicit.
+- Replace package/direct-send actions with **Create draft in Klaviyo → Open draft in Klaviyo**. Implement creating, safe failure, uncertain outcome, draft created, awaiting confirmation and confirmed sent states using D's durable contract. Unknown creation outcomes must not offer blind retry.
+- Restore by campaign ID, preserve read-only handoff snapshots, label later Klaviyo edits accurately, and implement the spec's keyboard/focus behavior.
+
+**Out of scope:** template picker, email builder, new copy model/prompt project, brand scraping, campaign registry redesign, direct send, batch execution, automated status polling, Results UI or engine refinements.
+
+**Acceptance:**
+
+- Attach desktop and narrow-screen implementation screenshots matching the approved specification and labeled seed-state examples.
+- Demonstrate agent-generated copy entering the branded preview; merchant edits and intentionally blank support survive rewrite/save/reopen; generation failure retains usable starting copy.
+- Exercise edit → save → current preview → audience → final review → create draft → open Klaviyo → reconcile. No placeholder status integration qualifies as completion.
+- Add focused interaction tests for save/preview recovery, stale responses, review invalidation, duplicate creation and uncertain-outcome handling; reuse backend tests rather than duplicating them in UI helpers.
+- Verify keyboard operation, 390px phone layout and 1024/990px transitions. No live data or send actions in seed demonstrations.
+- Complete the authorized provider preview/test-email rehearsal described in the spec. C-UI is done when the full agreed screen journey works against D's backend; first-send release remains subject to the plan's other gates.
 
 ## Ticket D — first-send safety and honest execution (P1/P2, blocker)
 
-**UI dependency:** use the agreed `CAMPAIGN_UI_SPEC.md` from the checkpoint above. Implement its review summary, actions and execution states before closing D; backend safety work can begin before the wireframe is approved.
+**UI dependency:** Ticket C-UI owns implementation of the approved [CAMPAIGN_UI_SPEC.md](CAMPAIGN_UI_SPEC.md). D supplies the authenticated handoff and reconciliation contracts and verifies their integration with C-UI. Backend work can proceed now; live handoff requires both tickets to pass.
 
 **Files:** `routes.js`, `klaviyoClient.js`, `campaignService.js`, `holdoutService.js`, `schema.js`, `web/src/App.jsx`.
 
 - Verify existing gateway/session controls. Enforce authenticated shop ownership on campaign, input, sync and Results access, including lookup-by-ID. Do not trust a caller-provided shop string. Use existing authentication if present; if absent, add a minimal authenticated pilot access boundary before real data, not a cosmetic shop picker restriction.
+  **Status: partial.** A signed, expiring, HttpOnly session bound to the shop is now issued at the completed Shopify OAuth callback (`api/src/services/sessionService.js`), and `GET /campaigns/:id/delivery` enforces it — the shop comes from the session, never from the request. The remaining campaign, input, sync and Results routes still trust a caller-supplied shop string and must be moved onto the same guard before D closes.
 - Pilot UI ends at **Create draft in Klaviyo → Open draft in Klaviyo**. Hide direct-send action. Confirm actual send through provider reconciliation before measurement starts; expose a founder-triggered refresh initially rather than a scheduler.
 - Separate delivery state from draft approval and measurement. Store provider reference, reconciliation status, actual provider send timestamp and counts where supplied. Do not use local status-update time as send time.
 - Verify the real consent/suppression behavior with the selected provider path. Distinguish planned treatment, holdout, eligible estimate, actual sent, and unknown counts. Keep valid unranked engine audiences usable.

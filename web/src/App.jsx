@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
-import { STANDARD_SUPPRESSIONS_NOTE, buildCampaignFromSelection } from "./campaignDraft";
+import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
+import { presentDelivery } from "./deliveryPresentation";
+import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import "./styles.css";
 
@@ -496,7 +498,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               </div>
             ) : null}
             <div className="model-row">
-              <span>Suppression</span>
+              <span>At send</span>
               <strong>{STANDARD_SUPPRESSIONS_NOTE}</strong>
             </div>
             <div className="evidence-fineprint">{play.play_id || play.id}</div>
@@ -623,7 +625,7 @@ function suggestedValueForField(play, field, agentCopy = null) {
   }
 }
 
-function CampaignReviewPane({
+export function CampaignReviewPane({
   play,
   brandContext,
   beaconTemplates,
@@ -647,17 +649,21 @@ function CampaignReviewPane({
   destinationUrl,
   onChangeDestination,
   campaignSignature: currentCampaignSignature,
+  brandDesign,
 }) {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
-  const [previewMode, setPreviewMode] = useState("inbox");
+  // Default to the branded EMAIL. A merchant has to recognise the email they
+  // would send; the inbox row shows a subject line, which is not that.
+  const [previewMode, setPreviewMode] = useState("email");
+  // A viewport check, not a guarantee of identical rendering in every client.
+  const [previewViewport, setPreviewViewport] = useState("desktop");
   const [steer, setSteer] = useState(null); // active rewrite-steer chip (adopt #4)
   const copyLoading = copyStatus === "loading";
   const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
   // Preview + freshness live in usePreview so the binding between a request and
   // what it approves is testable. See web/src/usePreview.js.
-  const { html: previewHtml, freshness, refresh: refreshPreview, flush: flushPreview } = usePreview({
+  const { html: previewHtml, freshness, renderedFrom, problem: previewProblem, refresh: refreshPreview, flush: flushPreview } = usePreview({
     draft,
     campaignSignature: currentCampaignSignature,
     campaignKey: `${play?.id || ""}:${selectedTemplate?.id || ""}`,
@@ -671,13 +677,25 @@ function CampaignReviewPane({
 
   const [changeOpen, setChangeOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [designOpen, setDesignOpen] = useState(false);
+  const destinationFieldRef = useRef(null);
+  const focusDestination = () => {
+    const input = destinationFieldRef.current?.querySelector("input");
+    if (input) { input.focus(); input.scrollIntoView({ block: "center", behavior: "smooth" }); }
+  };
+  const effectiveDestination = renderedFrom?.effectiveDestinationUrl || null;
+  // A typed value that is not a usable link. Empty is NOT invalid: the approved
+  // design may supply a default, and the effective link below says which.
+  const destinationInvalid = Boolean(
+    destinationUrl && !/^https?:\/\/[^\s]+$/i.test(String(destinationUrl).trim())
+  );
   const senderName = brandContext?.brandName || "Your store";
   const editFields = [
     { field: "subject", label: "Subject", type: "input" },
     { field: "previewText", label: "Preview text", type: "input" },
     { field: "bodyH2", label: "Headline", type: "input" },
     { field: "bodyP1", label: "Body", type: "textarea" },
-    { field: "bodyP2", label: "Support line (optional)", type: "textarea" },
+    { field: "bodyP2", label: "Support paragraph (optional)", type: "textarea" },
     { field: "cta", label: "Button label", type: "input" },
   ];
   const startingName = selectedTemplate?.name || "—";
@@ -692,11 +710,39 @@ function CampaignReviewPane({
 
   return (
     <div className="review-pane">
+      {/* The approved store design, named separately from the writing style.
+          Changing words and changing branding are different actions, and the
+          merchant has no controls over the second — it is stated, not offered. */}
+      <div className="voice-chip">
+        <button type="button" className="voice-chip-line" onClick={() => setDesignOpen((p) => !p)}>
+          Email design: {brandDesign?.configured
+            ? `${brandContext?.brandName || "Your store"} approved design`
+            : "not set up yet"}
+          <span className="voice-chip-toggle">{designOpen ? "Hide" : "Design details"}</span>
+        </button>
+        {designOpen ? (
+          <div className="voice-chip-body">
+            {brandDesign?.configured ? (
+              <p>
+                Configured for your store
+                {brandDesign.active?.version ? `, version ${brandDesign.active.version}` : ""}
+                {brandDesign.active?.approvedAt
+                  ? `, approved ${new Date(brandDesign.active.approvedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+                  : ""}.
+                {" "}Contact your pilot contact for design changes.
+              </p>
+            ) : (
+              <p>Your store's email design isn't set up yet. Your pilot contact needs to finish setup.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
+
       {/* C4d: brand voice collapsed to a single line, expandable inline. */}
       {brandContext ? (
         <div className="voice-chip">
           <button type="button" className="voice-chip-line" onClick={() => setVoiceOpen((p) => !p)}>
-            Voice: {brandContext.brandName} · {brandContext.category}
+            Writing style: {brandContext.brandName} · {brandContext.category}
             <span className="voice-chip-toggle">{voiceOpen ? "Hide" : "Details"}</span>
           </button>
           {voiceOpen ? (
@@ -716,28 +762,20 @@ function CampaignReviewPane({
         <div className="notice-line">Couldn't reach Klaviyo for your existing templates — using BeaconAI starting copy.</div>
       ) : null}
 
-      {/* C3: auto-selected starting copy, one line + inline change. */}
+      {/* Starting copy chooses WORDS. It is deliberately compact and secondary:
+          the pilot has one approved design per store, and this must not read as
+          a template picker. */}
       <div className="starting-copy">
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
-          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
-          {onChangeDestination ? (
-            <label className="destination-field">
-              Button links to
-              <input
-                type="url"
-                inputMode="url"
-                placeholder="https://yourstore.com/collections/..."
-                value={destinationUrl || ""}
-                onChange={(event) => onChangeDestination(event.target.value)}
-              />
-            </label>
-          ) : null}
+          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>
+            Change starting copy
+          </button>
           {saveLabel ? (
             <span className={`save-state ${saveState}`} role="status">
               {saveLabel}
               {saveState === "failed" && onRetrySave ? (
-                <button type="button" className="link-btn" onClick={onRetrySave}>Retry</button>
+                <button type="button" className="link-btn" onClick={onRetrySave}>Retry save</button>
               ) : null}
             </span>
           ) : null}
@@ -762,6 +800,10 @@ function CampaignReviewPane({
       {draft ? (
         <div className="review-two-pane">
           <div className="review-edit-pane">
+            {/* Narrow screens only: the preview sits below the fields, so give
+                keyboard and touch users a way to it without scrolling past
+                every input. */}
+            <a className="preview-jump link-btn" href="#campaign-email-preview">View preview</a>
             {/* adopt #3: one merchant-facing "why" line above the fields. LLM-authored
                 + guarded server-side; shown only when present. */}
             {agentCopy?.rationale ? (
@@ -861,47 +903,47 @@ function CampaignReviewPane({
             );
             })}
 
-            {/* C3: Advanced Klaviyo pairing moves to the bottom of the Copy step. */}
-            <button
-              type="button"
-              className="advanced-toggle"
-              onClick={() => setAdvancedOpen((prev) => !prev)}
-            >
-              Advanced: pair with an existing Klaviyo template
-            </button>
-            {advancedOpen ? (
-              <div className="advanced-panel">
-                <p className="advanced-help">Pairing keeps your Klaviyo template's name on the campaign. The email content below is still what gets sent.</p>
-                <button type="button" className="btn small" onClick={onRefreshTemplates}>Refresh templates</button>
-                <div className="template-grid">
-                  {klaviyoTemplates.length ? klaviyoTemplates.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`template-option ${selectedTemplate?.id === item.id ? "selected" : ""}`}
-                      onClick={() => onChooseTemplate(item.id)}
-                    >
-                      <span>Klaviyo</span>
-                      <strong>{item.name}</strong>
-                      <small>{item.previewText}</small>
-                    </button>
-                  )) : <div className="empty-panel">No existing Klaviyo templates. Connect Klaviyo and refresh to pair one.</div>}
-                </div>
-              </div>
+            {/* Directly below Button label: the button's text and where it goes
+                are one decision. An empty input is not the same as "no link" —
+                the design can supply a default, so the EFFECTIVE link is shown
+                rather than left for the merchant to infer from a blank box. */}
+            {onChangeDestination ? (
+              <label className="review-field" ref={destinationFieldRef}>
+                <span className="review-field-head">
+                  <span className="review-field-label">Button destination</span>
+                </span>
+                <input
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://yourstore.example/collections/..."
+                  value={destinationUrl || ""}
+                  aria-invalid={destinationInvalid ? "true" : undefined}
+                  aria-describedby="destination-help"
+                  onChange={(event) => onChangeDestination(event.target.value)}
+                  onBlur={handleBlur}
+                />
+                <span className="review-field-help" id="destination-help">
+                  {destinationInvalid
+                    ? "Enter a valid http:// or https:// link."
+                    : effectiveDestination
+                      ? <>Where the email button takes customers. Currently: <code>{effectiveDestination}</code></>
+                      : "Add a destination for this button."}
+                </span>
+              </label>
             ) : null}
+
+            {/* The Klaviyo template picker that used to live here is gone. The
+                pilot has ONE approved design per store, configured by the
+                founder; offering a visual-template choice alongside it implied
+                the merchant could change the email's design here, and that two
+                different things — words and branding — were the same control. */}
           </div>
 
-          <div className="review-preview-pane">
+          <div className="review-preview-pane" id="campaign-email-preview">
+            {/* Wireframe order: [Email] [Inbox], then [Desktop] [Mobile]. Email
+                is first because it is the default and the thing the merchant has
+                to recognise; the inbox row is a subject line, not the email. */}
             <div className="preview-toggle" role="tablist" aria-label="Preview mode">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={previewMode === "inbox"}
-                className={`preview-toggle-btn ${previewMode === "inbox" ? "active" : ""}`}
-                onClick={() => setPreviewMode("inbox")}
-              >
-                Inbox
-              </button>
               <button
                 type="button"
                 role="tab"
@@ -911,9 +953,64 @@ function CampaignReviewPane({
               >
                 Email
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode === "inbox"}
+                className={`preview-toggle-btn ${previewMode === "inbox" ? "active" : ""}`}
+                onClick={() => setPreviewMode("inbox")}
+              >
+                Inbox
+              </button>
             </div>
+            {previewMode === "email" ? (
+              <div className="preview-viewport" role="group" aria-label="Preview width">
+                {["desktop", "mobile"].map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`preview-viewport-btn ${previewViewport === mode ? "active" : ""}`}
+                    aria-pressed={previewViewport === mode}
+                    onClick={() => setPreviewViewport(mode)}
+                  >
+                    {mode === "desktop" ? "Desktop" : "Mobile"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
-            <div className="phone-frame">
+            {/* Persistent, beside the work it affects, and it stays until the
+                preview is actually current. The whole risk here is a merchant
+                approving a picture of an email that is not the email their
+                customers would receive. */}
+            <div
+              className={`preview-status ${freshness.state}`}
+              role="status"
+              aria-live="polite"
+            >
+              <span className="preview-status-icon" aria-hidden="true">
+                {freshness.state === PREVIEW_STATE.fresh ? "✓" : freshness.blocksCreation ? "⚠" : ""}
+              </span>
+              {/* A field-specific refusal names the field. "We couldn't update
+                  the preview" would send the merchant looking for a network
+                  problem when the answer is a missing link. */}
+              {previewProblem
+                ? (previewProblem.code === "missing_destination"
+                    ? "Add a destination for this button."
+                    : previewProblem.message)
+                : freshness.message}
+              {!previewProblem && freshness.action ? (
+                <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
+                  {freshness.action}
+                </button>
+              ) : null}
+              {previewProblem?.slot === "cta_url" ? (
+                <button type="button" className="link-btn" onClick={focusDestination}>
+                  Edit destination
+                </button>
+              ) : null}
+            </div>
+            <div className={`phone-frame ${previewMode === "email" && previewViewport === "mobile" ? "preview-frame-mobile" : ""}`}>
               {previewMode === "inbox" ? (
                 <div className="phone-inbox">
                   {/* P-A4: this is the customer's mail app, not the brand — static label. */}
@@ -956,28 +1053,13 @@ function CampaignReviewPane({
                     <div className="phone-email-subject">{draft.subject || "(no subject)"}</div>
                   </div>
                   <iframe
-                    title="Email preview"
+                    title="Rendered email preview"
                     className="phone-frame-iframe"
                     srcDoc={previewHtml}
                   />
                 </div>
               )}
             </div>
-            {freshness.state === PREVIEW_STATE.loading ? (
-              <div className="preview-status">Updating preview…</div>
-            ) : freshness.message ? (
-              // Persistent, and it stays until the preview is actually current.
-              // The whole risk here is a merchant approving a picture of an
-              // email that is not the email their customers would receive.
-              <div className={`preview-status ${freshness.state}`} role="status">
-                {freshness.message}
-                {freshness.canRetry ? (
-                  <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
-                    Refresh preview
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -1557,6 +1639,32 @@ function App() {
   // Ticket C: the brand shell version this shop currently sends with. A new
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
+  const [brandDesign, setBrandDesign] = useState(null);
+  // Durable provider state per campaign, from the Ticket D contract. Never
+  // inferred from local status — that is the whole point of the contract.
+  const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
+  // Reported by the provider, or absent. Never derived from the store domain.
+  const [senderIdentity, setSenderIdentity] = useState(null);
+  const [campaignRowByPlay, setCampaignRowByPlay] = useState({});
+  // The html the preview last rendered, lifted so the final review can show the
+  // same email rather than a description of it.
+  const [reviewPreviewHtmlByPlay, setReviewPreviewHtmlByPlay] = useState({});
+
+  const loadDelivery = useCallback(async (campaignId) => {
+    if (!campaignId) return null;
+    try {
+      const result = await api.campaignDelivery(campaignId);
+      setDeliveryByCampaignId((prev) => ({ ...prev, [campaignId]: result.delivery }));
+      return result.delivery;
+    } catch (_) {
+      // null, not undefined: "we tried and could not" is a state the presenter
+      // renders as unavailable rather than as a fresh campaign.
+      setDeliveryByCampaignId((prev) => ({ ...prev, [campaignId]: null }));
+      // No durable state available is not the same as "nothing happened"; the
+      // UI keeps whatever it last knew rather than claiming a fresh start.
+      return null;
+    }
+  }, []);
   const [destinationByPlay, setDestinationByPlay] = useState({});
   // The rendering the merchant actually looked at, per play. Handoff sends this
   // back so approval binds to that email rather than to whatever renders later.
@@ -1612,7 +1720,14 @@ function App() {
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
-  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id]) : null;
+  // Memoized so the object identity only changes when its inputs do. Rebuilding
+  // it every render is what let a preview response trigger the next request.
+  const selectedDraft = useMemo(
+    () => (reviewPlay && selectedTemplate
+      ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id])
+      : null),
+    [reviewPlay, selectedTemplate, draftEditsByPlay, agentCopyByPlay, destinationByPlay]
+  );
   const finalCampaigns = approvedPlays
     .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id], destinationByPlay[play.id]))
     .map((item) => {
@@ -1760,6 +1875,7 @@ function App() {
     preloadStoreSnapshot();
     loadBrandContext();
     loadBrandEmailTemplate();
+    loadSenderIdentity();
     loadLatestRun();
   }, []);
 
@@ -1852,6 +1968,10 @@ function App() {
         setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
         setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
         setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
+        // The stored rows, which carry the frozen handoff snapshot. The
+        // workspace's own campaign objects are built from today's slate and
+        // have no record of what was actually sent.
+        setCampaignRowByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c])));
         setDestinationByPlay(Object.fromEntries(
           thisRun.filter((c) => c.destinationUrl).map((c) => [c.playId, c.destinationUrl])
         ));
@@ -2133,8 +2253,13 @@ function App() {
   useEffect(() => {
     if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
     setWorkspaceStep(reviewPlayId && approvedForSend.includes(reviewPlayId) ? "send" : "copy");
+    // The campaign id often arrives AFTER the play is selected — the row is
+    // created by the first save. Watching only the play meant no delivery
+    // request ran, and the loading guard then blocked creation until the
+    // merchant switched campaigns and back.
+    if (reviewPlayId && campaignIdByPlay[reviewPlayId]) loadDelivery(campaignIdByPlay[reviewPlayId]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewPlayId]);
+  }, [reviewPlayId, campaignIdByPlay[reviewPlayId]]);
 
   // Auto-load the recipient preview when the merchant lands on the Audience step,
   // so the list isn't blank until they hunt for a "Show emails" button.
@@ -2210,10 +2335,22 @@ function App() {
     }
   }
 
+  async function loadSenderIdentity() {
+    try {
+      const result = await api.klaviyoSender();
+      setSenderIdentity(result.sender || null);
+    } catch (_) {
+      // Unreachable is not the same as absent, but both render as
+      // "Check in Klaviyo" — the merchant's action is identical.
+      setSenderIdentity(null);
+    }
+  }
+
   async function loadBrandEmailTemplate() {
     try {
       const result = await api.brandEmailTemplate();
       setBrandTemplateVersion(result.active?.version ?? null);
+      setBrandDesign(result);
     } catch (_) {
       // Additive: the preview's own response still reports brand_setup_required.
     }
@@ -2518,6 +2655,8 @@ function App() {
     const currentSignature = campaignSignature({
       edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
     });
+    // Focus the field that is actually blocking, so a keyboard user is not left
+    // hunting for it after a refused action.
     const verdict = canHandoff({
       status: saveStatusRef.current[playId],
       currentSignature,
@@ -2571,14 +2710,23 @@ function App() {
       }));
       setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
       if (campaignId) saveCampaignState(campaignDraft.id, { klaviyoCampaignId: campaignId });
-      showToast({ message: "Created in Klaviyo" });
+      // Re-read the DURABLE state. Without this the screen kept showing "Create
+      // draft" after a successful creation, and the next click made a second one.
+      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      showToast({ message: "Draft created in Klaviyo" });
       return result;
     } catch (err) {
+      // The server has already recorded whether this failed safely or ended
+      // uncertain. Read that, and let the panel say what may be done next.
+      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      // NO blind retry. The old toast offered one unconditionally, including
+      // after an outcome we could not confirm — where a retry can create a
+      // second campaign that cannot be taken back.
       showToast({
-        message: "Couldn't create the Klaviyo package.",
+        message: err.reconciliationRequired
+          ? "We couldn't confirm whether Klaviyo created the draft. Check Klaviyo before trying again."
+          : "The draft wasn't created. Your saved email is unchanged.",
         error: true,
-        actionLabel: "Retry",
-        onAction: () => { setToast(null); createCampaignTemplateInKlaviyo(campaignDraft); },
       });
       return null;
     } finally {
@@ -2634,7 +2782,16 @@ function App() {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
-      setAudiencePreviewsByCampaign((prev) => ({ ...prev, [campaignDraft.id]: { ...result.audience, holdout: result.holdout || null } }));
+      setAudiencePreviewsByCampaign((prev) => ({
+        ...prev,
+        [campaignDraft.id]: {
+          ...result.audience,
+          holdout: result.holdout || null,
+          breakdown: result.breakdown || null,
+          originRunId: result.originRunId || null,
+          inputProvenance: result.inputProvenance || null,
+        },
+      }));
       return result;
     } finally {
       setPreviewingCampaignId("");
@@ -2726,8 +2883,11 @@ function App() {
     // confirmed first — but only when there is actually something to lose.
     const edits = draftEditsByPlay[playId] || {};
     const hasEdits = Object.values(edits).some((value) => value !== undefined && value !== "");
+    // The spec's wording, and it is only accurate because the implementation
+    // really does preserve both: chooseTemplate touches copy alone.
     if (hasEdits && !window.confirm(
-      "Switching starting copy will discard your edits to this email. Continue?"
+      "Replace your edited copy?\n\n" +
+      "Your copy edits will be replaced. Your email design and button destination will stay the same."
     )) return;
 
     setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: templateId }));
@@ -3088,11 +3248,17 @@ function App() {
                     const stepOrder = ["copy", "audience", "send"];
                     const currentIndex = stepOrder.indexOf(workspaceStep);
                     const steps = [
-                      { key: "copy", label: "Copy", enabled: true },
-                      { key: "audience", label: "Audience", enabled: hasTemplate },
-                      { key: "send", label: "Send", enabled: isApproved },
+                      { key: "copy", label: "Edit email", enabled: true },
+                      { key: "audience", label: "Review audience", enabled: hasTemplate },
+                      { key: "send", label: "Review & create draft", enabled: isApproved },
                     ];
                     const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
+                    // The name actually sent to the provider, for the
+                    // find-by-name fallback. Falls back to the display name only
+                    // when no handoff has happened.
+                    const storedName = campaignRowByPlay[reviewPlay.id]?.providerCampaignName
+                      || campaignRowByPlay[reviewPlay.id]?.displayName
+                      || selectedCampaign?.playTitle;
                     const publishing = selectedCampaign && publishingCampaignId === selectedCampaign.id;
                     const created = Boolean(selectedCampaign?.klaviyoTemplateId);
                     return (
@@ -3144,9 +3310,20 @@ function App() {
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
                                 saveState={saveStateByPlay[reviewPlay.id]}
                                 activeBrandTemplateVersion={brandTemplateVersion}
+                                brandDesign={brandDesign}
                                 destinationUrl={destinationByPlay[reviewPlay.id]}
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
-                                onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}
+                                onPreviewRendered={(info) => {
+                                  approvedRender.current[reviewPlay.id] = info;
+                                  // No-op when unchanged. A new object identity
+                                  // here is enough to re-render the parent and
+                                  // restart the cycle.
+                                  setReviewPreviewHtmlByPlay((prev) => (
+                                    prev[reviewPlay.id] === (info.html || "")
+                                      ? prev
+                                      : { ...prev, [reviewPlay.id]: info.html || "" }
+                                  ));
+                                }}
                                 campaignSignature={campaignSignature({
                                   edits: draftEditsByPlay[reviewPlay.id],
                                   destinationUrl: destinationByPlay[reviewPlay.id],
@@ -3210,6 +3387,48 @@ function App() {
                                   </div>
                                 </div>
                               ) : null}
+                              {(() => {
+                                const summary = summarizeAudience({
+                                  audience: preview,
+                                  breakdown: preview?.breakdown,
+                                  originRunId: preview?.originRunId,
+                                  inputProvenance: preview?.inputProvenance,
+                                });
+                                if (!summary.available) {
+                                  return <div className="notice-line">{summary.message}</div>;
+                                }
+                                return (
+                                  <div className="audience-breakdown">
+                                    <div className="audience-rows">
+                                      {summary.rows.map((row) => (
+                                        <div key={row.key} className="audience-row">
+                                          <span className="audience-row-label">{row.label}</span>
+                                          <strong className="audience-row-value">{row.value}</strong>
+                                          <span className="audience-row-help">{row.help}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    {/* Only exclusions the API can evidence, each with its
+                                        own reason. Silence where there is none. */}
+                                    {summary.exclusions.map((exclusion) => (
+                                      <p key={exclusion.code} className="audience-note">{exclusion.label}</p>
+                                    ))}
+                                    {summary.noComparisonWarning ? (
+                                      <p className="audience-note warn">{summary.noComparisonWarning}</p>
+                                    ) : null}
+                                    {summary.providerNote ? (
+                                      <p className="audience-note">{summary.providerNote}</p>
+                                    ) : null}
+                                    <p className="audience-note">
+                                      Actual sent: <strong>{summary.actualSentLabel}</strong>
+                                    </p>
+                                    {summary.stale ? (
+                                      <p className="audience-note">This campaign uses an earlier verified briefing.</p>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
+
                               <div className="recipient-preview">
                                 <div className="recipient-preview-head">
                                   <div>
@@ -3242,9 +3461,106 @@ function App() {
                             </div>
                           ) : null}
 
-                          {workspaceStep === "send" && selectedCampaign ? (
-                            <CampaignSendPanel campaign={selectedCampaign} onEditStep={setWorkspaceStep} />
-                          ) : null}
+                          {workspaceStep === "send" && selectedCampaign ? (() => {
+                            const preview = audiencePreviewsByCampaign[selectedCampaign.id] || null;
+                            const summary = summarizeAudience({
+                              audience: preview, breakdown: preview?.breakdown,
+                              originRunId: preview?.originRunId, inputProvenance: preview?.inputProvenance,
+                            });
+                            const sender = summarizeSender(senderIdentity);
+                            const rendered = approvedRender.current[reviewPlay.id] || null;
+                            const storedRow = campaignRowByPlay[reviewPlay.id] || null;
+                            const frozenHtml = storedRow?.renderedHtml || null;
+                            const previewHtmlForReview = reviewPreviewHtmlByPlay[reviewPlay.id] || null;
+                            return (
+                              <div className="final-review">
+                                <div className="final-review-block">
+                                  <div className="final-review-head">
+                                    <span className="section-kicker">Email</span>
+                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("copy")}>Edit email</button>
+                                  </div>
+                                  <p><strong>{selectedCampaign.subject}</strong></p>
+                                  <p className="final-review-meta">{selectedCampaign.previewText}</p>
+                                  <p className="final-review-meta">
+                                    Design: {brandDesign?.configured
+                                      ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
+                                      : "not set up yet"}
+                                  </p>
+                                  <p className="final-review-meta">Button: {selectedCampaign.cta}</p>
+                                  {/* The link the rendered button actually carries, not the
+                                      input's contents — those differ when a design default
+                                      is in play. */}
+                                  <p className="final-review-meta">
+                                    Link: <code>{rendered?.effectiveDestinationUrl || destinationByPlay[reviewPlay.id] || "Not set"}</code>
+                                  </p>
+                                </div>
+
+                                <div className="final-review-block">
+                                  <div className="final-review-head">
+                                    <span className="section-kicker">Audience</span>
+                                    <button type="button" className="link-btn" onClick={() => setWorkspaceStep("audience")}>Review audience</button>
+                                  </div>
+                                  {summary.available ? (
+                                    <>
+                                      {summary.rows.map((row) => (
+                                        <p key={row.key} className="final-review-meta">{row.label}: <strong>{row.value}</strong></p>
+                                      ))}
+                                      {summary.exclusions.map((e) => (
+                                        <p key={e.code} className="final-review-meta">{e.label}</p>
+                                      ))}
+                                    </>
+                                  ) : <p className="final-review-meta">{summary.message}</p>}
+                                </div>
+
+                                <div className="final-review-block final-review-preview">
+                                  <span className="section-kicker">
+                                    {storedRow?.frozen ? "Handoff email" : "Current email preview"}
+                                  </span>
+                                  {/* The approved spec requires the actual email
+                                      here, not only its subject line. A merchant
+                                      confirming a send from a summary is
+                                      confirming something they cannot see.
+                                      After handoff this becomes the FROZEN
+                                      snapshot — labelled "handoff email", never
+                                      "final sent email", because edits made in
+                                      Klaviyo afterwards are invisible to us. */}
+                                  {frozenHtml || previewHtmlForReview ? (
+                                    <>
+                                      <iframe
+                                        title={frozenHtml ? "Email handed to Klaviyo" : "Current email preview"}
+                                        className="final-review-frame"
+                                        srcDoc={frozenHtml || previewHtmlForReview}
+                                      />
+                                      {frozenHtml ? (
+                                        <p className="final-review-meta">
+                                          Email handed to Klaviyo{storedRow?.frozenAt
+                                            ? ` on ${new Date(storedRow.frozenAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}`
+                                            : ""}. Changes made later in Klaviyo aren't reflected here.
+                                        </p>
+                                      ) : null}
+                                    </>
+                                  ) : (
+                                    // A legacy record with no stored HTML. Never
+                                    // regenerated from today's design: that would
+                                    // show an email nobody ever sent.
+                                    <p className="final-review-meta">
+                                      {storedRow?.frozen
+                                        ? "The original email wasn't recorded."
+                                        : "Go back to Edit email to load the preview."}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="final-review-block">
+                                  <span className="section-kicker">Sender</span>
+                                  {/* Reported by the provider, or an honest absence. Never
+                                      assembled from the store domain. */}
+                                  <p className="final-review-meta">Sender: <strong>{sender.display}</strong></p>
+                                  <p className="final-review-meta">Reply-to: <strong>{sender.replyTo}</strong></p>
+                                </div>
+                              </div>
+                            );
+                          })() : null}
                         </div>
 
                         {/* P-A3: sticky action bar — current step's primary action, right-aligned */}
@@ -3267,28 +3583,80 @@ function App() {
                             )
                           ) : null}
 
-                          {workspaceStep === "send" ? (
-                            isSent ? (
-                              <span className="send-done"><Icon name="check" size={15} /> Sent</span>
-                            ) : !status.klaviyo ? (
-                              // P-D2: never a dead/erroring send button when Klaviyo is unconnected.
-                              <button className="btn primary" onClick={() => startOAuth("klaviyo")}>Connect Klaviyo to send</button>
-                            ) : selectedCampaign?.klaviyoCampaignId ? (
-                              <button className="btn danger" onClick={() => sendKlaviyoCampaign(selectedCampaign)} disabled={sendingCampaignId === selectedCampaign.id || Boolean(selectedCampaign.klaviyoSendJobId)}>
-                                {selectedCampaign.klaviyoSendJobId ? "Campaign sent" : sendingCampaignId === selectedCampaign.id ? "Sending…" : "Send campaign now"}
-                              </button>
-                            ) : (
-                              <button className="btn primary" onClick={() => createCampaignTemplateInKlaviyo(selectedCampaign)} disabled={publishing || created}>
-                                {created ? "Send package ready" : publishing ? "Creating…" : "Create Klaviyo send package"}
-                              </button>
-                            )
-                          ) : null}
+                          {workspaceStep === "send" ? (() => {
+                            // Everything below follows the Ticket D contract, via
+                            // one presenter. Local status is not consulted: it is
+                            // not evidence that anything happened at Klaviyo.
+                            const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                            // undefined = not loaded yet, null = load failed.
+                            // Neither is "nothing has happened yet"; treating
+                            // them as such showed "Create draft" for a campaign
+                            // already handed off.
+                            const delivery = campaignRowId
+                              ? deliveryByCampaignId[campaignRowId]
+                              : { state: "not_started" };
+                            const view = presentDelivery(
+                              delivery ? { ...delivery, campaignName: storedName } : delivery,
+                              { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                            );
+
+                            if (view.primary?.action === "connect") {
+                              return <button className="btn primary" onClick={() => startOAuth("klaviyo")}>{view.primary.label}</button>;
+                            }
+                            if (view.primary?.action === "create") {
+                              return (
+                                <button
+                                  className="btn primary"
+                                  onClick={() => createCampaignTemplateInKlaviyo(selectedCampaign)}
+                                  disabled={publishing}
+                                >
+                                  {publishing ? "Creating…" : view.primary.label}
+                                </button>
+                              );
+                            }
+                            if (view.primary?.action === "open" && delivery?.providerCampaignUrl) {
+                              return (
+                                <a
+                                  className="btn primary"
+                                  href={delivery.providerCampaignUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {view.primary.label} (opens in a new tab)
+                                </a>
+                              );
+                            }
+                            // No verified link, or an outcome we cannot act on.
+                            // Deliberately renders no button at all rather than
+                            // a dead one.
+                            return <span className="send-state-label">{view.label}</span>;
+                          })() : null}
                         </div>
 
-                        {/* P-B4: truthful what-happens-next (verified: create = draft only, no send) */}
-                        {workspaceStep === "send" && !isSent && status.klaviyo && !selectedCampaign?.klaviyoCampaignId ? (
-                          <p className="whats-next">This creates the template and campaign in your Klaviyo account — nothing sends until you approve it there.</p>
-                        ) : null}
+                        {workspaceStep === "send" ? (() => {
+                          const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                          const delivery = campaignRowId
+                            ? deliveryByCampaignId[campaignRowId]
+                            : { state: "not_started" };
+                          const view = presentDelivery(
+                            delivery ? { ...delivery, campaignName: storedName } : delivery,
+                            { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                          );
+                          return (
+                            <div className={`delivery-panel ${view.state}`} role="status" aria-live="polite">
+                              {view.message ? <strong>{view.message}</strong> : null}
+                              {view.sentSummary ? <strong>{view.sentSummary}</strong> : null}
+                              {view.detail ? <p>{view.detail}</p> : null}
+                              {view.findHint ? <p>{view.findHint}</p> : null}
+                              {view.caption ? <p className="delivery-caption">{view.caption}</p> : null}
+                              {view.lastChecked ? <p className="delivery-checked">{view.lastChecked}</p> : null}
+                              {view.lastCheckError ? (
+                                <p className="delivery-checked">Couldn't check Klaviyo: {view.lastCheckError}. Showing the last confirmed status.</p>
+                              ) : null}
+                              {view.merchantNote ? <p className="delivery-checked">{view.merchantNote}</p> : null}
+                            </div>
+                          );
+                        })() : null}
                       </div>
                     );
                   })() : (

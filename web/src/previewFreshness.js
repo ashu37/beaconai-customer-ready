@@ -17,10 +17,24 @@ export const PREVIEW_STATE = {
   unavailable: "unavailable",
 };
 
+// Wording is the approved specification's, verbatim. These are the sentences a
+// merchant reads before deciding an email is ready to send, so they are part of
+// the contract rather than incidental copy.
 export const PREVIEW_MESSAGE = {
-  stale: "This preview is out of date — refresh to see what would actually be sent.",
-  failed: "The preview couldn't be refreshed. What you see may not match what would be sent.",
-  unavailable: "No approved email shell is configured for this store yet.",
+  stale: "This preview is out of date.",
+  designChanged: "Your email design changed. Refresh the preview and review it again.",
+  failed: "We couldn't update the preview. The email below is an earlier version.",
+  failedNoPrior: "We couldn't update the preview.",
+  unavailable: "Your store's email design isn't set up yet. Your pilot contact needs to finish setup.",
+  current: "Preview up to date",
+  loading: "Updating preview…",
+};
+
+export const PREVIEW_ACTION = {
+  stale: "Refresh preview",
+  designChanged: "Refresh preview",
+  failed: "Retry preview",
+  unavailable: "Check setup again",
 };
 
 /**
@@ -43,19 +57,35 @@ export function previewFreshness({
   setupRequired = false,
 }) {
   if (setupRequired) {
-    return { state: PREVIEW_STATE.unavailable, message: PREVIEW_MESSAGE.unavailable, canRetry: false };
+    return {
+      state: PREVIEW_STATE.unavailable,
+      message: PREVIEW_MESSAGE.unavailable,
+      action: PREVIEW_ACTION.unavailable,
+      canRetry: true,
+      blocksCreation: true,
+    };
   }
-  if (loading) return { state: PREVIEW_STATE.loading, message: null, canRetry: false };
+  if (loading) {
+    return { state: PREVIEW_STATE.loading, message: PREVIEW_MESSAGE.loading, action: null, canRetry: false, blocksCreation: true };
+  }
 
   // A failed refresh leaves the PREVIOUS render on screen. Saying nothing would
   // present stale markup as current, so the failure is surfaced and retryable.
   if (lastRefreshFailed) {
-    return { state: PREVIEW_STATE.failed, message: PREVIEW_MESSAGE.failed, canRetry: true };
+    // With no prior render there is no "earlier version" to point at, and
+    // claiming one would be a lie about what is on screen.
+    return {
+      state: PREVIEW_STATE.failed,
+      message: renderedSignature === null ? PREVIEW_MESSAGE.failedNoPrior : PREVIEW_MESSAGE.failed,
+      action: PREVIEW_ACTION.failed,
+      canRetry: true,
+      blocksCreation: true,
+    };
   }
 
   // Nothing rendered yet is not the same as stale.
   if (renderedSignature === null) {
-    return { state: PREVIEW_STATE.loading, message: null, canRetry: true };
+    return { state: PREVIEW_STATE.loading, message: PREVIEW_MESSAGE.loading, action: null, canRetry: true, blocksCreation: true };
   }
 
   const contentMoved = renderedSignature !== currentSignature;
@@ -66,9 +96,25 @@ export function previewFreshness({
     activeTemplateVersion !== null &&
     renderedTemplateVersion !== activeTemplateVersion;
 
-  if (contentMoved || shellMoved) {
-    return { state: PREVIEW_STATE.stale, message: PREVIEW_MESSAGE.stale, canRetry: true };
+  // A changed DESIGN gets its own sentence. "Out of date" would leave the
+  // merchant looking for an edit they did not make.
+  if (shellMoved) {
+    return {
+      state: PREVIEW_STATE.stale, designChanged: true,
+      message: PREVIEW_MESSAGE.designChanged, action: PREVIEW_ACTION.designChanged,
+      canRetry: true, blocksCreation: true,
+    };
+  }
+  if (contentMoved) {
+    return {
+      state: PREVIEW_STATE.stale, designChanged: false,
+      message: PREVIEW_MESSAGE.stale, action: PREVIEW_ACTION.stale,
+      canRetry: true, blocksCreation: true,
+    };
   }
 
-  return { state: PREVIEW_STATE.fresh, message: null, canRetry: true };
+  return {
+    state: PREVIEW_STATE.fresh, message: PREVIEW_MESSAGE.current,
+    action: null, canRetry: true, blocksCreation: false,
+  };
 }

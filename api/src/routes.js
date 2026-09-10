@@ -1,5 +1,6 @@
 const express = require("express");
 const { config } = require("./config");
+const { query } = require("./db");
 const { fetchShopifyData } = require("./services/shopifyClient");
 const {
   saveRawShopifyData,
@@ -17,7 +18,14 @@ const {
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,
+  campaignNameForProvider,
+  getKlaviyoSender,
 } = require("./services/klaviyoClient");
+// Referenced through the module object rather than destructured, so the provider
+// lookups the reconcile route performs can be intercepted. The bug this guards
+// against was a lambda quietly dropping an argument on its way to the client —
+// invisible at every level except the wiring itself.
+const klaviyoClient = require("./services/klaviyoClient");
 const {
   buildShopifyStartUrl,
   handleShopifyCallback,
@@ -28,6 +36,19 @@ const {
   resolveStoredKlaviyoToken,
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
+const {
+  authorizedForShop,
+  issueSession,
+  requireShopSession,
+  sessionCookie,
+  sessionFromRequest,
+} = require("./services/sessionService");
+const {
+  DeliveryTransitionRejected,
+  getDelivery,
+  transitionDelivery,
+} = require("./services/deliveryStateService");
+const { reconcileCampaign } = require("./services/reconciliationService");
 const {
   assertReadyForAnalysis,
   getActiveInputSnapshot,
@@ -300,11 +321,28 @@ router.get("/oauth/:provider/callback", (req, res) => {
         res.status(404).json({ ok: false, error: `Unsupported OAuth provider: ${provider}` });
         return;
       }
+      // The ONE place a session is minted: a completed Shopify OAuth callback is
+      // the only point at which the shop has demonstrably authorised us.
+      if (provider === "shopify" && result.shopDomain) {
+        res.setHeader("Set-Cookie", sessionCookie(issueSession(result.shopDomain)));
+      }
       res.redirect(result.redirectTo);
     })
     .catch((error) => {
       res.status(500).json({ ok: false, error: error.message });
     });
+});
+
+// The shop this caller is authenticated as, if any. The client uses it to know
+// whether to show a sign-in prompt; it is not itself a credential.
+router.get("/session", (req, res) => {
+  const session = sessionFromRequest(req);
+  res.json({
+    ok: true,
+    authenticated: Boolean(session),
+    shopDomain: session?.shopDomain || null,
+    expiresAt: session?.expiresAt || null,
+  });
 });
 
 router.get("/connections/status", async (req, res) => {
@@ -476,6 +514,23 @@ router.post("/copy/generate", async (req, res) => {
   } catch (error) {
     // Fail soft: the Copy step must never show an error. available:false => static.
     res.json({ ok: true, available: false, reason: error.message });
+  }
+});
+
+// The verified sender identity, or an explicit absence.
+//
+// There is no sender-management feature here and none is needed: the merchant
+// finishes in Klaviyo, where the sender is set. This exists so the review screen
+// can show a REAL from-address when the provider gives us one and say "Check in
+// Klaviyo" when it does not — never a guess assembled from the store domain.
+router.get("/klaviyo/sender", async (req, res) => {
+  try {
+    const sender = await getKlaviyoSender(await resolveKlaviyoKey(req.query));
+    res.json({ ok: true, sender });
+  } catch (error) {
+    // An unreachable provider is not evidence of a missing sender. Both render
+    // the same way to the merchant, but the reason is recorded.
+    res.json({ ok: true, sender: null, reason: error.response?.data || error.message });
   }
 });
 
@@ -791,6 +846,9 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // revision the merchant reviewed, so a campaign edited since approval
       // cannot be handed off as if it had been signed off.
       campaignRow = await reserveCampaignForHandoff(campaignRow.id, req.body.expectedRevision);
+      // Durable from the moment we claim it, so a crash here is visible as
+      // `creating` rather than as a campaign that was never touched.
+      await transitionDelivery(campaignRow.id, "creating").catch(() => {});
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
@@ -819,6 +877,17 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // Rendered HERE, once, by the same function the preview used — then handed
     // to the provider as bytes. Letting the provider client render again would
     // reintroduce exactly the divergence this ticket exists to remove.
+    // Recorded BEFORE the provider is called. If the call ends uncertain, this
+    // is the only identity reconciliation has to find the campaign by — and
+    // re-deriving it later from the stored row produced a different string.
+    const providerCampaignName = campaignNameForProvider(campaign);
+    if (campaignRow) {
+      await query(
+        `UPDATE clean.campaigns SET provider_campaign_name = $2, updated_at = NOW() WHERE id = $1`,
+        [campaignRow.id, providerCampaignName]
+      ).catch(() => {});
+    }
+
     let renderedHtml;
     try {
       const brandTemplate = await requireActiveBrandTemplate(shopDomain);
@@ -885,8 +954,13 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // ever set — so every failure released, including ones that may have
       // created a draft.
       if (campaignRow && providerError.provenNothingCreated === true) {
+        // Proven pre-creation: nothing exists there, so retry is safe.
+        await transitionDelivery(campaignRow.id, "failed").catch(() => {});
         await releaseHandoffReservation(campaignRow.id).catch(() => {});
       } else if (campaignRow) {
+        // Anything else may have created a campaign. `uncertain` has no retry
+        // edge; only reconciliation can resolve it.
+        await transitionDelivery(campaignRow.id, "uncertain").catch(() => {});
         providerError.reconciliationRequired = true;
         providerError.campaignId = campaignRow.id;
       }
@@ -916,6 +990,22 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       });
       if (klaviyoCampaignId) {
         campaignRow = await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+        // CONFIRMED: the provider returned a campaign id. A template or list id
+        // would not qualify and is never stored here.
+        await transitionDelivery(campaignRow.id, "created", {
+          provider: "klaviyo",
+          providerCampaignId: klaviyoCampaignId,
+          // Only from a provider response. We do not build a link out of an id
+          // and a guessed account path.
+          // Deliberately null. links.self is an API resource URL, not a page a
+          // merchant can open; storing it would put a dead "Open draft in
+          // Klaviyo" button in front of them.
+          providerCampaignUrl: null,
+        }, { fromProvider: true }).catch(() => {});
+      } else {
+        // The package call returned without a campaign id. That is not a
+        // created campaign, whatever else succeeded.
+        await transitionDelivery(campaignRow.id, "uncertain").catch(() => {});
       }
     }
 
@@ -995,10 +1085,11 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
     // inputs — an intentionally emptied paragraph came back as filler.
     const finalized = finalizeCampaignForRender(draft, brandContext);
     const template = await requireActiveBrandTemplate(shopDomain);
-    const html = renderBrandEmail(template, slotValuesForCampaign(
+    const slots = slotValuesForCampaign(
       finalized,
       { ...(template.brand || {}), brandName: brandContext?.brandName }
-    ));
+    );
+    const html = renderBrandEmail(template, slots);
 
     res.json({
       ok: true,
@@ -1009,6 +1100,13 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
       templateVersion: template.version,
       renderFingerprint: renderFingerprint(html),
       renderedForRevision: req.body.expectedRevision ?? null,
+      // The link the button ACTUALLY carries, after the campaign's own
+      // destination and the shop default have been resolved. Without this the
+      // editor cannot tell an empty input that falls back to a working default
+      // from an empty input that means the email has no link at all — and it
+      // would show "add a destination" for an email that has one.
+      effectiveDestinationUrl: slots.cta_url || null,
+      brandDefaultDestinationUrl: template.brand?.ctaUrl || null,
     });
   } catch (error) {
     if (brandRenderErrorResponse(res, error)) return;
@@ -1091,6 +1189,67 @@ router.patch("/campaigns/:id", async (req, res) => {
   }
 });
 
+// The durable provider state for one campaign. Safe to poll: reads only.
+//
+// AUTHENTICATED. The shop comes from the signed session, never from the query —
+// comparing against a name the caller supplied is not a boundary, it is a
+// formality anyone can satisfy.
+router.get("/campaigns/:id/delivery", requireShopSession, async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const campaign = await getCampaign(id);
+    // Same 404 for "does not exist" and "not yours", so an id cannot be probed
+    // for existence from the wrong shop.
+    if (!campaign || !authorizedForShop(req, campaign.shopDomain)) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+    const delivery = await getDelivery(id);
+    res.json({ ok: true, delivery });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Founder-triggered. Reads the provider and updates state; never creates.
+router.post("/campaigns/:id/reconcile", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const campaign = await getCampaign(id);
+    if (!campaign) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+    // Credentials for the campaign's OWN store, not whatever the request body
+    // says. A founder token is not a licence to reconcile one shop's campaign
+    // against another shop's Klaviyo account.
+    const privateKey = await resolveStoredKlaviyoToken(campaign.shopDomain);
+    const result = await reconcileCampaign(id, {
+      lookupById: (providerCampaignId) => klaviyoClient.getKlaviyoCampaign(privateKey, providerCampaignId),
+      // Options forwarded. Dropping them silently discarded the attempt-time
+      // scope, so the real endpoint could still adopt an older campaign that
+      // happened to share this one's name.
+      findByName: (name, options) => klaviyoClient.findKlaviyoCampaigns(privateKey, name, options),
+    });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    if (error instanceof DeliveryTransitionRejected) {
+      res.status(409).json({ ok: false, error: error.message, from: error.from, to: error.to });
+      return;
+    }
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
+  }
+});
+
 // One campaign's measurement. Recomputes when the stored numbers are stale —
 // at this volume that is cheap enough to do on read rather than on a schedule.
 router.get("/campaigns/:id/results", async (req, res) => {
@@ -1154,14 +1313,43 @@ router.post("/campaigns/audience/preview", async (req, res) => {
 
     const provenance = runId ? await getRunProvenance(runId) : null;
     const foreign = Boolean(provenance && provenance.shopDomain !== shopDomain);
+    // A typed breakdown, because "matched", "planned to email" and "actually
+    // sent" are three different numbers and collapsing them is how a merchant
+    // ends up believing an email reached people it never reached.
+    //
+    // `exclusions` carries only what we can EVIDENCE. The engine matched N
+    // customers; some have no email address on file, which is a data gap, not a
+    // consent decision — and we say exactly that. Consent and suppression are
+    // applied by Klaviyo at send, and we do not claim to have applied them.
+    const matched = audience.memberCount ?? audience.count ?? null;
+    const noEmail = audience.suppressedCount ?? null;
+    const breakdown = audience.materialized ? {
+      matched,
+      plannedEmailGroup: holdout ? holdout.treated : audience.count ?? null,
+      comparisonGroup: holdout ? holdout.held : null,
+      comparisonPct: holdout ? holdout.pct : null,
+      exclusions: noEmail
+        ? [{
+            code: "no_email_on_file",
+            count: noEmail,
+            label: `${noEmail} matched customer${noEmail === 1 ? "" : "s"} have no email address on file.`,
+          }]
+        : [],
+      // Named so the UI cannot present provider behaviour as ours.
+      providerAppliesAtSend: "Klaviyo applies consent and suppression at send. The actual sent count is confirmed afterwards.",
+      // Never inferred. Populated only by provider reconciliation.
+      actualSentCount: null,
+    } : null;
+
     res.json({
       ok: true,
       shopDomain,
       audience,
       holdout,
+      breakdown,
+      originRunId: runId,
       // So the UI can say why a send is blocked before the merchant clicks it,
       // rather than only after.
-      runId,
       inputProvenance: foreign ? "foreign_run" : provenance?.provenance || (runId ? "unknown_run" : null),
       sendable: Boolean(provenance) && !foreign && !["fixture", "legacy_unverified"].includes(provenance.provenance),
     });

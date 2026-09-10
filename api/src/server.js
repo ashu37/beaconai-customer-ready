@@ -13,7 +13,41 @@ const { getStartupState, markDatabaseFailed, markDatabaseReady } = require("./st
 const app = express();
 
 app.use(helmet());
-app.use(cors());
+// Credentialed CORS. The session cookie only travels on requests the browser
+// considers same-site or explicitly allowed, and `Access-Control-Allow-Origin: *`
+// is rejected outright when credentials are included — so a wildcard here would
+// silently break every authenticated call from the browser while leaving the
+// HTTP tests green.
+//
+// The list is explicit for a second reason: with credentials enabled, reflecting
+// any origin would let any page a merchant visits call this API as them.
+const allowedOrigins = new Set([...config.corsOrigins, config.webBaseUrl].filter(Boolean));
+
+// In development the frontend's port moves — vite picks another when one is
+// taken — so a hardcoded port list is a guess that fails silently and looks like
+// a broken app. Any loopback origin is accepted instead. NOT in production: with
+// credentials enabled, a permissive rule would let a page a merchant visits call
+// this API as them, and loopback is not a meaningful restriction there.
+const isDevelopment = process.env.NODE_ENV !== "production";
+const LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+
+function originAllowed(origin) {
+  if (allowedOrigins.has(origin)) return true;
+  return isDevelopment && LOOPBACK.test(origin);
+}
+
+app.use(cors({
+  origin(origin, callback) {
+    // No Origin header: same-origin, curl, or a server-to-server call. Nothing
+    // to allow or refuse.
+    if (!origin) return callback(null, true);
+    if (originAllowed(origin)) return callback(null, true);
+    // Refused by omitting the header rather than erroring, so the browser
+    // reports a normal CORS failure instead of a 500.
+    return callback(null, false);
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: "10mb" }));
 app.use(morgan("dev"));
 

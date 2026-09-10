@@ -157,3 +157,87 @@ test("a failed refresh keeps the last render but marks it not current", async ()
   assert.ok(view.getByTestId("html").textContent.includes("good"), "the last good render is still shown");
   assert.equal(view.getByTestId("state").textContent, PREVIEW_STATE.failed, "but not as current");
 });
+
+test("a missing destination is reported as a field problem, not a preview failure", async () => {
+  // "We couldn't update the preview" would send the merchant looking for a
+  // network problem when the answer is a missing link on their own button.
+  const fetchPreview = async () => {
+    const error = new Error("This campaign has no destination link.");
+    error.code = "missing_destination";
+    error.slot = "cta_url";
+    throw error;
+  };
+  function ProblemHarness() {
+    const { problem, freshness } = usePreview({
+      draft: { subject: "S" }, campaignSignature: "sig", campaignKey: "k",
+      brandContext: {}, activeBrandTemplateVersion: 1,
+      fetchPreview, onPreviewRendered: () => {}, debounceMs: 0,
+    });
+    return React.createElement("div", null,
+      React.createElement("span", { "data-testid": "slot" }, problem?.slot || "none"),
+      React.createElement("span", { "data-testid": "code" }, problem?.code || "none"),
+      React.createElement("span", { "data-testid": "blocks" }, String(freshness.blocksCreation)));
+  }
+  const view = render(React.createElement(ProblemHarness));
+  await tick();
+
+  assert.equal(view.getByTestId("code").textContent, "missing_destination");
+  assert.equal(view.getByTestId("slot").textContent, "cta_url");
+  assert.equal(view.getByTestId("blocks").textContent, "true", "and it blocks creation");
+});
+
+test("the effective destination is reported so an empty input is not read as no link", async () => {
+  // An empty input that falls back to a working design default is not the same
+  // as an email with no link, and the editor cannot tell without being told.
+  const fetchPreview = async () => ({
+    html: "<p>ok</p>", templateVersion: 1, renderFingerprint: "fp",
+    effectiveDestinationUrl: "https://shop.example/default",
+  });
+  function DestHarness() {
+    const { renderedFrom } = usePreview({
+      draft: { subject: "S" }, campaignSignature: "sig", campaignKey: "k",
+      brandContext: {}, activeBrandTemplateVersion: 1,
+      fetchPreview, onPreviewRendered: () => {}, debounceMs: 0,
+    });
+    return React.createElement("span", { "data-testid": "eff" }, renderedFrom.effectiveDestinationUrl || "none");
+  }
+  const view = render(React.createElement(DestHarness));
+  await tick();
+  assert.equal(view.getByTestId("eff").textContent, "https://shop.example/default");
+});
+
+test("a preview response does not schedule another preview", async () => {
+  // The reported loop: each response updated parent state, which rebuilt the
+  // draft object, which the hook watched by identity — so the preview refreshed
+  // forever with nobody editing anything.
+  let calls = 0;
+  const fetchPreview = async () => {
+    calls += 1;
+    return { html: `<p>${calls}</p>`, templateVersion: 1, renderFingerprint: `fp-${calls}` };
+  };
+
+  // A parent that re-renders on every response, exactly as the real one does.
+  function LoopHarness() {
+    const [, setEcho] = React.useState("");
+    // Rebuilt every render, like buildCampaignFromSelection's output.
+    const draft = { subject: "S", destinationUrl: "https://a.test/" };
+    const { html } = usePreview({
+      draft,
+      campaignSignature: "stable-signature",
+      campaignKey: "k",
+      brandContext: {},
+      activeBrandTemplateVersion: 1,
+      fetchPreview,
+      onPreviewRendered: (info) => setEcho(info.fingerprint),
+      debounceMs: 0,
+    });
+    return React.createElement("span", { "data-testid": "html" }, html);
+  }
+
+  render(React.createElement(LoopHarness));
+  await tick();
+  await tick();
+  await tick();
+
+  assert.ok(calls <= 2, `expected the preview to settle, got ${calls} requests`);
+});

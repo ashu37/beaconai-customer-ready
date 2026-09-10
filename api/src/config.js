@@ -13,6 +13,12 @@ const config = {
   databaseUrl: required("DATABASE_URL"),
   apiBaseUrl: process.env.API_BASE_URL || `http://localhost:${Number(process.env.PORT || 4000)}/api`,
   webBaseUrl: process.env.WEB_BASE_URL || "http://localhost:5177",
+  // Origins allowed to send the session cookie. A credentialed request is
+  // refused by the browser against a wildcard origin, so this has to be an
+  // explicit list — and an explicit list is what stops any site sending a
+  // logged-in merchant's cookie to this API.
+  corsOrigins: (process.env.CORS_ORIGINS || "")
+    .split(",").map((origin) => origin.trim()).filter(Boolean),
   tokenEncryptionSecret: process.env.TOKEN_ENCRYPTION_SECRET || process.env.SESSION_SECRET || "beaconai-local-dev-secret",
   shopify: {
     shopDomain: process.env.SHOPIFY_SHOP_DOMAIN,

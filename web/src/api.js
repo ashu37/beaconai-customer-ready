@@ -37,6 +37,9 @@ function requireShopDomain() {
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    // The session cookie is HttpOnly and set on the API's origin, so it has to
+    // be sent explicitly for cross-origin calls.
+    credentials: "include",
     ...options,
   });
 
@@ -51,6 +54,7 @@ async function request(path, options = {}) {
     // it into a bare message would leave the caller nothing to recover WITH.
     error.status = response.status;
     if (data?.code) error.code = data.code;
+    if (data?.reconciliationRequired) error.reconciliationRequired = true;
     if (data?.problems) error.problems = data.problems;
     if (data?.conflict) {
       error.conflict = data.conflict;
@@ -100,6 +104,14 @@ export const api = {
       }),
     }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
+  // Ticket D contract: the durable provider state for one campaign. Read-only.
+  // No shopDomain: the server takes it from the signed session. Sending one
+  // would be a claim, not a credential.
+  campaignDelivery: (campaignId) => request(`/campaigns/${campaignId}/delivery`),
+  session: () => request("/session"),
+  // The verified sender, or null. There is no sender-management feature here:
+  // the merchant sets it in Klaviyo, and this only reports what is already true.
+  klaviyoSender: () => request(`/klaviyo/sender?shopDomain=${encodeURIComponent(shopDomain)}`),
   // Ticket C: which branded shell this shop sends with, if any.
   brandEmailTemplate: () => request(`/brand/email-template?shopDomain=${encodeURIComponent(shopDomain)}`),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
