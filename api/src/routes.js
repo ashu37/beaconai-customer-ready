@@ -322,15 +322,32 @@ router.get("/oauth/:provider/start", (req, res) => {
   Promise.resolve()
     .then(async () => {
       const provider = req.params.provider;
+
+      if (provider === "klaviyo") {
+        // Connecting Klaviyo writes credentials against a shop. Which shop must
+        // come from the session, not the query — otherwise anyone can start the
+        // flow naming another store and overwrite its connection on completion.
+        const session = sessionFromRequest(req);
+        if (!session) {
+          res.status(401).json({ ok: false, error: "Sign in to this store before connecting Klaviyo." });
+          return;
+        }
+        const url = await buildKlaviyoStartUrl({
+          shopDomain: session.shopDomain,
+          returnTo: req.query.returnTo,
+        });
+        res.redirect(url);
+        return;
+      }
+
       const options = {
         shop: req.query.shop,
         returnTo: req.query.returnTo,
       };
+      // Shopify only: this IS the sign-in, so there is no session to require.
       const url = provider === "shopify"
         ? await buildShopifyStartUrl(options)
-        : provider === "klaviyo"
-          ? await buildKlaviyoStartUrl(options)
-          : null;
+        : null;
       if (!url) {
         res.status(404).json({ ok: false, error: `Unsupported OAuth provider: ${provider}` });
         return;

@@ -247,3 +247,65 @@ suite("the connection tests are not anonymous", async () => {
   assert.equal(status.body.status.klaviyo.connected, true);
   assert.equal(status.body.status.klaviyo.scopes, undefined);
 });
+
+suite("Klaviyo OAuth cannot be started for a shop you are not signed in to", async () => {
+  await db.resetDatabase();
+  const victim = "victim.myshopify.com";
+
+  // Completing this flow writes credentials against whatever shop the OAuth
+  // state carries. Accepting a shop from the query let anyone start it naming
+  // another store and overwrite that store's Klaviyo connection.
+  const anonymous = await api.get(`/oauth/klaviyo/start?shop=${encodeURIComponent(victim)}`, { session: null });
+  assert.equal(anonymous.status, 401);
+
+  // Shopify's start stays public: it IS the sign-in, and there is no session to
+  // require yet.
+  const shopify = await fetch(`${api.base}/oauth/shopify/start?shop=${encodeURIComponent(victim)}`, { redirect: "manual" });
+  assert.notEqual(shopify.status, 401, "the sign-in route must stay reachable");
+});
+
+suite("the state a Klaviyo connection binds to comes from the session", async () => {
+  const { buildKlaviyoStartUrl } = require("../src/services/oauthService");
+  // Not callable without an authenticated shop at all — the shop is no longer
+  // something a caller can pass in.
+  await assert.rejects(
+    () => buildKlaviyoStartUrl({ shopDomain: null, returnTo: null }),
+    /authenticated shop is required/
+  );
+});
+
+suite("an unconnected shop does not inherit the deployment's credentials", async () => {
+  await db.resetDatabase();
+  const { resolveStoredKlaviyoToken, resolveStoredShopifyToken } = require("../src/services/oauthService");
+  const stranger = "stranger.myshopify.com";
+
+  const previousShop = process.env.SHOPIFY_SHOP_DOMAIN;
+  const previousKlaviyo = require("../src/config").config.klaviyo.privateKey;
+  const previousShopify = require("../src/config").config.shopify.accessToken;
+  const { config } = require("../src/config");
+  config.klaviyo.privateKey = "global-klaviyo-key";
+  config.shopify.accessToken = "global-shopify-token";
+  config.shopify.shopDomain = "configured.myshopify.com";
+
+  try {
+    // A session for a shop with no stored credential used to reach the provider
+    // with the deployment's own key and read that account's data back.
+    assert.equal(await resolveStoredKlaviyoToken(stranger), null);
+    assert.equal(await resolveStoredShopifyToken(stranger), null);
+
+    // The configured shop still gets them: they are its credentials.
+    assert.equal(await resolveStoredKlaviyoToken("configured.myshopify.com"), "global-klaviyo-key");
+    assert.equal(await resolveStoredShopifyToken("configured.myshopify.com"), "global-shopify-token");
+
+    // And a shop's OWN stored credential always wins.
+    await query(
+      `INSERT INTO clean.connections (shop_domain, klaviyo_private_key) VALUES ($1, 'their-own-key')`,
+      [stranger]
+    );
+    assert.equal(await resolveStoredKlaviyoToken(stranger), "their-own-key");
+  } finally {
+    config.klaviyo.privateKey = previousKlaviyo;
+    config.shopify.accessToken = previousShopify;
+    config.shopify.shopDomain = previousShop;
+  }
+});

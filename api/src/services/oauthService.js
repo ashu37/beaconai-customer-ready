@@ -156,9 +156,23 @@ async function handleShopifyCallback(queryParams) {
   };
 }
 
-async function buildKlaviyoStartUrl({ shop, returnTo }) {
+/**
+ * @param {object} options
+ * @param {string} options.shopDomain  the AUTHENTICATED shop. Not a name from
+ *   the query: completing this flow writes credentials against whatever shop the
+ *   state carries, so accepting an arbitrary one let anybody overwrite another
+ *   store's Klaviyo connection by starting the flow with that store's name.
+ *
+ * Shopify's start route stays public — it is how a merchant signs in, and there
+ * is no session to require yet. Connecting Klaviyo is something an
+ * already-signed-in merchant does, so there always is one.
+ */
+async function buildKlaviyoStartUrl({ shopDomain: authorizedShopDomain, returnTo }) {
+  // Checked BEFORE the config: an unauthenticated caller should be told to sign
+  // in, not told which environment variables this deployment is missing.
+  if (!authorizedShopDomain) throw new Error("An authenticated shop is required to connect Klaviyo.");
   requireOauthConfig("klaviyo");
-  const shopDomain = shop ? normalizeShopDomain(shop) : config.shopify.shopDomain;
+  const shopDomain = normalizeShopDomain(authorizedShopDomain);
   const state = await createOauthState({ provider: "klaviyo", shopDomain, returnTo });
   const url = new URL("https://www.klaviyo.com/oauth/authorize");
   url.searchParams.set("response_type", "code");
@@ -263,9 +277,22 @@ async function getConnectionStatus(shopDomain) {
   };
 }
 
+// The env-configured credentials belong to ONE shop — the deployment's own
+// configured store — and to no other. Falling back to them for any shop that
+// had none of its own meant a session for an unconnected store reached the
+// provider with the global account's key and read its data back.
+//
+// A shop with no stored credential now gets null, and the caller surfaces "not
+// connected" rather than someone else's account.
+function ownsGlobalCredentials(shopDomain) {
+  return Boolean(config.shopify.shopDomain) && shopDomain === config.shopify.shopDomain;
+}
+
 async function resolveStoredShopifyToken(shopDomain) {
   const row = await getConnection(shopDomain);
-  return decryptToken(row?.shopify_access_token) || config.shopify.accessToken;
+  const stored = decryptToken(row?.shopify_access_token);
+  if (stored) return stored;
+  return ownsGlobalCredentials(shopDomain) ? config.shopify.accessToken : null;
 }
 
 async function resolveStoredKlaviyoToken(shopDomain) {
@@ -308,10 +335,14 @@ async function resolveStoredKlaviyoToken(shopDomain) {
     }
     return decryptToken(row.klaviyo_access_token);
   }
-  return row?.klaviyo_private_key || config.klaviyo.privateKey;
+  if (row?.klaviyo_private_key) return row.klaviyo_private_key;
+  // Same rule: the configured key is the configured shop's, not a default for
+  // whoever asks.
+  return ownsGlobalCredentials(shopDomain) ? config.klaviyo.privateKey : null;
 }
 
 module.exports = {
+  ownsGlobalCredentials,
   buildShopifyStartUrl,
   handleShopifyCallback,
   buildKlaviyoStartUrl,
