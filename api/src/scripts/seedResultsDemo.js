@@ -143,7 +143,7 @@ async function seed() {
     });
     // Demo campaigns are "confirmed sent" by construction: measurement anchors on
     // the provider send time, never on local status.
-    await query(`UPDATE clean.campaigns SET sent_at = $2, provider_sent_at = $2, audience_size = $3, holdout_size = $4 WHERE id = $1`,
+    await query(`UPDATE clean.campaigns SET sent_at = $2, provider_sent_at = $2, delivery_state = 'sent', audience_size = $3, holdout_size = $4 WHERE id = $1`,
       [campaign.id, sentAt, customers.length, split.holdout.length]);
     await recordRecipients(campaign.id, split);
 

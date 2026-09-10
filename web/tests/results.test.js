@@ -4,9 +4,14 @@ import assert from "node:assert/strict";
 import React from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-// Ticket F, as the merchant sees it today: a campaign the provider hasn't
-// confirmed is listed with its reason, and the withdrawn program comparison
-// says it hasn't started instead of showing a number.
+// Ticket F, as the merchant sees it today: every handed-off campaign is listed
+// in the delivery contract's own words, none shows a result before a confirmed
+// send, and the withdrawn program comparison says it hasn't started.
+const delivery = (state, extra = {}) => ({ state, providerCampaignUrl: null, lastCheckedAt: null, ...extra });
+const row = (campaignId, playId, state, reason) => ({
+  measurable: false, reason, deliveryState: state, campaignId, playId, sentAt: null, delivery: delivery(state),
+});
+
 const apiModule = await import("../src/api.js");
 apiModule.api.setShopDomain("results-f.myshopify.com");
 const stub = (value) => async () => value;
@@ -27,9 +32,12 @@ Object.assign(apiModule.api, {
   getKlaviyoTemplates: stub({ ok: true, templates: [] }),
   getResults: stub({
     ok: true,
-    program: { available: false, reason: "protocol_not_live", sinceDays: 90, campaigns: 1 },
+    program: { available: false, reason: "protocol_not_live", sinceDays: 90, campaigns: 0 },
     results: [
-      { measurable: false, reason: "awaiting_send_confirmation", campaignId: 7, playId: "winback_dormant_cohort", sentAt: null },
+      row(1, "winback_dormant_cohort", "created", "send_not_confirmed"),
+      row(2, "discount_dependency_hygiene", "scheduled", "send_not_confirmed"),
+      row(3, "cohort_journey_first_to_second", "uncertain", "send_not_confirmed"),
+      row(4, "replenishment_due", "sent", "send_time_unknown"),
     ],
   }),
 });
@@ -37,7 +45,7 @@ Object.assign(apiModule.api, {
 const { App } = await import("../src/App.jsx");
 test.afterEach(() => cleanup());
 
-test("an unconfirmed campaign is listed with its reason, and no program figure is shown", async () => {
+test("handed-off campaigns are listed by delivery state, with no result before a confirmed send", async () => {
   await act(async () => {
     render(React.createElement(App));
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -48,9 +56,15 @@ test("an unconfirmed campaign is listed with its reason, and no program figure i
   });
   const text = document.body.textContent || "";
 
-  assert.match(text, /Awaiting send confirmation/);
-  assert.match(text, /Waiting for Klaviyo to confirm the send/);
+  // The same labels the Campaigns page uses (presentDelivery), never "Sent" for
+  // a draft or a scheduled send.
+  assert.match(text, /Draft created/);
+  assert.match(text, /Scheduled in Klaviyo/);
+  assert.match(text, /Needs checking/);
+  assert.equal((text.match(/Results start once Klaviyo confirms the send/g) || []).length, 3);
+  assert.match(text, /reports this as sent but not when/);
+
   assert.match(text, /Program-level results haven't started yet/);
   assert.doesNotMatch(text, /range crosses zero|What BeaconAI added|Received campaigns/);
-  assert.doesNotMatch(text, /Invalid Date|NaN/);
+  assert.doesNotMatch(text, /Invalid Date|NaN|day \d+ of/);
 });

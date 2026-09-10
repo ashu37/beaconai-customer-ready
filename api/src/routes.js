@@ -1406,18 +1406,27 @@ router.get("/results/:shopDomain", async (req, res) => {
       await measureCampaign(id).catch(() => {});
     }
     const campaigns = await listCampaigns(shopDomain);
-    // Every campaign that has left BeaconAI — including ones the provider has
-    // not yet confirmed. Those are listed as awaiting confirmation rather than
-    // dropped: measurement runs from the confirmed send, and a campaign that
-    // silently vanished from Results would be worse than one that says why it
-    // has no numbers yet.
-    const sent = campaigns.filter((c) => c.sentAt || c.providerSentAt);
+    // Every campaign that has been handed off, by Ticket D's durable delivery
+    // state — a provider-created draft has no send time of any kind, and
+    // filtering on timestamps made exactly those disappear. Legacy campaigns
+    // marked sent only locally are kept too. Each carries its delivery record,
+    // so the page states created / scheduled / needs-checking in the
+    // contract's words; none is measured until the provider confirms a send.
+    const handedOff = campaigns.filter((c) => c.deliveryState !== "not_started" || c.sentAt || c.providerSentAt);
     const results = [];
-    for (const campaign of sent) {
+    for (const campaign of handedOff) {
       const summary = await summarizeCampaign(campaign.id);
-      results.push({ ...summary, campaignId: campaign.id, playId: campaign.playId,
-        sentAt: campaign.providerSentAt || null,
-        audienceSize: campaign.audienceSize, holdoutSize: campaign.holdoutSize });
+      const delivery = await getDelivery(campaign.id);
+      results.push({
+        ...summary,
+        campaignId: campaign.id,
+        playId: campaign.playId,
+        // Only a confirmed send has a send time. Never a local stamp.
+        sentAt: summary.measurable ? campaign.providerSentAt : null,
+        delivery: delivery ? { ...delivery, campaignName: campaign.providerCampaignName || campaign.displayName || null } : null,
+        audienceSize: campaign.audienceSize,
+        holdoutSize: campaign.holdoutSize,
+      });
     }
     const program = await summarizeProgram(shopDomain);
     res.json({ ok: true, program, results });

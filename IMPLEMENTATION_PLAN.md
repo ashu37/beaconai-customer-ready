@@ -185,7 +185,18 @@ Freeze campaign recipients before sending. Preserve actual send anchors, identit
 
 **Migration:** historical assignments remain historical; label unsupported aggregate comparisons descriptive. No invented randomization, enrollment timestamps or preexisting program cohort. If historical program lift cannot be recovered, start a prospective cohort.
 
-**Design: [docs/MEASUREMENT_PROTOCOL.md](docs/MEASUREMENT_PROTOCOL.md) — DRAFT, gate OPEN.** It recommends a prospective program cohort with a stored, persistent customer-level holdout, measured as opportunity-restricted intent-to-treat over a 90-day horizon from each customer's first provider-confirmed send. It records why the current `BOOL_OR` comparison is withdrawn, and the test store's precision (a single campaign cannot resolve realistic effects; a 2,200-customer program detects about 16–22% of baseline). Awaiting the founder's decisions (§9) and statistical review (§10). The §7 collection fixes are needed under any design, so they are not gated, and are now implemented: recipients are immutable once frozen; email aliases and pre-split exclusions are recorded with reasons; measurement anchors on `provider_sent_at`; non-deliveries stay in the treated arm; and the ever-treated program number is withdrawn (reported as `protocol_not_live`), with unconfirmed campaigns listed in Results rather than dropped.
+**Status — collection work: COMPLETE. Program measurement: NOT READY; the design gate is OPEN.**
+
+- *Collection (merged with #41).* Recipients are immutable once frozen; email aliases and pre-split exclusions are recorded with reasons; measurement starts only at a provider-confirmed send (delivery state `sent` with `provider_sent_at`); non-deliveries stay in the treated arm; the ever-treated program number is withdrawn (`protocol_not_live`). Results lists every handed-off campaign by its durable delivery state and measures none before a confirmed send.
+- *Design ([docs/MEASUREMENT_PROTOCOL.md](docs/MEASUREMENT_PROTOCOL.md), DRAFT v2).* Proposed pilot decisions:
+  - one fixed prospective cohort enrolled at T0, with no retroactive enrollment
+  - a stored, persistent 10% holdout
+  - whole-cohort intent-to-treat over 90 days from a common start S — the first provider-confirmed BeaconAI send after T0; the cohort closes unstarted if none is confirmed within 30 days
+  - alias-preserving identity rules
+  - unique-purchaser floors
+  - an estimate that may be inconclusive
+
+  It awaits founder approval of §3 and §10, and statistical review (§11). The program estimator is not built.
 
 **Gate:** do not send a campaign advertised as part of a measured program until its protocol and collection are implemented. A qualitative concierge pilot can proceed without that promise, but it cannot recover missing program assignment later.
 

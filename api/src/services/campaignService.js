@@ -146,6 +146,8 @@ function rowToCampaign(row) {
     sentAt: row.sent_at,
     // The provider-confirmed send time: the only send anchor measurement uses.
     providerSentAt: row.provider_sent_at,
+    // Ticket D's durable state. Measurement starts only at `sent`.
+    deliveryState: row.delivery_state || "not_started",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

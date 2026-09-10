@@ -134,10 +134,28 @@ function compareArms(treated, holdout) {
 // Windows run from the PROVIDER-CONFIRMED send (Ticket D contract, Ticket F).
 // `sent_at` is local bookkeeping stamped when a status changed; measuring from
 // it would count orders placed before any customer could have seen the email.
+//
+// Measurement starts only when BOTH hold: the durable delivery state is `sent`
+// (which only a provider response can write), and the provider gave a send
+// time. A scheduled campaign can carry a scheduled time, and a created draft
+// carries none; neither is a send.
+function sendConfirmed(campaign) {
+  return campaign.deliveryState === "sent" && Boolean(campaign.providerSentAt);
+}
+
+// Why a campaign has no measurement, in the contract's own terms. Nothing here
+// invents a send time or starts a window.
 function notMeasurable(campaign) {
+  const state = campaign.deliveryState || "not_started";
+  let reason;
+  if (state === "sent") reason = "send_time_unknown";
+  else if (state !== "not_started") reason = "send_not_confirmed";
+  else if (campaign.sentAt) reason = "no_provider_record";
+  else reason = "not_handed_off";
   return {
     measurable: false,
-    reason: campaign.sentAt ? "awaiting_send_confirmation" : "not_sent",
+    reason,
+    deliveryState: state,
     campaignId: campaign.id,
     playId: campaign.playId,
   };
@@ -186,7 +204,7 @@ async function measureWindow(campaign, windowDays) {
 async function measureCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
   const campaign = await getCampaign(campaignId);
   if (!campaign) return { measurable: false, reason: "no_campaign" };
-  if (!campaign.providerSentAt) return notMeasurable(campaign);
+  if (!sendConfirmed(campaign)) return notMeasurable(campaign);
 
   for (const windowDays of windows) await measureWindow(campaign, windowDays);
   return summarizeCampaign(campaignId, { windows });
@@ -197,7 +215,7 @@ async function measureCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
 async function summarizeCampaign(campaignId, { windows = DEFAULT_WINDOWS } = {}) {
   const campaign = await getCampaign(campaignId);
   if (!campaign) return { measurable: false, reason: "no_campaign" };
-  if (!campaign.providerSentAt) return notMeasurable(campaign);
+  if (!sendConfirmed(campaign)) return notMeasurable(campaign);
 
   const { rows } = await query(
     `SELECT window_days, arm, n_customers, n_orders, revenue, revenue_sq, measured_at
@@ -276,7 +294,8 @@ async function summarizeProgram(shopDomain, { sinceDays = 90 } = {}) {
   const since = new Date(Date.now() - sinceDays * 86400000).toISOString();
   const { rows } = await query(
     `SELECT COUNT(*)::int AS n FROM clean.campaigns
-      WHERE shop_domain = $1 AND provider_sent_at IS NOT NULL AND provider_sent_at >= $2`,
+      WHERE shop_domain = $1 AND delivery_state = 'sent'
+        AND provider_sent_at IS NOT NULL AND provider_sent_at >= $2`,
     [shopDomain, since]
   );
   return {
@@ -300,6 +319,7 @@ async function staleCampaignIds(shopDomain, { olderThanHours = 24 } = {}) {
           WHERE m.campaign_id = c.id
        ) m ON true
       WHERE c.shop_domain = $1
+        AND c.delivery_state = 'sent'
         AND c.provider_sent_at IS NOT NULL
         AND (m.measured_at IS NULL OR m.measured_at < NOW() - ($2 || ' hours')::interval)`,
     [shopDomain, String(olderThanHours)]

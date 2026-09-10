@@ -9,11 +9,13 @@ const { startApi } = require("./helpers/httpApp");
 const {
   upsertCampaign, updateCampaign, recordRecipients, freezeCampaignAtHandoff, RecipientsFrozen,
 } = require("../src/services/campaignService");
+const { transitionDelivery } = require("../src/services/deliveryStateService");
 const { measureCampaign, summarizeProgram } = require("../src/services/measurementService");
 
 // Ticket F §7: collection that has to be right under ANY measurement design.
-// A campaign sent during the pilot with any of these wrong could not be
-// analysed later, whatever protocol is approved.
+// Provider states are reached through Ticket D's real transitions — never by
+// writing delivery columns directly — so these tests exercise the same path a
+// real handoff and reconciliation take.
 const SHOP = "measure-shop.myshopify.com";
 const DAY = 86400000;
 const ago = (days) => new Date(Date.now() - days * DAY);
@@ -35,6 +37,19 @@ async function seedCampaign(playId = "play-1") {
 
 const people = (...ids) => ids.map((id) => ({ customerId: id, email: `${id}@example.invalid` }));
 
+// The real handoff: reserve → creating, provider returns an id → created, then
+// freeze. No local timestamp of any kind is written.
+async function handOff(campaignId) {
+  await transitionDelivery(campaignId, "creating");
+  await transitionDelivery(campaignId, "created", { provider: "klaviyo", providerCampaignId: `kl-${campaignId}` });
+  await freezeCampaignAtHandoff(campaignId, {});
+}
+
+// Reconciliation finding an executed send.
+async function confirmSend(campaignId, at, extra = {}) {
+  await transitionDelivery(campaignId, "sent", { providerSentAt: at, ...extra }, { fromProvider: true });
+}
+
 async function order(id, customerId, at, total) {
   await query(
     `INSERT INTO clean.orders (id, shop_domain, customer_id, email, processed_at, created_at, total_price, test)
@@ -49,8 +64,6 @@ suite("recipients are fixed once the campaign is frozen at handoff", async () =>
   await recordRecipients(campaign.id, { treated: people("a", "b"), holdout: people("h") });
   await freezeCampaignAtHandoff(campaign.id, {});
 
-  // Any later write — a retry, a bug, a re-split — is refused, and the recorded
-  // arms are untouched.
   await assert.rejects(
     () => recordRecipients(campaign.id, { treated: people("h"), holdout: people("a", "b") }),
     (error) => error instanceof RecipientsFrozen,
@@ -104,16 +117,18 @@ suite("measurement waits for the provider-confirmed send, and runs from it", asy
   const campaign = await seedCampaign();
   await recordRecipients(campaign.id, { treated: people("a", "b"), holdout: people("h", "i") });
 
-  // Local status says sent 40 days ago; nothing has been confirmed.
+  // Local status says sent 40 days ago. That is bookkeeping, not a send.
   await updateCampaign(campaign.id, { status: "sent" });
   await query(`UPDATE clean.campaigns SET sent_at = $2 WHERE id = $1`, [campaign.id, ago(40)]);
-  const unconfirmed = await measureCampaign(campaign.id);
-  assert.equal(unconfirmed.measurable, false);
-  assert.equal(unconfirmed.reason, "awaiting_send_confirmation");
+  const local = await measureCampaign(campaign.id);
+  assert.equal(local.measurable, false);
+  assert.equal(local.reason, "no_provider_record");
 
-  // Klaviyo confirms the send 20 days ago. An order placed between the local
-  // stamp and the real send is not something the campaign could have caused.
-  await query(`UPDATE clean.campaigns SET provider_sent_at = $2 WHERE id = $1`, [campaign.id, ago(20)]);
+  // The provider confirms the send 20 days ago. An order placed between the
+  // local stamp and the real send could not have been caused by the campaign.
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "created", { providerCampaignId: "kl-1" });
+  await confirmSend(campaign.id, ago(20));
   await order("o-before", "a", ago(30), 100);
   await order("o-after", "a", ago(10), 40);
 
@@ -127,13 +142,11 @@ suite("treated customers the provider never delivered to stay in the analysis", 
   await db.resetDatabase();
   const campaign = await seedCampaign();
   await recordRecipients(campaign.id, { treated: people("a", "b", "c"), holdout: people("h", "i") });
-  // The provider reached only one of the three (the others were unsubscribed or
-  // suppressed). Intent-to-treat keeps all three: dropping them would compare a
+  // The provider reached one of three (the others unsubscribed or suppressed).
+  // Intent-to-treat keeps all three: dropping them would compare a
   // consent-filtered group against an unfiltered holdout.
-  await query(
-    `UPDATE clean.campaigns SET sent_at = $2, provider_sent_at = $2, provider_sent_count = 1 WHERE id = $1`,
-    [campaign.id, ago(5)]
-  );
+  await handOff(campaign.id);
+  await confirmSend(campaign.id, ago(5), { providerSentCount: 1 });
   const summary = await measureCampaign(campaign.id);
   const w30 = summary.windows.find((w) => w.windowDays === 30);
   assert.equal(w30.treated.n_customers, 3);
@@ -144,7 +157,8 @@ suite("the ever-treated program comparison is withdrawn, not computed", async ()
   await db.resetDatabase();
   const campaign = await seedCampaign();
   await recordRecipients(campaign.id, { treated: people("a", "b", "c"), holdout: people("h", "i", "j") });
-  await query(`UPDATE clean.campaigns SET sent_at = $2, provider_sent_at = $2 WHERE id = $1`, [campaign.id, ago(10)]);
+  await handOff(campaign.id);
+  await confirmSend(campaign.id, ago(10));
   for (const [i, id] of ["a", "b", "h"].entries()) await order(`p-${i}`, id, ago(5), 50);
 
   const program = await summarizeProgram(SHOP);
@@ -156,23 +170,69 @@ suite("the ever-treated program comparison is withdrawn, not computed", async ()
   }
 });
 
-suite("Results lists an unconfirmed campaign with its reason instead of dropping it", async () => {
+// The reported omission: a normal provider-created draft has NEITHER sent_at
+// nor provider_sent_at, and the timestamp filter dropped it from Results.
+suite("Results lists every handed-off campaign by delivery state, and measures none before a confirmed send", async () => {
   await db.resetDatabase();
-  const confirmed = await seedCampaign("play-confirmed");
-  const pending = await seedCampaign("play-pending");
-  for (const c of [confirmed, pending]) {
+  const draft = await seedCampaign("play-draft");
+  const scheduled = await seedCampaign("play-scheduled");
+  const uncertain = await seedCampaign("play-uncertain");
+  const sentNoTime = await seedCampaign("play-sent-no-time");
+  const untouched = await seedCampaign("play-untouched");
+  for (const c of [draft, scheduled, uncertain, sentNoTime]) {
     await recordRecipients(c.id, { treated: people(`${c.id}-a`, `${c.id}-b`), holdout: people(`${c.id}-h`, `${c.id}-i`) });
-    await updateCampaign(c.id, { status: "sent" });
   }
-  await query(`UPDATE clean.campaigns SET provider_sent_at = $2 WHERE id = $1`, [confirmed.id, ago(3)]);
+
+  await handOff(draft.id);
+  await handOff(scheduled.id);
+  // A scheduled send can carry the SCHEDULED time. It is still not a send.
+  await transitionDelivery(scheduled.id, "scheduled", { providerSentAt: new Date(Date.now() + 2 * DAY) }, { fromProvider: true });
+  await transitionDelivery(uncertain.id, "creating");
+  await transitionDelivery(uncertain.id, "uncertain");
+  await handOff(sentNoTime.id);
+  await transitionDelivery(sentNoTime.id, "sent", {}, { fromProvider: true });
+
+  // The real case, stated as data: frozen, provider-created, both times null.
+  const { rows: [raw] } = await query(
+    `SELECT frozen_at, delivery_state, sent_at, provider_sent_at FROM clean.campaigns WHERE id = $1`, [draft.id]
+  );
+  assert.ok(raw.frozen_at);
+  assert.equal(raw.delivery_state, "created");
+  assert.equal(raw.sent_at, null);
+  assert.equal(raw.provider_sent_at, null);
 
   const { status, body } = await api.get(`/results/${SHOP}`);
   assert.equal(status, 200);
   const byId = Object.fromEntries(body.results.map((r) => [r.campaignId, r]));
-  assert.equal(body.results.length, 2, "both campaigns are listed");
-  assert.equal(byId[pending.id].measurable, false);
-  assert.equal(byId[pending.id].reason, "awaiting_send_confirmation");
-  assert.equal(byId[pending.id].sentAt, null, "no send time is shown until the provider confirms one");
-  assert.equal(byId[confirmed.id].measurable, true);
+
+  assert.equal(byId[untouched.id], undefined, "a campaign never handed off is not a result");
+  assert.equal(body.results.length, 4, "every handed-off campaign is listed");
+
+  for (const [campaign, state] of [[draft, "created"], [scheduled, "scheduled"], [uncertain, "uncertain"]]) {
+    const result = byId[campaign.id];
+    assert.equal(result.measurable, false, state);
+    assert.equal(result.reason, "send_not_confirmed", state);
+    assert.equal(result.deliveryState, state);
+    assert.equal(result.delivery.state, state, "the durable record travels with the row");
+    assert.equal(result.sentAt, null, `${state}: no send time is invented`);
+  }
+  assert.equal(byId[sentNoTime.id].reason, "send_time_unknown");
+  assert.equal(byId[sentNoTime.id].sentAt, null);
+
+  // Nothing was measured: no window was opened for any of them.
+  const { rows: measured } = await query(`SELECT COUNT(*)::int AS n FROM clean.campaign_measurements`);
+  assert.equal(measured[0].n, 0, "no measurement starts before a confirmed send");
   assert.equal(body.program.available, false);
+});
+
+suite("Results keeps a legacy campaign marked sent only locally, and says why it has no numbers", async () => {
+  await db.resetDatabase();
+  const legacy = await seedCampaign("play-legacy");
+  await recordRecipients(legacy.id, { treated: people("a", "b"), holdout: people("h", "i") });
+  await updateCampaign(legacy.id, { status: "sent" });
+
+  const { body } = await api.get(`/results/${SHOP}`);
+  assert.equal(body.results.length, 1);
+  assert.equal(body.results[0].reason, "no_provider_record");
+  assert.equal(body.results[0].sentAt, null);
 });

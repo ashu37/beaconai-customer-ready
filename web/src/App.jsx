@@ -1255,7 +1255,14 @@ const VERDICTS = {
   too_small:       { label: "Too small to tell", tone: "null" },
   no_holdout:      { label: "Not measurable",    tone: "null" },
   not_measured:    { label: "Not measured yet",  tone: "null" },
-  awaiting_send_confirmation: { label: "Awaiting send confirmation", tone: "warn" },
+};
+
+// Why a handed-off campaign has no results yet. The delivery label itself comes
+// from presentDelivery, so Results and Campaigns say the same thing.
+const UNMEASURED_NOTE = {
+  send_not_confirmed: "Results start once Klaviyo confirms the send.",
+  send_time_unknown: "Klaviyo reports this as sent but not when, so results can't start yet.",
+  no_provider_record: "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send, so results can't be measured.",
 };
 
 function VerdictChip({ verdict }) {
@@ -1335,14 +1342,17 @@ function ResultRow({ result, playTitle, expanded, onToggle }) {
   // Handed off but not confirmed by the provider: listed with the reason, never
   // dropped. Measurement runs from the confirmed send time.
   if (result.measurable === false) {
-    const awaiting = result.reason === "awaiting_send_confirmation";
+    const delivery = presentDelivery(result.delivery ?? null);
+    const note = result.deliveryState === "failed"
+      ? "The draft wasn't created, so nothing was sent."
+      : UNMEASURED_NOTE[result.reason] || "Not measured.";
     return (
       <div className="result-row result-row-pending">
         <span className="result-name">
           <strong>{playTitle}</strong>
-          <span>{awaiting ? "Waiting for Klaviyo to confirm the send · refresh its status in Campaigns" : "Not sent"}</span>
+          <span>{note}</span>
         </span>
-        <VerdictChip verdict={awaiting ? "awaiting_send_confirmation" : "not_measured"} />
+        <span className="verdict verdict-warn"><span className="verdict-dot" />{delivery.label}</span>
         <span className="result-money">—<small>measured from the confirmed send</small></span>
         <span />
       </div>
