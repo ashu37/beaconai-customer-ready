@@ -185,6 +185,8 @@ Freeze campaign recipients before sending. Preserve actual send anchors, identit
 
 **Migration:** historical assignments remain historical; label unsupported aggregate comparisons descriptive. No invented randomization, enrollment timestamps or preexisting program cohort. If historical program lift cannot be recovered, start a prospective cohort.
 
+**Design: [docs/MEASUREMENT_PROTOCOL.md](docs/MEASUREMENT_PROTOCOL.md) — DRAFT, gate OPEN.** It recommends a prospective program cohort with a stored, persistent customer-level holdout, measured as opportunity-restricted intent-to-treat over a 90-day horizon from each customer's first provider-confirmed send. It records why the current `BOOL_OR` comparison is withdrawn, and the test store's precision (a single campaign cannot resolve realistic effects; a 2,200-customer program detects about 16–22% of baseline). Awaiting the founder's decisions (§9) and statistical review (§10). The collection fixes in §7 are needed under any design and are not gated.
+
 **Gate:** do not send a campaign advertised as part of a measured program until its protocol and collection are implemented. A qualitative concierge pilot can proceed without that promise, but it cannot recover missing program assignment later.
 
 ## Before Ticket G — clarify the Results UI
