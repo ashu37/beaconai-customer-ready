@@ -9,6 +9,10 @@ import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
 import { signInState } from "./signInState";
+import {
+  BASELINE_REVENUE_NOTE, briefingHeadline, dataStatusItems, evidenceChipItems,
+  heldLaneEmptyText, holdsAreDataVolume, truncatedNote,
+} from "./briefingPresentation";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -152,6 +156,9 @@ function normalizeAtulPlay(play, index) {
     lane: play.lane || role,
     reason_code: play.reason_code || play.null_reason || null,
     reason_display: play.reason_display || null,
+    // The typed hold (code, category, text) and the engine's rank in its lane.
+    reason: play.reason || null,
+    rank: play.rank ?? null,
     // Prose is the LLM's or NOTHING (Pivot 2). null → the UI renders the
     // evidence chip grid, never a canned "recommendation ready" sentence.
     mechanism: narration.play_thesis || play.mechanism || null,
@@ -265,19 +272,23 @@ function confidenceTone(value) {
   return "neutral";
 }
 
-const CONFIDENCE_TITLE = "How strongly your store's data supports this play. Improves as more orders sync.";
+const CONFIDENCE_TITLE = "The analysis's confidence label for this play. The Evidence tab says where it comes from.";
 
 function RecommendationRow({ play, selected, approved = false, onSelect }) {
   const confidence = play.confidence || play.confidence_label || play.model_confidence || null;
   const confidenceLabel = readableMetaLabel(confidence);
-  const evidenceLine = play.evidence_line || null;
   const lane = classifyPlayLane(play);
-  const selectedActionable = selected && lane !== "considered";
+  // A held play's row carries its reason, so "Not ready yet" can be scanned
+  // without opening each one. Recommended rows carry their evidence source.
+  const evidenceLine = lane === "considered" ? (play.reason?.text || play.reason_display || null) : (play.evidence_line || null);
+  // The engine's order, not the merchant's click. Selecting a row used to
+  // relabel it "Primary", so the top recommendation moved with the cursor.
+  const topRanked = lane === "recommended" && play.rank === 1;
   return (
-    <button className={`recommendation-row ${selected ? "selected" : ""}`} onClick={() => onSelect(play.play_id || play.id)}>
+    <button className={`recommendation-row ${selected ? "selected" : ""}`} aria-pressed={selected} onClick={() => onSelect(play.play_id || play.id)}>
       <span className={`recommendation-icon ${lane}`}><Icon name={iconForPlay(play, lane)} size={18} /></span>
       <span className="recommendation-row-body">
-        {selectedActionable ? <span className="recommendation-overline">Primary</span> : null}
+        {topRanked ? <span className="recommendation-overline">Top recommendation</span> : null}
         <span className="recommendation-title">{play.play_name || play.play_id}</span>
         <span className="recommendation-meta">
           <span>{formatAudience(play.audience_size)} customers</span>
@@ -296,53 +307,20 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
   );
 }
 
-// Signal-source label from the typed atom. Data-derived, never prose.
-function signalSourceLabel(evidenceSource) {
-  return evidenceSource === "STORE_MEASURED"
-    ? "Measured from your store's orders"
-    : "Modeled from similar stores";
-}
-
-// The evidence chip grid — 100% data-derived from the presenter's
-// `evidence_facts`. This is the merchant's "understand & trust why" surface and
-// stands ALONE when the LLM authored no prose (Pivot 2 typed-absence). Each chip
-// renders only when its atom is present; no chip is a hand-written sentence.
-function EvidenceChips({ play }) {
-  const facts = play.evidence_facts || {};
-  const chips = [];
-
-  if (facts.sample_size != null && Number(facts.sample_size) > 0) {
-    chips.push(["Orders analyzed", Number(facts.sample_size).toLocaleString()]);
-  }
-  const audienceSize = facts.audience_size ?? play.audience_size;
-  if (audienceSize != null && Number(audienceSize) > 0) {
-    chips.push(["Audience", `${Number(audienceSize).toLocaleString()} customers`]);
-  }
-  if (facts.evidence_source) {
-    chips.push(["Signal source", signalSourceLabel(facts.evidence_source)]);
-  }
-  if (facts.confidence_label) {
-    chips.push(["Confidence", statusLabel(facts.confidence_label)]);
-  }
-  if (facts.observed_effect != null) {
-    const pct = Math.round(Number(facts.observed_effect) * 1000) / 10;
-    if (Number.isFinite(pct)) chips.push(["Observed effect", `${pct}%`]);
-  }
-  if (facts.primary_window) {
-    chips.push(["Window", String(facts.primary_window)]);
-  }
-  const revenueLabel = formatRevenueRange(play);
-  if (revenueLabel) {
-    chips.push(["Est. opportunity", revenueLabel]);
-  }
-
+// The evidence grid — 100% data-derived from the presenter's `evidence_facts`.
+// Stands alone when the LLM authored no prose. Every item states its unit.
+function EvidenceChips({ play, omitRevenue = false }) {
+  // `omitRevenue` where the range bar, with its own explanation, sits directly
+  // below — the same number and caveat twice in one view reads as two findings.
+  const chips = evidenceChipItems(play, omitRevenue ? null : formatRevenueRange(play));
   if (!chips.length) return null;
   return (
     <div className="evidence-chip-grid">
-      {chips.map(([label, value]) => (
-        <div className="evidence-chip" key={label}>
-          <span className="evidence-chip-label">{label}</span>
-          <strong className="evidence-chip-value">{value}</strong>
+      {chips.map((chip) => (
+        <div className="evidence-chip" key={chip.label}>
+          <span className="evidence-chip-label">{chip.label}</span>
+          <strong className="evidence-chip-value">{chip.value}</strong>
+          {chip.note ? <span className="evidence-chip-note">{chip.note}</span> : null}
         </div>
       ))}
     </div>
@@ -362,10 +340,8 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
   const revenue = revenueRangeParts(play);
   const revenueLabel = formatRevenueRange(play);
   const audienceLabel = formatAudience(play.audience_size);
-  const heldReason = play.reason_display || "BeaconAI needs more store data before recommending this.";
-  // D1: confidence as a 3-segment meter. Measured/High → 3, Emerging → 2, else 1.
-  const confidenceLc = String(confidence).toLowerCase();
-  const confidenceSegments = /measured|high/.test(confidenceLc) ? 3 : /emerging/.test(confidenceLc) ? 2 : 1;
+  const heldReason = play.reason_display || "The analysis held this play.";
+  const evidenceLabel = play.evidence_facts?.evidence_source_label || null;
   const tabLabels = [
     ["thesis", "Play thesis"],
     ["send", "What we'd send"],
@@ -378,12 +354,14 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
       <div className="recommendation-detail-head">
         <span className={`recommendation-icon large ${lane}`}><Icon name={iconForPlay(play, lane)} size={22} /></span>
         <div>
-          <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Not ready yet" : "Primary recommendation"}</div>
+          <div className="section-kicker">{lane === "experiment" ? "Recommended experiment" : lane === "considered" ? "Not ready yet" : play.rank ? `Recommended now · #${play.rank}` : "Recommended now"}</div>
           <h2>{play.play_name || play.play_id}</h2>
         </div>
       </div>
 
-      {play.evidence_line ? <div className="detail-evidence-line">{play.evidence_line}</div> : null}
+      {/* The evidence source is in the stat strip below; repeating it under the
+          title made one fact read as three. Held plays have no strip, so their
+          reason is in the footer instead. */}
 
       <div className="recommendation-stat-strip">
         <div>
@@ -393,24 +371,25 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
         {revenueLabel ? (
           <div>
             <strong>{revenueLabel}</strong>
-            <span>Est. opportunity</span>
+            <span>Baseline revenue</span>
           </div>
         ) : null}
+        {/* Where the evidence comes from, in words — not a three-bar meter whose
+            segments meant nothing a merchant could check. */}
         <div>
-          <div className="confidence-meter" title={CONFIDENCE_TITLE}>
-            {[1, 2, 3].map((seg) => (
-              <span key={seg} className={`confidence-seg ${seg <= confidenceSegments ? "filled" : ""}`} />
-            ))}
-            <strong className="confidence-meter-label">{statusLabel(confidence)}</strong>
-          </div>
-          <span title={CONFIDENCE_TITLE}>Confidence</span>
+          <strong className="stat-evidence" title={play.evidence_facts?.evidence_source_detail || undefined}>
+            {evidenceLabel || statusLabel(confidence)}
+          </strong>
+          <span>{evidenceLabel ? "Evidence" : "Confidence"}</span>
         </div>
       </div>
 
-      <div className="recommendation-tabs">
+      <div className="recommendation-tabs" role="tablist">
         {tabLabels.map(([key, label]) => (
           <button
             key={key}
+            role="tab"
+            aria-selected={activeTab === key}
             className={activeTab === key ? "active" : ""}
             onClick={() => setActiveTab(key)}
             type="button"
@@ -433,7 +412,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
             ) : (
               <div className="detail-copy-block">
                 <div className="section-kicker">Why this play</div>
-                <EvidenceChips play={play} />
+                <EvidenceChips play={play} omitRevenue={Boolean(revenue)} />
               </div>
             )}
             {revenue ? (() => {
@@ -445,7 +424,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               const markerLeft = Math.min(96, Math.max(4, raw));
               return (
                 <div className="revenue-range">
-                  <div className="section-kicker">Est. opportunity</div>
+                  <div className="section-kicker">Baseline revenue</div>
                   <div className="range-track">
                     <span className="range-fill" />
                     <span className="range-marker" style={{ left: `${markerLeft}%` }} />
@@ -455,6 +434,7 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
                     {revenue.labelMedian ? <span>median {revenue.labelMedian}</span> : null}
                     <span>{revenue.labelHigh}</span>
                   </div>
+                  <p className="revenue-note">{BASELINE_REVENUE_NOTE}</p>
                 </div>
               );
             })() : null}
@@ -493,6 +473,9 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               </div>
             ) : null}
             <EvidenceChips play={play} />
+            {play.evidence_facts?.evidence_source_detail ? (
+              <p className="evidence-source-detail">{play.evidence_facts.evidence_source_detail}</p>
+            ) : null}
             {play.audience_archetype ? (
               <div className="model-row">
                 <span>Audience</span>
@@ -514,12 +497,12 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <strong>{statusLabel(confidence)}</strong>
             </div>
             <div className="model-row">
-              <span>Estimated upside</span>
-              <strong>{formatRevenueRange(play)}</strong>
+              <span>Baseline revenue</span>
+              <strong>{formatRevenueRange(play) || "Not available"}</strong>
             </div>
             <div className="model-row">
               <span>Review note</span>
-              <strong>{play.reason_code ? "Held for now — needs more store data" : "Merchant approval required before template work"}</strong>
+              <strong>{play.reason_code ? heldReason : "Merchant approval required before template work"}</strong>
             </div>
           </>
         ) : null}
@@ -1870,12 +1853,22 @@ export function App() {
     consideredRows.length > 0;
   const stateOfStore = atulEngineResult?.presentedRun?.state_of_store || null;
   const stateOfStoreObservations = atulEngineResult?.presentedRun?.state_of_store_observations || null;
-  const briefingUpdatedAt = formatUpdatedAt(atulEngineResult?.presentedRun?.generated_at);
-  const briefingHeading = !workflowPlays.length
-    ? "Run your briefing to see recommendations"
-    : readyRowsCount
-      ? `Your briefing is ready — ${readyRowsCount} plays for your review`
-      : `No campaign-ready plays yet — ${consideredRows.length} need more data`;
+  const briefingRun = atulEngineResult?.presentedRun || null;
+  const briefingHead = briefingHeadline({
+    decision: briefingRun?.decision,
+    readyCount: readyRowsCount,
+    heldCount: consideredRows.length,
+    hasRun: Boolean(briefingRun) || workflowPlays.length > 0,
+  });
+  const heldTruncatedCount = briefingRun?.considered_truncated_count || 0;
+  const heldEmptyText = heldLaneEmptyText({ heldCount: consideredRows.length, truncatedCount: heldTruncatedCount });
+  const watchingSignals = briefingRun?.watching || [];
+  const runDataQualityFlags = briefingRun?.data_quality_flags || [];
+  const briefingStatus = dataStatusItems({
+    connected: Boolean(status.shopify),
+    syncStatus,
+    analysedAt: briefingRun?.generated_at,
+  });
 
   useEffect(() => {
     checkConnections();
@@ -3072,7 +3065,11 @@ export function App() {
             <>
               {showSparseInterstitial ? (
                 <div className="sparse-interstitial">
-                  <p>Your store has {orderCount} orders. BeaconAI holds recommendations until the data can back them — here's what's tracking toward unlock.</p>
+                  <p>
+                    {holdsAreDataVolume(consideredRows.map(({ play }) => play))
+                      ? `Your store has ${orderCount} orders. BeaconAI holds recommendations until there's enough history to back them — the plays below unlock as more orders sync.`
+                      : "BeaconAI isn't recommending a campaign from this analysis. Each play below says what's holding it back."}
+                  </p>
                   <button className="btn small" onClick={() => setSparseInterstitialDismissed(true)}>Dismiss</button>
                 </div>
               ) : null}
@@ -3135,20 +3132,39 @@ export function App() {
               ) : null}
               <div className="briefing-titlebar">
                 <div>
-                  <h2>{briefingHeading}</h2>
+                  <h2>{briefingHead.title}</h2>
+                  {briefingHead.detail ? <p className="briefing-decision-detail">{briefingHead.detail}</p> : null}
                   <p>
                     <strong>{recommendedRows.length}</strong> recommended now{experimentRows.length ? <> · <strong>{experimentRows.length}</strong> experiments</> : null} · <strong>{consideredRows.length}</strong> not ready yet.
                   </p>
                 </div>
                 <div className="briefing-refresh">
-                  {briefingUpdatedAt ? (
-                    <span className="briefing-updated" title={`Last updated ${briefingUpdatedAt.absolute}`}>
-                      Updated {briefingUpdatedAt.relative}
-                    </span>
-                  ) : null}
-                  <button className="btn" onClick={() => runAtulEngine(false)} disabled={loading}>Refresh briefing</button>
+                  {/* Analysis only. It reads the last synced store data; syncing
+                      Shopify is a separate action, and the status line below
+                      shows the two times apart. */}
+                  <button
+                    className="btn"
+                    onClick={() => runAtulEngine(false)}
+                    disabled={loading}
+                    title="Analyses the store data from the last sync. It doesn't pull new data from Shopify."
+                  >
+                    Re-run analysis
+                  </button>
                 </div>
               </div>
+              {runDataQualityFlags.length ? (
+                <ul className="briefing-dq-flags">
+                  {runDataQualityFlags.map((flag) => <li key={flag.code}>{flag.label}</li>)}
+                </ul>
+              ) : null}
+              <dl className="briefing-status" aria-label="Store data status">
+                {briefingStatus.map((item) => (
+                  <div key={item.key} className={`briefing-status-item ${item.tone}`}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
               <div className="briefing-workbench">
                 {refreshingBriefing ? <BriefingWorking /> : (<>
                 <div className="recommendation-list">
@@ -3169,8 +3185,8 @@ export function App() {
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
-                      {!selectableRows.length ? <div className="empty-panel inline">Refresh your briefing to load recommendations.</div> : null}
-                      {selectableRows.length && !recommendedRows.length ? <div className="empty-panel inline">Nothing is ready for campaign review yet. See Not ready yet below for what needs more data.</div> : null}
+                      {!selectableRows.length && !briefingRun ? <div className="empty-panel inline">Run the analysis to load recommendations.</div> : null}
+                      {(selectableRows.length || briefingRun) && !recommendedRows.length ? <div className="empty-panel inline">Nothing is recommended from this analysis.{consideredRows.length ? " Not ready yet, below, says why each play is held." : ""}</div> : null}
                     </div>
                   </div>
 
@@ -3210,10 +3226,35 @@ export function App() {
                           />
                         ))}
                       </div>
-                    ) : (
-                      <div className="empty-panel inline">Everything BeaconAI considered this run was strong enough to recommend.</div>
-                    )}
+                    ) : heldEmptyText ? (
+                      <div className="empty-panel inline">{heldEmptyText}</div>
+                    ) : null}
+                    {truncatedNote(heldTruncatedCount) ? <div className="lane-note">{truncatedNote(heldTruncatedCount)}</div> : null}
                   </div>
+
+                  {/* What the engine is keeping an eye on. No measurement claim —
+                      only the metric, its direction and what would make it act. */}
+                  {watchingSignals.length ? (
+                    <div className="lane-box watching-lane">
+                      <div className="lane-head">
+                        <span>Watching</span>
+                        <strong>{watchingSignals.length}</strong>
+                      </div>
+                      <ul className="watching-list">
+                        {watchingSignals.map((signal) => (
+                          <li key={signal.metric || signal.metric_label}>
+                            <strong>{signal.metric_label}</strong>
+                            {signal.trend ? (
+                              <span className="watching-trend">
+                                {signal.trend === "up" ? "Trending up" : signal.trend === "down" ? "Trending down" : "Flat"}
+                              </span>
+                            ) : null}
+                            {signal.threshold_to_act ? <span className="watching-threshold">{signal.threshold_to_act}</span> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                 </div>
 
                 <RecommendationDetail
