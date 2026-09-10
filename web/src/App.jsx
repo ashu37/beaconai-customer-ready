@@ -1645,6 +1645,10 @@ function App() {
   const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
   // Reported by the provider, or absent. Never derived from the store domain.
   const [senderIdentity, setSenderIdentity] = useState(null);
+  const [campaignRowByPlay, setCampaignRowByPlay] = useState({});
+  // The html the preview last rendered, lifted so the final review can show the
+  // same email rather than a description of it.
+  const [reviewPreviewHtmlByPlay, setReviewPreviewHtmlByPlay] = useState({});
 
   const loadDelivery = useCallback(async (campaignId) => {
     if (!campaignId) return null;
@@ -1653,6 +1657,9 @@ function App() {
       setDeliveryByCampaignId((prev) => ({ ...prev, [campaignId]: result.delivery }));
       return result.delivery;
     } catch (_) {
+      // null, not undefined: "we tried and could not" is a state the presenter
+      // renders as unavailable rather than as a fresh campaign.
+      setDeliveryByCampaignId((prev) => ({ ...prev, [campaignId]: null }));
       // No durable state available is not the same as "nothing happened"; the
       // UI keeps whatever it last knew rather than claiming a fresh start.
       return null;
@@ -1954,6 +1961,10 @@ function App() {
         setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
         setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
         setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
+        // The stored rows, which carry the frozen handoff snapshot. The
+        // workspace's own campaign objects are built from today's slate and
+        // have no record of what was actually sent.
+        setCampaignRowByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c])));
         setDestinationByPlay(Object.fromEntries(
           thisRun.filter((c) => c.destinationUrl).map((c) => [c.playId, c.destinationUrl])
         ));
@@ -2688,14 +2699,23 @@ function App() {
       }));
       setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
       if (campaignId) saveCampaignState(campaignDraft.id, { klaviyoCampaignId: campaignId });
-      showToast({ message: "Created in Klaviyo" });
+      // Re-read the DURABLE state. Without this the screen kept showing "Create
+      // draft" after a successful creation, and the next click made a second one.
+      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      showToast({ message: "Draft created in Klaviyo" });
       return result;
     } catch (err) {
+      // The server has already recorded whether this failed safely or ended
+      // uncertain. Read that, and let the panel say what may be done next.
+      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      // NO blind retry. The old toast offered one unconditionally, including
+      // after an outcome we could not confirm — where a retry can create a
+      // second campaign that cannot be taken back.
       showToast({
-        message: "Couldn't create the Klaviyo package.",
+        message: err.reconciliationRequired
+          ? "We couldn't confirm whether Klaviyo created the draft. Check Klaviyo before trying again."
+          : "The draft wasn't created. Your saved email is unchanged.",
         error: true,
-        actionLabel: "Retry",
-        onAction: () => { setToast(null); createCampaignTemplateInKlaviyo(campaignDraft); },
       });
       return null;
     } finally {
@@ -3222,6 +3242,12 @@ function App() {
                       { key: "send", label: "Review & create draft", enabled: isApproved },
                     ];
                     const preview = selectedCampaign ? (audiencePreviewsByCampaign[selectedCampaign.id] || selectedCampaign.klaviyoAudience || null) : null;
+                    // The name actually sent to the provider, for the
+                    // find-by-name fallback. Falls back to the display name only
+                    // when no handoff has happened.
+                    const storedName = campaignRowByPlay[reviewPlay.id]?.providerCampaignName
+                      || campaignRowByPlay[reviewPlay.id]?.displayName
+                      || selectedCampaign?.playTitle;
                     const publishing = selectedCampaign && publishingCampaignId === selectedCampaign.id;
                     const created = Boolean(selectedCampaign?.klaviyoTemplateId);
                     return (
@@ -3276,7 +3302,10 @@ function App() {
                                 brandDesign={brandDesign}
                                 destinationUrl={destinationByPlay[reviewPlay.id]}
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
-                                onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}
+                                onPreviewRendered={(info) => {
+                                  approvedRender.current[reviewPlay.id] = info;
+                                  setReviewPreviewHtmlByPlay((prev) => ({ ...prev, [reviewPlay.id]: info.html || "" }));
+                                }}
                                 campaignSignature={campaignSignature({
                                   edits: draftEditsByPlay[reviewPlay.id],
                                   destinationUrl: destinationByPlay[reviewPlay.id],
@@ -3422,6 +3451,9 @@ function App() {
                             });
                             const sender = summarizeSender(senderIdentity);
                             const rendered = approvedRender.current[reviewPlay.id] || null;
+                            const storedRow = campaignRowByPlay[reviewPlay.id] || null;
+                            const frozenHtml = storedRow?.renderedHtml || null;
+                            const previewHtmlForReview = reviewPreviewHtmlByPlay[reviewPlay.id] || null;
                             return (
                               <div className="final-review">
                                 <div className="final-review-block">
@@ -3462,6 +3494,45 @@ function App() {
                                   ) : <p className="final-review-meta">{summary.message}</p>}
                                 </div>
 
+                                <div className="final-review-block final-review-preview">
+                                  <span className="section-kicker">
+                                    {storedRow?.frozen ? "Handoff email" : "Current email preview"}
+                                  </span>
+                                  {/* The approved spec requires the actual email
+                                      here, not only its subject line. A merchant
+                                      confirming a send from a summary is
+                                      confirming something they cannot see.
+                                      After handoff this becomes the FROZEN
+                                      snapshot — labelled "handoff email", never
+                                      "final sent email", because edits made in
+                                      Klaviyo afterwards are invisible to us. */}
+                                  {frozenHtml || previewHtmlForReview ? (
+                                    <>
+                                      <iframe
+                                        title={frozenHtml ? "Email handed to Klaviyo" : "Current email preview"}
+                                        className="final-review-frame"
+                                        srcDoc={frozenHtml || previewHtmlForReview}
+                                      />
+                                      {frozenHtml ? (
+                                        <p className="final-review-meta">
+                                          Email handed to Klaviyo{storedRow?.frozenAt
+                                            ? ` on ${new Date(storedRow.frozenAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}`
+                                            : ""}. Changes made later in Klaviyo aren't reflected here.
+                                        </p>
+                                      ) : null}
+                                    </>
+                                  ) : (
+                                    // A legacy record with no stored HTML. Never
+                                    // regenerated from today's design: that would
+                                    // show an email nobody ever sent.
+                                    <p className="final-review-meta">
+                                      {storedRow?.frozen
+                                        ? "The original email wasn't recorded."
+                                        : "Go back to Edit email to load the preview."}
+                                    </p>
+                                  )}
+                                </div>
+
                                 <div className="final-review-block">
                                   <span className="section-kicker">Sender</span>
                                   {/* Reported by the provider, or an honest absence. Never
@@ -3498,11 +3569,16 @@ function App() {
                             // Everything below follows the Ticket D contract, via
                             // one presenter. Local status is not consulted: it is
                             // not evidence that anything happened at Klaviyo.
-                            const delivery = campaignIdByPlay[reviewPlay.id]
-                              ? deliveryByCampaignId[campaignIdByPlay[reviewPlay.id]]
-                              : null;
+                            const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                            // undefined = not loaded yet, null = load failed.
+                            // Neither is "nothing has happened yet"; treating
+                            // them as such showed "Create draft" for a campaign
+                            // already handed off.
+                            const delivery = campaignRowId
+                              ? deliveryByCampaignId[campaignRowId]
+                              : { state: "not_started" };
                             const view = presentDelivery(
-                              { ...(delivery || {}), campaignName: selectedCampaign?.playTitle },
+                              delivery ? { ...delivery, campaignName: storedName } : delivery,
                               { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
                             );
 
@@ -3540,11 +3616,12 @@ function App() {
                         </div>
 
                         {workspaceStep === "send" ? (() => {
-                          const delivery = campaignIdByPlay[reviewPlay.id]
-                            ? deliveryByCampaignId[campaignIdByPlay[reviewPlay.id]]
-                            : null;
+                          const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                          const delivery = campaignRowId
+                            ? deliveryByCampaignId[campaignRowId]
+                            : { state: "not_started" };
                           const view = presentDelivery(
-                            { ...(delivery || {}), campaignName: selectedCampaign?.playTitle },
+                            delivery ? { ...delivery, campaignName: storedName } : delivery,
                             { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
                           );
                           return (

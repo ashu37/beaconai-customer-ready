@@ -70,6 +70,10 @@ export function usePreview({
         // The link the rendered button actually carries, after the campaign's
         // own destination and the design default are resolved.
         effectiveDestinationUrl: result.effectiveDestinationUrl ?? null,
+        // Carried so the final review can show the ACTUAL email rather than a
+        // summary of it. Confirming a send from a summary is confirming
+        // something the merchant cannot see.
+        html: result.html || "",
       };
       setHtml(result.html || "");
       setRenderedFrom(record);

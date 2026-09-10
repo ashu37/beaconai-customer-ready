@@ -84,7 +84,29 @@ function formatWhen(value) {
  * @param {boolean} options.isFounder      founder-only actions are hidden otherwise
  * @param {boolean} options.klaviyoConnected
  */
-export function presentDelivery(delivery, { isFounder = false, klaviyoConnected = true } = {}) {
+export function presentDelivery(delivery, { isFounder = false, klaviyoConnected = true, loading = false } = {}) {
+  // "We have not loaded this yet" is not "nothing has happened yet". Treating
+  // an unloaded campaign as not_started would show "Create draft" for one that
+  // has already been handed off.
+  if (loading || delivery === undefined) {
+    return {
+      state: "loading", label: "Checking status…", message: null, primary: null,
+      caption: null, editable: false, allowsCreate: false, findHint: null, detail: null,
+      lastChecked: null, lastCheckError: null, sentSummary: null,
+      founderAction: null, merchantNote: null,
+    };
+  }
+  if (delivery === null) {
+    return {
+      state: "unavailable",
+      label: "Status unavailable",
+      message: "We couldn't load this campaign's status. Reload before creating a draft.",
+      primary: null, caption: null, editable: false, allowsCreate: false,
+      findHint: null, detail: null, lastChecked: null, lastCheckError: null,
+      sentSummary: null, founderAction: null, merchantNote: null,
+    };
+  }
+
   const state = delivery?.state || "not_started";
   const base = DELIVERY_PRESENTATION[state] || DELIVERY_PRESENTATION.not_started;
 

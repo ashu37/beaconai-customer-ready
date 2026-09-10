@@ -100,3 +100,19 @@ test("a disconnected provider is asked for, not a dead create button", () => {
 test("creation says plainly that nothing is sent", () => {
   assert.equal(presentDelivery(d("not_started")).caption, "Creates a draft. No email is sent.");
 });
+
+test("unloaded and unavailable are not 'nothing has happened yet'", () => {
+  // Showing "Create draft" for a campaign that was already handed off is the
+  // failure here — the merchant clicks it and creates a second one.
+  const loading = presentDelivery(undefined);
+  assert.equal(loading.state, "loading");
+  assert.equal(loading.allowsCreate, false);
+
+  const explicitLoading = presentDelivery({ state: "not_started" }, { loading: true });
+  assert.equal(explicitLoading.allowsCreate, false);
+
+  const unavailable = presentDelivery(null);
+  assert.equal(unavailable.state, "unavailable");
+  assert.equal(unavailable.allowsCreate, false);
+  assert.match(unavailable.message, /Reload before creating/);
+});

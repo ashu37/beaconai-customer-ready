@@ -163,15 +163,15 @@ suite("reconciliation adopts a single match", async () => {
   await transitionDelivery(campaign.id, "uncertain");
 
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => ({
-      matches: [{ id: "kl-42", url: "https://klaviyo.example/c/kl-42", status: "draft" }],
-    }),
+    findByName: async () => ({ matches: [{ id: "kl-42", status: "draft" }], complete: true }),
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.delivery.state, "awaiting_send");
   assert.equal(result.delivery.providerCampaignId, "kl-42");
-  assert.equal(result.delivery.providerCampaignUrl, "https://klaviyo.example/c/kl-42");
+  // No URL: the provider's links.self is an API resource, not a page a merchant
+  // can open, so we hold none and the UI falls back to find-by-name.
+  assert.equal(result.delivery.providerCampaignUrl, null);
 });
 
 suite("reconciliation refuses to guess between matches", async () => {
@@ -181,7 +181,7 @@ suite("reconciliation refuses to guess between matches", async () => {
   await transitionDelivery(campaign.id, "uncertain");
 
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => ({ matches: [{ id: "kl-1" }, { id: "kl-2" }] }),
+    findByName: async () => ({ matches: [{ id: "kl-1" }, { id: "kl-2" }], complete: true }),
   });
 
   // Adopting one of several would attach the merchant's record to an arbitrary
@@ -199,7 +199,7 @@ suite("reconciliation finding nothing makes retry safe", async () => {
   await transitionDelivery(campaign.id, "uncertain");
 
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => ({ matches: [] }),
+    findByName: async () => ({ matches: [], complete: true }),
   });
   assert.equal(result.reason, "not_found");
   assert.equal(result.delivery.state, "failed");
@@ -216,7 +216,7 @@ suite("reconciliation records a failed lookup without inventing state", async ()
   await transitionDelivery(campaign.id, "uncertain");
 
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => { throw new Error("klaviyo unreachable"); },
+    findByName: async () => { throw new Error("klaviyo unreachable"); },
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "check_failed");
@@ -234,9 +234,7 @@ suite("reconciliation carries a provider send through", async () => {
 
   const sentAt = new Date("2026-09-02T09:30:00Z");
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => ({
-      matches: [{ id: "kl-7", status: "sent", sentAt, sentCount: 873 }],
-    }),
+    lookupById: async (id) => ({ id, status: "sent", sentAt, sentCount: 873 }),
   });
 
   assert.equal(result.delivery.state, "sent");
@@ -253,7 +251,7 @@ suite("an unrecognised provider status leaves the state alone", async () => {
   await transitionDelivery(campaign.id, "created", { providerCampaignId: "kl-8" }, { fromProvider: true });
 
   const result = await reconcileCampaign(campaign.id, {
-    findProviderCampaigns: async () => ({ matches: [{ id: "kl-8", status: "something-new" }] }),
+    lookupById: async (id) => ({ id, status: "something-new" }),
   });
   // Guessing would put a state on screen that no provider ever reported.
   assert.equal(result.delivery.state, "created");
@@ -263,12 +261,12 @@ suite("an unrecognised provider status leaves the state alone", async () => {
 suite("the delivery endpoint reports the durable state", async () => {
   await db.resetDatabase();
   const campaign = await seedCampaign();
-  const response = await api.get(`/campaigns/${campaign.id}/delivery`);
+  const response = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
   assert.equal(response.status, 200);
   assert.equal(response.body.delivery.state, "not_started");
   assert.equal(response.body.delivery.lastCheckedAt, null);
 
-  const missing = await api.get("/campaigns/999999/delivery");
+  const missing = await api.get(`/campaigns/999999/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
   assert.equal(missing.status, 404);
 });
 
@@ -284,4 +282,135 @@ suite("reconciliation is founder-only", async () => {
   const wrong = await api.post(`/campaigns/${campaign.id}/reconcile`, {});
   assert.equal(wrong.status, 403);
   delete process.env.BEACONAI_ADMIN_TOKEN;
+});
+
+suite("reconciliation looks up the id it already holds", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "created", { providerCampaignId: "kl-known" }, { fromProvider: true });
+
+  let nameSearched = false;
+  const result = await reconcileCampaign(campaign.id, {
+    lookupById: async (id) => {
+      assert.equal(id, "kl-known");
+      return { id, status: "sent", sentAt: new Date("2026-09-03T08:00:00Z"), sentCount: 500 };
+    },
+    findByName: async () => { nameSearched = true; return { matches: [], complete: true }; },
+  });
+
+  // A provider-issued id is a far stronger identity than any name search, and
+  // skipping it was how reconciliation "failed to find" a campaign it already
+  // had a reference to.
+  assert.equal(nameSearched, false, "no name search was needed");
+  assert.equal(result.delivery.state, "sent");
+  assert.equal(result.delivery.providerSentCount, 500);
+});
+
+suite("reconciliation searches by the name actually sent, not a re-derived one", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await query(
+    `UPDATE clean.campaigns SET provider_campaign_name = $2 WHERE id = $1`,
+    [campaign.id, "BeaconAI - Bring back first-time buyers"]
+  );
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  let searchedFor = null;
+  await reconcileCampaign(campaign.id, {
+    lookupById: async () => null,
+    findByName: async (name) => { searchedFor = name; return { matches: [], complete: true }; },
+  });
+
+  // Re-deriving the name from the stored row produced "BeaconAI - Campaign",
+  // so the lookup searched for something that was never created.
+  assert.equal(searchedFor, "BeaconAI - Bring back first-time buyers");
+});
+
+suite("an incomplete lookup cannot declare absence", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  // A partial listing that happens not to contain the campaign looks exactly
+  // like the campaign not existing — and absence is what authorises a retry.
+  const result = await reconcileCampaign(campaign.id, {
+    findByName: async () => ({ matches: [], complete: false }),
+  });
+  assert.equal(result.reason, "inconclusive");
+  assert.equal(result.delivery.state, "uncertain", "still unresolved, not cleared to retry");
+});
+
+suite("establishing absence actually makes a retry possible", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  const { reserveCampaignForHandoff, getCampaign: get } = require("../src/services/campaignService");
+  await reserveCampaignForHandoff(campaign.id, campaign.revision);
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "uncertain");
+
+  await reconcileCampaign(campaign.id, {
+    findByName: async () => ({ matches: [], complete: true }),
+  });
+
+  const after = await get(campaign.id);
+  // "Safe to retry" has to mean retry works. The reservation is what blocks the
+  // next attempt, so leaving it made the campaign read as retryable and then
+  // refuse with "a send is already in progress".
+  assert.equal(after.handoffReservedAt, null, "the reservation was released");
+  const reserved = await reserveCampaignForHandoff(campaign.id, after.revision);
+  assert.ok(reserved.handoffReservedAt, "and a real retry can now proceed");
+});
+
+suite("a later check that learns the sent count records it", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "created", { providerCampaignId: "kl-9" }, { fromProvider: true });
+
+  const sentAt = new Date("2026-09-04T10:00:00Z");
+  const first = await reconcileCampaign(campaign.id, {
+    lookupById: async (id) => ({ id, status: "sent", sentAt, sentCount: null }),
+  });
+  assert.equal(first.delivery.state, "sent");
+  assert.equal(first.delivery.providerSentCount, null);
+
+  // The provider now knows the count. The state has not moved, so the
+  // transition is a no-op — but the FACT is new and must not be dropped.
+  const second = await reconcileCampaign(campaign.id, {
+    lookupById: async (id) => ({ id, status: "sent", sentAt, sentCount: 873 }),
+  });
+  assert.equal(second.delivery.providerSentCount, 873);
+  assert.equal(second.delivery.state, "sent");
+});
+
+suite("a later check reporting no count cannot erase a known one", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+  await transitionDelivery(campaign.id, "creating");
+  await transitionDelivery(campaign.id, "created", { providerCampaignId: "kl-10" }, { fromProvider: true });
+  const sentAt = new Date("2026-09-04T10:00:00Z");
+
+  await reconcileCampaign(campaign.id, {
+    lookupById: async (id) => ({ id, status: "sent", sentAt, sentCount: 640 }),
+  });
+  const after = await reconcileCampaign(campaign.id, {
+    lookupById: async (id) => ({ id, status: "sent", sentAt, sentCount: null }),
+  });
+  assert.equal(after.delivery.providerSentCount, 640, "a known number is not un-known by a quieter answer");
+});
+
+suite("one shop cannot read another shop's delivery state", async () => {
+  await db.resetDatabase();
+  const campaign = await seedCampaign();
+
+  // Same 404 as a missing campaign, so an id cannot be probed for existence
+  // from the wrong shop.
+  const foreign = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=someone-else.myshopify.com`);
+  assert.equal(foreign.status, 404);
+
+  const own = await api.get(`/campaigns/${campaign.id}/delivery?shopDomain=${encodeURIComponent(SHOP)}`);
+  assert.equal(own.status, 200);
 });

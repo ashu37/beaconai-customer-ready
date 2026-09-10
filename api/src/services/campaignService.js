@@ -134,6 +134,7 @@ function rowToCampaign(row) {
     approvedCopy: row.approved_copy,
     renderedHtml: row.rendered_html,
     templateVersion: row.template_version,
+    providerCampaignName: row.provider_campaign_name,
     audienceRef: row.audience_ref,
     audienceHash: row.audience_hash,
     reviewedAt: row.reviewed_at,

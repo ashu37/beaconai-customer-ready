@@ -51,6 +51,7 @@ async function request(path, options = {}) {
     // it into a bare message would leave the caller nothing to recover WITH.
     error.status = response.status;
     if (data?.code) error.code = data.code;
+    if (data?.reconciliationRequired) error.reconciliationRequired = true;
     if (data?.problems) error.problems = data.problems;
     if (data?.conflict) {
       error.conflict = data.conflict;
@@ -101,7 +102,7 @@ export const api = {
     }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
   // Ticket D contract: the durable provider state for one campaign. Read-only.
-  campaignDelivery: (campaignId) => request(`/campaigns/${campaignId}/delivery`),
+  campaignDelivery: (campaignId) => request(`/campaigns/${campaignId}/delivery?shopDomain=${encodeURIComponent(shopDomain)}`),
   // The verified sender, or null. There is no sender-management feature here:
   // the merchant sets it in Klaviyo, and this only reports what is already true.
   klaviyoSender: () => request(`/klaviyo/sender?shopDomain=${encodeURIComponent(shopDomain)}`),

@@ -141,6 +141,45 @@ async function transitionDelivery(campaignId, to, fields = {}, options = {}) {
  * provider must move `last_checked_at` and leave `last_confirmed_at` alone, or a
  * stale state would look freshly confirmed because someone pressed refresh.
  */
+/**
+ * Write provider facts WITHOUT moving the state.
+ *
+ * For a repeat check that confirms the same state but carries something new —
+ * most often a send count the provider did not have the first time. Rejecting
+ * the no-op transition and dropping its payload meant an unknown count stayed
+ * unknown forever, even once the provider knew it.
+ *
+ * State never regresses here: this only writes facts.
+ */
+async function applyConfirmedFacts(campaignId, fields = {}) {
+  const { rows } = await query(
+    `UPDATE clean.campaigns
+        SET provider              = COALESCE($2, provider),
+            provider_campaign_id  = COALESCE($3, provider_campaign_id),
+            provider_campaign_url = COALESCE($4, provider_campaign_url),
+            provider_sent_at      = COALESCE($5, provider_sent_at),
+            provider_sent_count   = CASE WHEN $7 THEN $6 ELSE provider_sent_count END,
+            provider_send_status  = COALESCE($8, provider_send_status),
+            last_confirmed_at     = NOW(),
+            updated_at            = NOW()
+      WHERE id = $1
+      RETURNING *`,
+    [
+      campaignId,
+      fields.provider || null,
+      fields.providerCampaignId || null,
+      fields.providerCampaignUrl || null,
+      fields.providerSentAt || null,
+      fields.providerSentCount ?? null,
+      // Only overwrite the count when this check actually carried one, so a
+      // later check that reports nothing cannot erase a known number.
+      Object.prototype.hasOwnProperty.call(fields, "providerSentCount") && fields.providerSentCount != null,
+      fields.providerSendStatus || null,
+    ]
+  );
+  return rowToDelivery(rows[0]);
+}
+
 async function recordStatusCheck(campaignId, { ok, error = null }) {
   const { rows } = await query(
     `UPDATE clean.campaigns
@@ -157,6 +196,7 @@ async function recordStatusCheck(campaignId, { ok, error = null }) {
 
 module.exports = {
   DELIVERY_STATES,
+  applyConfirmedFacts,
   DeliveryTransitionRejected,
   PROVIDER_CONFIRMED_ONLY,
   TRANSITIONS,

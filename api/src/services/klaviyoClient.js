@@ -319,33 +319,80 @@ async function createCampaignSendPackageInner(privateKey, campaign, audience, pr
   };
 }
 
+function klaviyoCampaignToMatch(item) {
+  return {
+    provider: "klaviyo",
+    id: item.id,
+    name: item.attributes?.name || null,
+    // Deliberately NOT item.links.self. That is an API resource URL, not a page
+    // a merchant can open, and treating its presence as a usable Klaviyo editor
+    // link would put a dead "Open draft" button in front of them. Until a URL is
+    // verified as a UI destination we have none, and the find-by-name fallback
+    // is what the merchant gets.
+    url: null,
+    status: item.attributes?.status || null,
+    sentAt: item.attributes?.send_time || null,
+    // Present-but-null when the provider reports no count. Not zero.
+    sentCount: item.attributes?.recipient_count ?? null,
+  };
+}
+
 /**
- * Look this campaign up at the provider, by the name we gave it.
+ * Fetch one campaign by the id we already hold.
  *
- * Reconciliation's eyes. Returns EVERY match — more than one is a real answer
- * ("we cannot tell which is yours") and must not be collapsed into a guess.
- * Never creates anything.
+ * Always tried first. An id we were given by the provider is a far stronger
+ * identity than any name search, and skipping it was how reconciliation managed
+ * to "not find" a campaign it already had a reference to.
  */
-async function findKlaviyoCampaigns(privateKey, campaign) {
+async function getKlaviyoCampaign(privateKey, campaignId) {
   const client = createKlaviyoClient(privateKey);
-  const name = campaignName(campaign);
-  const response = await client.get(
-    `/campaigns?filter=${encodeURIComponent(`equals(messages.channel,'email')`)}`
-  );
-  const all = response.data?.data || [];
-  const matches = all
-    .filter((item) => (item.attributes?.name || "") === name)
-    .map((item) => ({
-      provider: "klaviyo",
-      id: item.id,
-      // Only a link the provider itself gave us.
-      url: item.links?.self || null,
-      status: item.attributes?.status || null,
-      sentAt: item.attributes?.send_time || null,
-      // Present-but-null when the provider reports no count. Not zero.
-      sentCount: item.attributes?.recipient_count ?? null,
-    }));
-  return { matches };
+  try {
+    const response = await client.get(`/campaigns/${encodeURIComponent(campaignId)}`);
+    const item = response.data?.data;
+    return item ? klaviyoCampaignToMatch(item) : null;
+  } catch (error) {
+    // A 404 is a real answer: the provider does not have it. Anything else is a
+    // failed lookup and must not be reported as absence.
+    if (error.response?.status === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * Look a campaign up at the provider by the EXACT name we sent at handoff.
+ *
+ * Reconciliation's eyes when there is no id. Returns EVERY match — more than one
+ * is a real answer ("we cannot tell which is yours") and must not be collapsed
+ * into a guess. Never creates anything.
+ *
+ * Pages to the end. A partial listing that happens not to contain the campaign
+ * is indistinguishable from the campaign not existing, and this function's
+ * caller treats absence as permission to retry — so stopping early could
+ * authorise a duplicate send.
+ */
+async function findKlaviyoCampaigns(privateKey, providerCampaignName, { maxPages = 50 } = {}) {
+  if (!providerCampaignName) return { matches: [], complete: false, reason: "no_recorded_name" };
+
+  const client = createKlaviyoClient(privateKey);
+  let path = `/campaigns?filter=${encodeURIComponent(`equals(messages.channel,'email')`)}`;
+  const matches = [];
+  let pages = 0;
+
+  while (path && pages < maxPages) {
+    const response = await client.get(path);
+    for (const item of response.data?.data || []) {
+      if ((item.attributes?.name || "") === providerCampaignName) {
+        matches.push(klaviyoCampaignToMatch(item));
+      }
+    }
+    pages += 1;
+    const next = response.data?.links?.next || null;
+    path = next ? next.replace(/^https?:\/\/[^/]+\/api/, "") : null;
+  }
+
+  // `complete` says whether we actually reached the end. The caller may only
+  // declare absence when it did.
+  return { matches, complete: !path, pages };
 }
 
 /**
@@ -410,7 +457,12 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 
 module.exports = {
   PROVIDER_STAGES,
+  // Exported so the handoff route can RECORD the exact name it is about to send.
+  // Re-deriving it later from a stored campaign row produced a different string,
+  // and reconciliation then searched for a campaign that never existed.
+  campaignNameForProvider: campaignName,
   findKlaviyoCampaigns,
+  getKlaviyoCampaign,
   getKlaviyoSender,
   testKlaviyo,
   getKlaviyoLists,

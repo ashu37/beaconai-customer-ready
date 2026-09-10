@@ -1,5 +1,6 @@
 const express = require("express");
 const { config } = require("./config");
+const { query } = require("./db");
 const { fetchShopifyData } = require("./services/shopifyClient");
 const {
   saveRawShopifyData,
@@ -17,7 +18,9 @@ const {
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,
+  campaignNameForProvider,
   findKlaviyoCampaigns,
+  getKlaviyoCampaign,
   getKlaviyoSender,
 } = require("./services/klaviyoClient");
 const {
@@ -847,6 +850,17 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // Rendered HERE, once, by the same function the preview used — then handed
     // to the provider as bytes. Letting the provider client render again would
     // reintroduce exactly the divergence this ticket exists to remove.
+    // Recorded BEFORE the provider is called. If the call ends uncertain, this
+    // is the only identity reconciliation has to find the campaign by — and
+    // re-deriving it later from the stored row produced a different string.
+    const providerCampaignName = campaignNameForProvider(campaign);
+    if (campaignRow) {
+      await query(
+        `UPDATE clean.campaigns SET provider_campaign_name = $2, updated_at = NOW() WHERE id = $1`,
+        [campaignRow.id, providerCampaignName]
+      ).catch(() => {});
+    }
+
     let renderedHtml;
     try {
       const brandTemplate = await requireActiveBrandTemplate(shopDomain);
@@ -956,7 +970,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
           providerCampaignId: klaviyoCampaignId,
           // Only from a provider response. We do not build a link out of an id
           // and a guessed account path.
-          providerCampaignUrl: packageResult.campaign?.links?.self || null,
+          // Deliberately null. links.self is an API resource URL, not a page a
+          // merchant can open; storing it would put a dead "Open draft in
+          // Klaviyo" button in front of them.
+          providerCampaignUrl: null,
         }, { fromProvider: true }).catch(() => {});
       } else {
         // The package call returned without a campaign id. That is not a
@@ -1146,6 +1163,12 @@ router.patch("/campaigns/:id", async (req, res) => {
 });
 
 // The durable provider state for one campaign. Safe to poll: reads only.
+//
+// SCOPED, not authenticated. The caller must name the shop and the campaign must
+// belong to it, which stops one store's campaign being read by id from another
+// store's session. It is NOT an access boundary: nothing here proves the caller
+// is that shop. Ticket D still owns real authentication, and this endpoint
+// inherits whatever it establishes.
 router.get("/campaigns/:id/delivery", async (req, res) => {
   try {
     const id = Number.parseInt(req.params.id, 10);
@@ -1153,11 +1176,19 @@ router.get("/campaigns/:id/delivery", async (req, res) => {
       res.status(400).json({ ok: false, error: "campaign id must be numeric" });
       return;
     }
-    const delivery = await getDelivery(id);
-    if (!delivery) {
+    const shopDomain = req.query.shopDomain || config.shopify.shopDomain;
+    if (!shopDomain) {
+      res.status(400).json({ ok: false, error: "shopDomain is required" });
+      return;
+    }
+    const campaign = await getCampaign(id);
+    // Same 404 for "does not exist" and "not yours", so an id cannot be probed
+    // for existence from the wrong shop.
+    if (!campaign || campaign.shopDomain !== shopDomain) {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;
     }
+    const delivery = await getDelivery(id);
     res.json({ ok: true, delivery });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -1173,14 +1204,19 @@ router.post("/campaigns/:id/reconcile", async (req, res) => {
       res.status(400).json({ ok: false, error: "campaign id must be numeric" });
       return;
     }
-    const privateKey = await resolveKlaviyoKey(req.body);
-    const result = await reconcileCampaign(id, {
-      findProviderCampaigns: async ({ campaign }) => findKlaviyoCampaigns(privateKey, campaign),
-    });
-    if (!result) {
+    const campaign = await getCampaign(id);
+    if (!campaign) {
       res.status(404).json({ ok: false, error: `No campaign ${id}` });
       return;
     }
+    // Credentials for the campaign's OWN store, not whatever the request body
+    // says. A founder token is not a licence to reconcile one shop's campaign
+    // against another shop's Klaviyo account.
+    const privateKey = await resolveStoredKlaviyoToken(campaign.shopDomain);
+    const result = await reconcileCampaign(id, {
+      lookupById: (providerCampaignId) => getKlaviyoCampaign(privateKey, providerCampaignId),
+      findByName: (name) => findKlaviyoCampaigns(privateKey, name),
+    });
     res.json({ ok: true, ...result });
   } catch (error) {
     if (error instanceof DeliveryTransitionRejected) {

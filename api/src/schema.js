@@ -356,6 +356,12 @@ async function initSchema() {
   // mid-handoff is worse than no link.
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_campaign_url TEXT;`);
 
+  // The EXACT name sent to the provider at handoff. Reconciliation's only
+  // reliable way to find a campaign it has no id for: re-deriving the name later
+  // from a stored row produced a different string, so the lookup searched for a
+  // campaign that was never created under that name and reported absence.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_campaign_name TEXT;`);
+
   // "When did we last look" and "when did the provider last tell us this" are
   // different questions. A failed check updates the first and not the second, so
   // a stale state cannot pass as fresh because someone retried.
