@@ -214,6 +214,16 @@ The specification must include:
 
 Use clearly labeled seed examples. Keep the existing campaign list and simple detail interaction unless a small change is necessary for readability. Daily charts, advanced search/filtering, a full registry redesign and the four-card analytics redesign remain deferred.
 
+**Status: DRAFT ready for founder review — [RESULTS_UI_SPEC.md](RESULTS_UI_SPEC.md).** It covers:
+- desktop and narrow wireframes
+- exact wording
+- every required state, with seed examples and recovery actions
+- the program band's states, aligned with Ticket H
+- field mapping, marking what exists and what Ticket G must add
+- accessibility
+
+Five decisions are listed in its §11. Ticket G's UI implementation waits for approval.
+
 **Exit criterion:** the founder reviews the wireframe, wording and state examples and confirms the intended pilot UI before the engineer implements it. Store the agreed specification as `RESULTS_UI_SPEC.md` and link it from Ticket G. Resolve open layout choices here rather than leaving them implicit in implementation. This is a scope-clarification checkpoint, not another product redesign phase.
 
 ## Ticket G — truthful minimal Results (P2 fixes; P3 presentation)
