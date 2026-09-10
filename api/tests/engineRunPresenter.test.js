@@ -73,13 +73,65 @@ test("a missing or unknown source says so instead of guessing", () => {
 
 test("the observed change is the metric, its window and what it is compared with", () => {
   const facts = presentEngineRun(run()).recommendations[0].evidence_facts;
+  // The engine's two-proportion effect is recent_rate − prior_rate, so
+  // -0.205607 is a fall of 20.6 percentage points — not 20.6%.
   assert.deepEqual(facts.observed_change, {
     metric: "reactivation_rate",
     metric_label: "Reactivation rate",
-    change_pct: -20.6,
+    unit: "percentage_points",
+    value: -20.6,
+    currency: null,
     direction: "down",
+    note: null,
     window: { id: "L56", days: 56, label: "last 56 days", comparison: "compared with the 56 days before" },
   });
+});
+
+function changeFor(metric, observed_effect, options) {
+  return presentEngineRun(
+    run({ recommendations: [card({ measurement: { metric, observed_effect, n: 10, primary_window: "L28" } })] }),
+    null, null, options,
+  ).recommendations[0].evidence_facts.observed_change;
+}
+
+test("each builder's change is reported in the unit that builder produces", () => {
+  // Two-proportion builders: percentage points.
+  for (const metric of ["reactivation_rate", "replenishment_conversion_rate", "first_to_second_conversion_rate"]) {
+    assert.equal(changeFor(metric, 0.05).unit, "percentage_points", metric);
+  }
+
+  // The directional builder's aligned delta is a relative change.
+  const relative = changeFor("returning_customer_share", 0.062);
+  assert.equal(relative.unit, "percent");
+  assert.equal(relative.value, 6.2);
+
+  // An effect whose unit isn't established is not shown in a guessed one.
+  assert.equal(changeFor("conversion", 0.76), null);
+  assert.equal(changeFor("some_new_metric", 0.1), null);
+});
+
+test("the discount change is labelled as the heavy-discount revenue share it is", () => {
+  // The builder's rate is heavy-discount-cohort revenue over all revenue. It was
+  // labelled "Full-price purchase rate" — so a rise in discount dependency read
+  // as more full-price buying.
+  const change = changeFor("discount_dependency_hygiene_full_price_conversion_rate", 0.053333);
+  assert.equal(change.metric_label, "Share of revenue from heavy-discount customers");
+  assert.equal(change.unit, "percentage_points");
+  assert.equal(change.value, 5.3);
+  assert.equal(change.direction, "up");
+  assert.match(change.note, /more of your revenue is coming from customers who mostly buy on discount/);
+  assert.doesNotMatch(JSON.stringify(change), /full-price/i);
+});
+
+test("the AOV-bundle change is an average order value difference in the store's currency", () => {
+  // The value on the card is the Welch difference in mean order value. It was
+  // labelled "Spend-threshold crossing rate" and would have rendered as a percent.
+  const change = changeFor("aov_threshold_crossing_conversion_rate", -3.204, { currency: "CAD" });
+  assert.equal(change.metric_label, "Average order value");
+  assert.equal(change.unit, "currency");
+  assert.equal(change.value, -3.2);
+  assert.equal(change.currency, "CAD");
+  assert.doesNotMatch(change.metric_label, /threshold|crossing|rate/i);
 });
 
 test("a sample figure appears only where its unit is established", () => {
@@ -98,7 +150,7 @@ test("a sample figure appears only where its unit is established", () => {
     })],
   })).recommendations[0].evidence_facts;
   assert.equal(discount.sample, null, "a dollar total is not a sample size");
-  assert.equal(discount.observed_change.metric_label, "Full-price purchase rate");
+  assert.equal(discount.observed_change.metric_label, "Share of revenue from heavy-discount customers");
 
   const known = presentEngineRun(run({
     recommendations: [card({ measurement: { metric: "returning_customer_share", observed_effect: 0.06, n: 412, primary_window: "L28" } })],

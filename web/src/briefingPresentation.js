@@ -98,14 +98,32 @@ function titleCase(value) {
   return String(value).replaceAll("_", " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// The presenter says which unit each change is in; this only writes it out.
+// A difference between two rates is percentage points, never "%" — "down 20.6%"
+// for a rate that fell from 40% to 19.4% overstates nothing but misstates what
+// moved. An unknown unit renders nothing.
+function changeAmount(change) {
+  const magnitude = Math.abs(change.value);
+  const oneDecimal = magnitude.toLocaleString("en-US", { maximumFractionDigits: 1 });
+  if (change.unit === "percentage_points") return `${oneDecimal} percentage ${magnitude === 1 ? "point" : "points"}`;
+  if (change.unit === "percent") return `${oneDecimal}%`;
+  if (change.unit === "currency") {
+    const prefix = !change.currency || change.currency === "USD" ? "$" : `${change.currency} `;
+    return `${prefix}${magnitude.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return null;
+}
+
 export function formatChange(change) {
-  if (!change) return null;
-  const magnitude = Math.abs(change.change_pct).toLocaleString("en-US", { maximumFractionDigits: 1 });
-  const value = change.direction === "flat" ? "No change" : `${change.direction === "up" ? "Up" : "Down"} ${magnitude}%`;
+  if (!change || !Number.isFinite(change.value)) return null;
+  const amount = changeAmount(change);
+  if (!amount) return null;
+  const value = change.direction === "flat" ? "No change" : `${change.direction === "up" ? "Up" : "Down"} ${amount}`;
+  const windowText = change.window ? `${change.window.label}, ${change.window.comparison}.` : null;
   return {
     label: change.metric_label || "Store metric",
     value,
-    note: change.window ? `${change.window.label}, ${change.window.comparison}` : null,
+    note: [windowText, change.note].filter(Boolean).join(" ") || null,
   };
 }
 

@@ -6,7 +6,7 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import {
-  briefingHeadline, dataStatusItems, evidenceChipItems, heldLaneEmptyText,
+  briefingHeadline, dataStatusItems, evidenceChipItems, formatChange, heldLaneEmptyText,
   holdsAreDataVolume, truncatedNote,
 } from "../src/briefingPresentation.js";
 
@@ -100,8 +100,21 @@ test("the briefing labels store evidence as the store's, with units and no lift 
   assert.doesNotMatch(text, /\bL56\b/, "windows are written out");
 
   assert.match(text, /Reactivation rate/);
-  assert.match(text, /Down 20\.6%/);
+  // A rate difference, in points. "Down 20.6%" was the reported misreading.
+  assert.match(text, /Down 20\.6 percentage points/);
+  assert.doesNotMatch(text, /Down 20\.6%/);
   assert.match(text, /last 56 days, compared with the 56 days before/);
+
+  // The discount play's change: the heavy-discount revenue share, in points,
+  // saying which direction is bad. It shows once that play is selected.
+  const discountRow = [...document.querySelectorAll("button.recommendation-row")]
+    .find((b) => b.textContent.includes("Reduce discount dependency"));
+  await act(async () => { fireEvent.click(discountRow); });
+  const selected = document.body.textContent;
+  assert.doesNotMatch(selected, /Full-price purchase rate/);
+  assert.match(selected, /Share of revenue from heavy-discount customers/);
+  assert.match(selected, /Up 5\.3 percentage points/);
+  assert.match(selected, /mostly buy on discount/);
   assert.match(text, /107 lapsed customers tracked/);
   assert.match(text, /Baseline revenue/);
 });
@@ -198,5 +211,19 @@ test("evidence items without a known unit are left out rather than guessed", () 
   const discount = presentedRun.recommendations.find((r) => r.play_id === "discount_dependency_hygiene");
   const labels = evidenceChipItems(discount, null).map((c) => c.label);
   assert.ok(!labels.includes("Based on"));
-  assert.ok(labels.includes("Full-price purchase rate"));
+  assert.ok(labels.includes("Share of revenue from heavy-discount customers"));
+});
+
+test("each change unit is written out as that unit, and an unknown one not at all", () => {
+  const window = { label: "last 28 days", comparison: "compared with the 28 days before" };
+  assert.equal(formatChange({ unit: "percentage_points", value: -20.6, direction: "down", window }).value, "Down 20.6 percentage points");
+  assert.equal(formatChange({ unit: "percentage_points", value: 1, direction: "up", window }).value, "Up 1 percentage point");
+  assert.equal(formatChange({ unit: "percent", value: 6.2, direction: "up", window }).value, "Up 6.2%");
+  assert.equal(formatChange({ unit: "currency", value: -3.2, currency: "USD", direction: "down", window }).value, "Down $3.20");
+  assert.equal(formatChange({ unit: "currency", value: 4, currency: "CAD", direction: "up", window }).value, "Up CAD 4.00");
+  assert.equal(formatChange({ unit: "something_else", value: 3, direction: "up", window }), null);
+  assert.equal(
+    formatChange({ unit: "percentage_points", value: 5.3, direction: "up", window, note: "A rise means more." }).note,
+    "last 28 days, compared with the 28 days before. A rise means more.",
+  );
 });

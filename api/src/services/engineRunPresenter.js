@@ -297,8 +297,6 @@ function evidenceSourceDisplay(source) {
 const MEASUREMENT_METRIC_LABELS = {
   reactivation_rate: "Reactivation rate",
   first_to_second_conversion_rate: "Second-purchase rate",
-  discount_dependency_hygiene_full_price_conversion_rate: "Full-price purchase rate",
-  aov_threshold_crossing_conversion_rate: "Spend-threshold crossing rate",
   replenishment_conversion_rate: "Reorder rate",
   returning_customer_share: "Returning-customer share",
   repeat_rate_within_window: "Repeat purchase rate",
@@ -349,24 +347,59 @@ const SAMPLE_UNITS = {
   repeat_rate_within_window: "customers who ordered in the period",
 };
 
-function observedChange(measurement) {
-  const effect = Number(measurement?.observed_effect);
-  if (measurement?.observed_effect == null || !Number.isFinite(effect)) return null;
-  const pct = Math.round(effect * 1000) / 10;
+// What `observed_effect` IS, per metric. The builders do not share a unit, so
+// none is applied universally (engine/src/measurement_observed.py and the
+// builders in measurement_builder.py):
+//   - two-proportion builders emit recent_rate − prior_rate: a difference in
+//     PERCENTAGE POINTS, not a percent change. -0.2056 is "down 20.6 points".
+//   - the discount builder's rate is k/n with k = revenue from the heavy-discount
+//     cohort and n = all revenue: the SHARE OF REVENUE from heavy-discount
+//     customers. A rise means more dependency, not more full-price buying.
+//   - the AOV-bundle builder puts its Welch result on the card: the difference
+//     in mean order value, in CURRENCY. The metric name says threshold crossing;
+//     the number is not that.
+//   - the directional builder emits aligned[w].delta: a RELATIVE change.
+// A metric not listed shows no change at all rather than one in a guessed unit.
+const OBSERVED_CHANGE = {
+  reactivation_rate: { label: "Reactivation rate", unit: "percentage_points" },
+  replenishment_conversion_rate: { label: "Reorder rate", unit: "percentage_points" },
+  first_to_second_conversion_rate: { label: "Second-purchase rate", unit: "percentage_points" },
+  discount_dependency_hygiene_full_price_conversion_rate: {
+    label: "Share of revenue from heavy-discount customers",
+    unit: "percentage_points",
+    note: "A rise means more of your revenue is coming from customers who mostly buy on discount.",
+  },
+  aov_threshold_crossing_conversion_rate: { label: "Average order value", unit: "currency" },
+  returning_customer_share: { label: "Returning-customer share", unit: "percent" },
+  repeat_rate_within_window: { label: "Repeat purchase rate", unit: "percent" },
+};
+
+function observedChange(measurement, currency = null) {
+  if (measurement?.observed_effect == null) return null;
+  const effect = Number(measurement.observed_effect);
+  const spec = OBSERVED_CHANGE[measurement.metric];
+  if (!spec || !Number.isFinite(effect)) return null;
+  const value = spec.unit === "currency"
+    ? Math.round(effect * 100) / 100
+    // Points and percent are both stored as fractions (0.206 → 20.6).
+    : Math.round(effect * 1000) / 10;
   return {
-    metric: measurement.metric || null,
-    metric_label: metricLabel(measurement.metric),
-    change_pct: pct,
-    direction: pct > 0 ? "up" : pct < 0 ? "down" : "flat",
+    metric: measurement.metric,
+    metric_label: spec.label,
+    unit: spec.unit,
+    value,
+    currency: spec.unit === "currency" ? currency : null,
+    direction: value > 0 ? "up" : value < 0 ? "down" : "flat",
+    note: spec.note || null,
     window: windowDisplay(measurement.primary_window),
   };
 }
 
 function sampleFor(measurement) {
-  // No observed change means the builder filled `n` with the audience size,
+  // No observed effect means the builder filled `n` with the audience size,
   // which is already shown as the audience. Repeating it as a "sample" would
   // present one number as two pieces of evidence.
-  if (!observedChange(measurement)) return null;
+  if (measurement?.observed_effect == null) return null;
   const n = Number(measurement?.n);
   const unit = SAMPLE_UNITS[measurement?.metric];
   if (!unit || !Number.isFinite(n) || n <= 0) return null;
@@ -453,7 +486,7 @@ function evidenceFactsForCard(card, currency) {
     evidence_source: card.evidence_source || null,
     evidence_source_label: source.label,
     evidence_source_detail: source.detail,
-    observed_change: observedChange(card.measurement),
+    observed_change: observedChange(card.measurement, currency),
     sample: sampleFor(card.measurement),
     confidence_label: card.confidence_label || null,
     revenue_range: range,
