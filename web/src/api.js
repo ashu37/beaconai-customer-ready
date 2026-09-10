@@ -100,6 +100,8 @@ export const api = {
       }),
     }),
   previewCampaignHtml: (draft) => request("/klaviyo/campaigns/preview-html", { method: "POST", body: JSON.stringify({ shopDomain, campaign: draft }) }),
+  // Ticket D contract: the durable provider state for one campaign. Read-only.
+  campaignDelivery: (campaignId) => request(`/campaigns/${campaignId}/delivery`),
   // Ticket C: which branded shell this shop sends with, if any.
   brandEmailTemplate: () => request(`/brand/email-template?shopDomain=${encodeURIComponent(shopDomain)}`),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).

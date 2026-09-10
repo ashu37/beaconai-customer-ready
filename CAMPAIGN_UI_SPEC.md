@@ -225,6 +225,12 @@ Allocation and consent verification stay in D/F per the implementation plan. Thi
 
 All design screenshots use a conspicuous “Sample campaign — no live recipients” label and synthetic addresses under `example.com`. Sample mode cannot create a provider draft. For actual integration validation, use only the separately authorized test store/recipient workflow.
 
+Implementation screenshots live in `docs/screenshots/campaign-ui/`, produced from the seed harness
+at `web/preview.html?state=<name>` (states: `ready`, `empty-support`, `invalid-destination`,
+`no-destination`, `save-failed`, `save-conflict`, `design-changed`, `preview-failed`, `no-design`).
+The harness stubs the API, because a failed save, a changed design and an unreachable preview
+cannot be produced on demand from a healthy backend. It has no handoff action.
+
 Prepare screenshots for: ready branded email; empty optional support text; invalid destination; failed save; changed design/stale preview; no configured design; revision conflict; unknown provider outcome; confirmed draft; confirmed sent with unavailable count. Use the 1,200/900/100/200 audience example consistently. Show both desktop and 390px phone layouts, and check the 1024/990px stacked transition.
 
 Acceptance checklist:

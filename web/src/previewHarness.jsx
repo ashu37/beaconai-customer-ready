@@ -120,7 +120,17 @@ function Harness() {
         onRefreshBrandContext={() => {}}
         onRefreshTemplates={() => {}}
         klaviyoFailed={false}
-        agentCopy={null}
+        // Seeded so the Suggested/Edited badges are accurate. Without it every
+        // field reads as "Edited", which would look like a defect in a review
+        // screenshot rather than an artifact of the harness.
+        agentCopy={{
+          subject_variants: [TEMPLATE.subject],
+          preview_text: TEMPLATE.previewText,
+          headline: TEMPLATE.bodyH2,
+          body: TEMPLATE.bodyP1,
+          support: draft.bodyP2,
+          cta: TEMPLATE.cta,
+        }}
         copyStatus="ready"
         draftEdits={scenario.edits || {}}
         saveState={scenario.saveState || "saved"}

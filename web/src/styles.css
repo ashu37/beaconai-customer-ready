@@ -697,3 +697,14 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 /* Seed harness only. Loud on purpose: a screenshot of sample data must never be
    mistaken for a merchant's real campaign. */
 .sample-banner { background: #fff4d6; border: 1px solid #e0c168; border-radius: var(--radius-card); padding: 8px 12px; margin-bottom: 14px; font-size: 12.5px; font-weight: 600; }
+
+/* Ticket D contract, as the merchant sees it. Persistent beside the action, and
+   never colour alone. */
+.delivery-panel { border: 1px solid var(--rule); border-radius: var(--radius-card); padding: 12px 14px; margin-top: 12px; font-size: 13px; background: #fbfaf7; }
+.delivery-panel p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+.delivery-panel.uncertain { background: #fdf3ee; border-color: #e0b9a4; }
+.delivery-panel.failed { background: #fdf6ee; border-color: #e6d3b8; }
+.delivery-panel.sent { background: #f1f7f3; border-color: #bcd9c6; }
+.delivery-caption { font-weight: 600; }
+.delivery-checked { font-variant-numeric: tabular-nums; }
+.send-state-label { font-size: 13px; font-weight: 600; }

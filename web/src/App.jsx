@@ -4,6 +4,7 @@ import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
+import { presentDelivery } from "./deliveryPresentation";
 import { usePreview } from "./usePreview";
 import "./styles.css";
 
@@ -938,6 +939,29 @@ export function CampaignReviewPane({
           </div>
 
           <div className="review-preview-pane" id="campaign-email-preview">
+            {/* Wireframe order: [Email] [Inbox], then [Desktop] [Mobile]. Email
+                is first because it is the default and the thing the merchant has
+                to recognise; the inbox row is a subject line, not the email. */}
+            <div className="preview-toggle" role="tablist" aria-label="Preview mode">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode === "email"}
+                className={`preview-toggle-btn ${previewMode === "email" ? "active" : ""}`}
+                onClick={() => setPreviewMode("email")}
+              >
+                Email
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewMode === "inbox"}
+                className={`preview-toggle-btn ${previewMode === "inbox" ? "active" : ""}`}
+                onClick={() => setPreviewMode("inbox")}
+              >
+                Inbox
+              </button>
+            </div>
             {previewMode === "email" ? (
               <div className="preview-viewport" role="group" aria-label="Preview width">
                 {["desktop", "mobile"].map((mode) => (
@@ -953,27 +977,38 @@ export function CampaignReviewPane({
                 ))}
               </div>
             ) : null}
-            <div className="preview-toggle" role="tablist" aria-label="Preview mode">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={previewMode === "inbox"}
-                className={`preview-toggle-btn ${previewMode === "inbox" ? "active" : ""}`}
-                onClick={() => setPreviewMode("inbox")}
-              >
-                Inbox
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={previewMode === "email"}
-                className={`preview-toggle-btn ${previewMode === "email" ? "active" : ""}`}
-                onClick={() => setPreviewMode("email")}
-              >
-                Email
-              </button>
-            </div>
 
+            {/* Persistent, beside the work it affects, and it stays until the
+                preview is actually current. The whole risk here is a merchant
+                approving a picture of an email that is not the email their
+                customers would receive. */}
+            <div
+              className={`preview-status ${freshness.state}`}
+              role="status"
+              aria-live="polite"
+            >
+              <span className="preview-status-icon" aria-hidden="true">
+                {freshness.state === PREVIEW_STATE.fresh ? "✓" : freshness.blocksCreation ? "⚠" : ""}
+              </span>
+              {/* A field-specific refusal names the field. "We couldn't update
+                  the preview" would send the merchant looking for a network
+                  problem when the answer is a missing link. */}
+              {previewProblem
+                ? (previewProblem.code === "missing_destination"
+                    ? "Add a destination for this button."
+                    : previewProblem.message)
+                : freshness.message}
+              {!previewProblem && freshness.action ? (
+                <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
+                  {freshness.action}
+                </button>
+              ) : null}
+              {previewProblem?.slot === "cta_url" ? (
+                <button type="button" className="link-btn" onClick={focusDestination}>
+                  Edit destination
+                </button>
+              ) : null}
+            </div>
             <div className={`phone-frame ${previewMode === "email" && previewViewport === "mobile" ? "preview-frame-mobile" : ""}`}>
               {previewMode === "inbox" ? (
                 <div className="phone-inbox">
@@ -1023,37 +1058,6 @@ export function CampaignReviewPane({
                   />
                 </div>
               )}
-            </div>
-            {/* Persistent, beside the work it affects, and it stays until the
-                preview is actually current. The whole risk here is a merchant
-                approving a picture of an email that is not the email their
-                customers would receive. */}
-            <div
-              className={`preview-status ${freshness.state}`}
-              role="status"
-              aria-live="polite"
-            >
-              <span className="preview-status-icon" aria-hidden="true">
-                {freshness.state === PREVIEW_STATE.fresh ? "✓" : freshness.blocksCreation ? "⚠" : ""}
-              </span>
-              {/* A field-specific refusal names the field. "We couldn't update
-                  the preview" would send the merchant looking for a network
-                  problem when the answer is a missing link. */}
-              {previewProblem
-                ? (previewProblem.code === "missing_destination"
-                    ? "Add a destination for this button."
-                    : previewProblem.message)
-                : freshness.message}
-              {!previewProblem && freshness.action ? (
-                <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
-                  {freshness.action}
-                </button>
-              ) : null}
-              {previewProblem?.slot === "cta_url" ? (
-                <button type="button" className="link-btn" onClick={focusDestination}>
-                  Edit destination
-                </button>
-              ) : null}
             </div>
           </div>
         </div>
@@ -1635,6 +1639,22 @@ function App() {
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
   const [brandDesign, setBrandDesign] = useState(null);
+  // Durable provider state per campaign, from the Ticket D contract. Never
+  // inferred from local status — that is the whole point of the contract.
+  const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
+
+  const loadDelivery = useCallback(async (campaignId) => {
+    if (!campaignId) return null;
+    try {
+      const result = await api.campaignDelivery(campaignId);
+      setDeliveryByCampaignId((prev) => ({ ...prev, [campaignId]: result.delivery }));
+      return result.delivery;
+    } catch (_) {
+      // No durable state available is not the same as "nothing happened"; the
+      // UI keeps whatever it last knew rather than claiming a fresh start.
+      return null;
+    }
+  }, []);
   const [destinationByPlay, setDestinationByPlay] = useState({});
   // The rendering the merchant actually looked at, per play. Handoff sends this
   // back so approval binds to that email rather than to whatever renders later.
@@ -2211,6 +2231,7 @@ function App() {
   useEffect(() => {
     if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
     setWorkspaceStep(reviewPlayId && approvedForSend.includes(reviewPlayId) ? "send" : "copy");
+    if (reviewPlayId && campaignIdByPlay[reviewPlayId]) loadDelivery(campaignIdByPlay[reviewPlayId]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewPlayId]);
 
@@ -3352,28 +3373,74 @@ function App() {
                             )
                           ) : null}
 
-                          {workspaceStep === "send" ? (
-                            isSent ? (
-                              <span className="send-done"><Icon name="check" size={15} /> Sent</span>
-                            ) : !status.klaviyo ? (
-                              // P-D2: never a dead/erroring send button when Klaviyo is unconnected.
-                              <button className="btn primary" onClick={() => startOAuth("klaviyo")}>Connect Klaviyo to send</button>
-                            ) : selectedCampaign?.klaviyoCampaignId ? (
-                              <button className="btn danger" onClick={() => sendKlaviyoCampaign(selectedCampaign)} disabled={sendingCampaignId === selectedCampaign.id || Boolean(selectedCampaign.klaviyoSendJobId)}>
-                                {selectedCampaign.klaviyoSendJobId ? "Campaign sent" : sendingCampaignId === selectedCampaign.id ? "Sending…" : "Send campaign now"}
-                              </button>
-                            ) : (
-                              <button className="btn primary" onClick={() => createCampaignTemplateInKlaviyo(selectedCampaign)} disabled={publishing || created}>
-                                {created ? "Send package ready" : publishing ? "Creating…" : "Create Klaviyo send package"}
-                              </button>
-                            )
-                          ) : null}
+                          {workspaceStep === "send" ? (() => {
+                            // Everything below follows the Ticket D contract, via
+                            // one presenter. Local status is not consulted: it is
+                            // not evidence that anything happened at Klaviyo.
+                            const delivery = campaignIdByPlay[reviewPlay.id]
+                              ? deliveryByCampaignId[campaignIdByPlay[reviewPlay.id]]
+                              : null;
+                            const view = presentDelivery(
+                              { ...(delivery || {}), campaignName: selectedCampaign?.playTitle },
+                              { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                            );
+
+                            if (view.primary?.action === "connect") {
+                              return <button className="btn primary" onClick={() => startOAuth("klaviyo")}>{view.primary.label}</button>;
+                            }
+                            if (view.primary?.action === "create") {
+                              return (
+                                <button
+                                  className="btn primary"
+                                  onClick={() => createCampaignTemplateInKlaviyo(selectedCampaign)}
+                                  disabled={publishing}
+                                >
+                                  {publishing ? "Creating…" : view.primary.label}
+                                </button>
+                              );
+                            }
+                            if (view.primary?.action === "open" && delivery?.providerCampaignUrl) {
+                              return (
+                                <a
+                                  className="btn primary"
+                                  href={delivery.providerCampaignUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {view.primary.label} (opens in a new tab)
+                                </a>
+                              );
+                            }
+                            // No verified link, or an outcome we cannot act on.
+                            // Deliberately renders no button at all rather than
+                            // a dead one.
+                            return <span className="send-state-label">{view.label}</span>;
+                          })() : null}
                         </div>
 
-                        {/* P-B4: truthful what-happens-next (verified: create = draft only, no send) */}
-                        {workspaceStep === "send" && !isSent && status.klaviyo && !selectedCampaign?.klaviyoCampaignId ? (
-                          <p className="whats-next">This creates the template and campaign in your Klaviyo account — nothing sends until you approve it there.</p>
-                        ) : null}
+                        {workspaceStep === "send" ? (() => {
+                          const delivery = campaignIdByPlay[reviewPlay.id]
+                            ? deliveryByCampaignId[campaignIdByPlay[reviewPlay.id]]
+                            : null;
+                          const view = presentDelivery(
+                            { ...(delivery || {}), campaignName: selectedCampaign?.playTitle },
+                            { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                          );
+                          return (
+                            <div className={`delivery-panel ${view.state}`} role="status" aria-live="polite">
+                              {view.message ? <strong>{view.message}</strong> : null}
+                              {view.sentSummary ? <strong>{view.sentSummary}</strong> : null}
+                              {view.detail ? <p>{view.detail}</p> : null}
+                              {view.findHint ? <p>{view.findHint}</p> : null}
+                              {view.caption ? <p className="delivery-caption">{view.caption}</p> : null}
+                              {view.lastChecked ? <p className="delivery-checked">{view.lastChecked}</p> : null}
+                              {view.lastCheckError ? (
+                                <p className="delivery-checked">Couldn't check Klaviyo: {view.lastCheckError}. Showing the last confirmed status.</p>
+                              ) : null}
+                              {view.merchantNote ? <p className="delivery-checked">{view.merchantNote}</p> : null}
+                            </div>
+                          );
+                        })() : null}
                       </div>
                     );
                   })() : (
