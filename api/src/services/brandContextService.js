@@ -216,6 +216,16 @@ function buildBrandContext(input = {}) {
   };
 }
 
+// A field the merchant DELETED is not a field that is missing.
+//
+// `||` treated "" as absent, so an intentionally emptied paragraph was refilled
+// with generic filler — and because that filler is written as guidance to a
+// copywriter ("Keep the copy close to the brand vocabulary: ..."), it went out
+// to customers as body text. Only an absent value is defaulted now.
+function orDefault(value, fallback) {
+  return value === undefined || value === null ? fallback : value;
+}
+
 function templateCopyForPlay(campaign, brandContext) {
   const title = campaign.playTitle || campaign.play_name || campaign.subject || "your next pick";
   const bestSeller = brandContext.productLanguage?.bestSellers?.[0]?.title;
@@ -225,14 +235,14 @@ function templateCopyForPlay(campaign, brandContext) {
   const words = brandContext.messaging?.useWords?.slice(0, 3).join(", ");
 
   return {
-    subject: campaign.subject || `${brand}: ${title}`,
-    previewText: campaign.previewText || `A ${brandContext.tone?.[0] || "helpful"} note matched to your ${category} shoppers.`,
-    bodyH2: campaign.bodyH2 || (bestSeller ? `${bestSeller} and more picks worth revisiting.` : `${title} is ready for review.`),
-    bodyP1: campaign.bodyP1 || `We used recent Shopify behavior, product language, and purchase history to shape this ${category} message for ${brand}.`,
-    bodyP2: campaign.bodyP2 || (words
+    subject: orDefault(campaign.subject, `${brand}: ${title}`),
+    previewText: orDefault(campaign.previewText, `A ${brandContext.tone?.[0] || "helpful"} note matched to your ${category} shoppers.`),
+    bodyH2: orDefault(campaign.bodyH2, bestSeller ? `${bestSeller} and more picks worth revisiting.` : `${title} is ready for review.`),
+    bodyP1: orDefault(campaign.bodyP1, `We used recent Shopify behavior, product language, and purchase history to shape this ${category} message for ${brand}.`),
+    bodyP2: orDefault(campaign.bodyP2, words
       ? `Keep the copy close to the brand vocabulary: ${words}.`
       : "Keep the copy direct, useful, and tied to the customer's recent shopping context."),
-    cta: campaign.cta || cta,
+    cta: orDefault(campaign.cta, cta),
   };
 }
 
@@ -243,6 +253,18 @@ function applyBrandVoiceToCampaign(campaign = {}, brandContext) {
     ...templateCopyForPlay(campaign, brandContext),
     brandContext,
   };
+}
+
+/**
+ * The ONE place a draft becomes the thing that gets rendered.
+ *
+ * Preview and handoff must call this and nothing else. They previously differed:
+ * the preview rendered the raw draft while the handoff applied brand-copy
+ * defaults first, so the email a merchant approved and the email their customers
+ * received were built from different inputs.
+ */
+function finalizeCampaignForRender(campaign = {}, brandContext = null) {
+  return applyBrandVoiceToCampaign(campaign, brandContext);
 }
 
 function buildBeaconTemplates(brandContext) {
@@ -291,6 +313,7 @@ function buildBeaconTemplates(brandContext) {
 }
 
 module.exports = {
+  finalizeCampaignForRender,
   buildBrandContext,
   applyBrandVoiceToCampaign,
   buildBeaconTemplates,

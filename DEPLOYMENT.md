@@ -131,3 +131,53 @@ Klaviyo source: oauth
 ## Current Caveat
 
 Real customer stores may not produce recommendations until they have enough order history for Atul's engine gates. Sparse stores should still complete onboarding, sync, and show held/considered plays where applicable.
+
+## Branded email shell (Ticket C)
+
+Every campaign renders from a per-shop email shell that a founder configures and
+approves. There is no default: a shop without one gets `brand_setup_required`
+from both the preview and the handoff, because falling back to BeaconAI's own
+styling would put an email the merchant never approved, wearing someone else's
+brand, in front of their customers — and it would look like it worked.
+
+### Enabling configuration
+
+Writing a shell is founder work. The endpoint is **closed unless**
+`BEACONAI_ADMIN_TOKEN` is set on the deployment; without it, `POST
+/api/brand/email-template` returns 503 rather than accepting HTML from whoever
+finds it. Requests carry the value in an `x-beaconai-admin-token` header.
+
+This is a stopgap. Ticket D replaces it with the real authenticated boundary.
+
+### Configuring a shop
+
+Two routes, both ending in an ordinary reviewed version:
+
+1. **Merchant's own approved HTML** — POST it as `html`. Validate it first with
+   `POST /api/brand/email-template/validate`, which reports compatibility rather
+   than promising universal import: it checks for the required slots, the
+   `{% unsubscribe %}` tag, and markup email clients reject.
+2. **Parameterized starter** — omit `html` and pass `style`
+   (`accentColor`, `backgroundColor`, `bodyColor`, `fontStack`,
+   `buttonTextColor`, `showLogo`) plus `brand` (`brandName`, `logoUrl`,
+   `footerText`, `ctaUrl`).
+
+Slots the renderer fills: `brand_name`, `headline`, `preview_text`, `body`,
+`support_copy`, `cta_text`, `cta_url`, `product_title`, `product_image_url`,
+`logo_url`, `footer_text`. Text is HTML-escaped; URL slots must be absolute
+http(s) and are rejected otherwise. Provider syntax (`{% unsubscribe %}`,
+`{{ organization.* }}`) passes through untouched — slots use `[[slot:name]]`
+precisely so substitution can never consume a provider tag.
+
+### Versioning
+
+Versions are append-only and a campaign freezes the version it rendered with, so
+approving a new shell never changes what an already-sent email looked like.
+
+### Before the first live send
+
+Still a manual step, and not covered by the automated tests: the founder and the
+merchant should review the actual Klaviyo draft — footer, sender identity, link
+destinations and the mobile rendering — and send a test to an authorized
+recipient. The tests here prove the bytes previewed are the bytes sent; they do
+not prove those bytes look right in a real inbox.

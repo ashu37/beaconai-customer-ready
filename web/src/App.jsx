@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { canHandoff, draftSignature } from "./campaignSaveGate";
+import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
+import { STANDARD_SUPPRESSIONS_NOTE, buildCampaignFromSelection } from "./campaignDraft";
+import { PREVIEW_STATE } from "./previewFreshness";
+import { usePreview } from "./usePreview";
 import "./styles.css";
 
 // C3: play → starting-copy template. Merchants who never touch template choice
@@ -18,7 +21,7 @@ const DEFAULT_STARTING_TEMPLATE = "beacon-lifecycle-soft-nudge";
 // CSV header nor the manifest audience entry). So this is an HONEST, generic
 // platform disclosure — true of every Klaviyo send — not a per-play data claim.
 // Do NOT reword this into a play-specific sentence (that would be invented prose).
-const STANDARD_SUPPRESSIONS_NOTE = "Standard suppressions apply — recent buyers and unsubscribers are excluded.";
+
 
 function templateForPlay(play) {
   const key = play?.play_id || play?.id;
@@ -191,49 +194,6 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages }) {
 
 // CA-4: map the copywriter's slot object to the draft's field shape. subject_variants[0]
 // is the pre-selected subject (adopt #5). Returns {} when no agent copy present.
-function agentCopyToDraftFields(agentCopy) {
-  if (!agentCopy) return {};
-  const out = {};
-  const variants = Array.isArray(agentCopy.subject_variants) ? agentCopy.subject_variants : [];
-  if (variants[0]) out.subject = variants[0];
-  if (agentCopy.preview_text != null) out.previewText = agentCopy.preview_text;
-  if (agentCopy.headline != null) out.bodyH2 = agentCopy.headline;
-  if (agentCopy.body != null) out.bodyP1 = agentCopy.body;
-  if (agentCopy.support != null) out.bodyP2 = agentCopy.support;
-  if (agentCopy.cta != null) out.cta = agentCopy.cta;
-  return out;
-}
-
-function buildCampaignFromSelection(play, template, edits = {}, agentCopy = null) {
-  if (!play || !template) return null;
-  const prompt = play.template_prompt || {};
-  // Base copy precedence: LLM agent copy (CA-4) > selected template > static
-  // template_prompt > neutral placeholder. Merchant edits always layer on top.
-  const agentFields = agentCopyToDraftFields(agentCopy);
-  const draft = {
-    // Key by play id (1:1 with its selected template). A composite id broke every
-    // downstream lookup (grouping, audience preview, klaviyo assets) that keys by play.id.
-    id: play.id,
-    playTitle: play.play_name || play.play_id,
-    templateName: template.name,
-    templateSource: template.source,
-    status: "draft",
-    customers: play.audience_size || 0,
-    segment: play.audience_archetype || "—",
-    subject: agentFields.subject || template.subject || prompt.subject || `${play.play_name} campaign`,
-    previewText: agentFields.previewText || template.previewText || prompt.previewText || "Selected template ready for campaign review.",
-    bodyH2: agentFields.bodyH2 || template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
-    bodyP1: agentFields.bodyP1 || template.bodyP1 || prompt.body || prompt.support || "",
-    bodyP2: agentFields.bodyP2 != null ? agentFields.bodyP2 : (prompt.support || ""),
-    cta: agentFields.cta || template.cta || prompt.cta || "",
-    // CA-5: featured product for the image block (resolved from the agent copy).
-    featuredProduct: agentCopy?.featured_product || null,
-    sendTime: "Manual review",
-    suppression: STANDARD_SUPPRESSIONS_NOTE,
-  };
-  return { ...draft, ...edits, id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName, templateSource: draft.templateSource, status: draft.status };
-}
-
 function formatAudience(value) {
   return value?.toLocaleString?.() || "—";
 }
@@ -682,51 +642,32 @@ function CampaignReviewPane({
   onRewrite,
   saveState,
   onRetrySave,
+  activeBrandTemplateVersion,
+  onPreviewRendered,
+  destinationUrl,
+  onChangeDestination,
+  campaignSignature: currentCampaignSignature,
 }) {
-  const [previewHtml, setPreviewHtml] = useState("");
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   const [previewMode, setPreviewMode] = useState("inbox");
   const [steer, setSteer] = useState(null); // active rewrite-steer chip (adopt #4)
-  const debounceRef = useRef(null);
   const copyLoading = copyStatus === "loading";
   const subjectVariants = Array.isArray(agentCopy?.subject_variants) ? agentCopy.subject_variants : [];
 
-  const refreshPreview = React.useCallback(async (currentDraft) => {
-    if (!currentDraft) return;
-    setPreviewLoading(true);
-    try {
-      const result = await api.previewCampaignHtml({ ...currentDraft, brandContext });
-      setPreviewHtml(result.html || "");
-    } catch (err) {
-      // Leave the last good preview in place on transient failures.
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [brandContext]);
+  // Preview + freshness live in usePreview so the binding between a request and
+  // what it approves is testable. See web/src/usePreview.js.
+  const { html: previewHtml, freshness, refresh: refreshPreview, flush: flushPreview } = usePreview({
+    draft,
+    campaignSignature: currentCampaignSignature,
+    campaignKey: `${play?.id || ""}:${selectedTemplate?.id || ""}`,
+    brandContext,
+    activeBrandTemplateVersion,
+    fetchPreview: (payload) => api.previewCampaignHtml(payload),
+    onPreviewRendered,
+  });
 
-  // Immediate refresh when the play or selected template changes.
-  useEffect(() => {
-    if (draft) refreshPreview(draft);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [play?.id, selectedTemplate?.id]);
-
-  // Debounced refresh (600ms) while the merchant types.
-  useEffect(() => {
-    if (!draft) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => refreshPreview(draft), 600);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta]);
-
-  const handleBlur = () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    refreshPreview(draft);
-  };
+  const handleBlur = () => flushPreview();
 
   const [changeOpen, setChangeOpen] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -780,6 +721,18 @@ function CampaignReviewPane({
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
           <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>Change</button>
+          {onChangeDestination ? (
+            <label className="destination-field">
+              Button links to
+              <input
+                type="url"
+                inputMode="url"
+                placeholder="https://yourstore.com/collections/..."
+                value={destinationUrl || ""}
+                onChange={(event) => onChangeDestination(event.target.value)}
+              />
+            </label>
+          ) : null}
           {saveLabel ? (
             <span className={`save-state ${saveState}`} role="status">
               {saveLabel}
@@ -1010,7 +963,21 @@ function CampaignReviewPane({
                 </div>
               )}
             </div>
-            {previewLoading ? <div className="preview-status">Updating preview…</div> : null}
+            {freshness.state === PREVIEW_STATE.loading ? (
+              <div className="preview-status">Updating preview…</div>
+            ) : freshness.message ? (
+              // Persistent, and it stays until the preview is actually current.
+              // The whole risk here is a merchant approving a picture of an
+              // email that is not the email their customers would receive.
+              <div className={`preview-status ${freshness.state}`} role="status">
+                {freshness.message}
+                {freshness.canRetry ? (
+                  <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
+                    Refresh preview
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -1587,6 +1554,13 @@ function App() {
   const [runIdByPlay, setRunIdByPlay] = useState({});
   // Campaigns from earlier runs, kept so the merchant can still find them.
   const [historicalCampaigns, setHistoricalCampaigns] = useState([]);
+  // Ticket C: the brand shell version this shop currently sends with. A new
+  // approved version makes every existing preview out of date.
+  const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
+  const [destinationByPlay, setDestinationByPlay] = useState({});
+  // The rendering the merchant actually looked at, per play. Handoff sends this
+  // back so approval binds to that email rather than to whatever renders later.
+  const approvedRender = useRef({});
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   // D6b: weekly series for the Orders / Customers sparklines.
   const [statsSeries, setStatsSeries] = useState(null);
@@ -1638,9 +1612,9 @@ function App() {
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
-  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id]) : null;
+  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id]) : null;
   const finalCampaigns = approvedPlays
-    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id]))
+    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id], destinationByPlay[play.id]))
     .map((item) => {
       if (!item) return item;
       const asset = klaviyoAssetsByCampaign[item.id];
@@ -1785,6 +1759,7 @@ function App() {
     checkConnections();
     preloadStoreSnapshot();
     loadBrandContext();
+    loadBrandEmailTemplate();
     loadLatestRun();
   }, []);
 
@@ -1877,9 +1852,14 @@ function App() {
         setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
         setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
         setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
+        setDestinationByPlay(Object.fromEntries(
+          thisRun.filter((c) => c.destinationUrl).map((c) => [c.playId, c.destinationUrl])
+        ));
         for (const c of thisRun) {
           latestRevision.current[c.playId] = c.revision;
-          savedSignatureRef.current[c.playId] = draftSignature(c.draftEdits);
+          savedSignatureRef.current[c.playId] = campaignSignature({
+            edits: c.draftEdits, destinationUrl: c.destinationUrl,
+          });
           saveStatusRef.current[c.playId] = "saved";
         }
         setRestoredApprovedPlayIds(live.map((c) => c.playId));
@@ -1970,18 +1950,18 @@ function App() {
         ...fields,
       });
       setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
-      if (savedSignatureRef.current[playId] === undefined) {
-        savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
-      }
+
       setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
       setRunIdByPlay((prev) => (prev[playId] === campaign.runId ? prev : { ...prev, [playId]: campaign.runId }));
       setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saved" }));
       saveStatusRef.current[playId] = "saved";
       // Record WHAT was persisted, not merely that something was. The handoff
       // compares the draft on screen against this.
-      if (fields.draftEdits !== undefined) {
-        savedSignatureRef.current[playId] = draftSignature(fields.draftEdits);
-      }
+      // Recorded from the row the server returned, so it reflects what was
+      // actually persisted rather than what was sent.
+      savedSignatureRef.current[playId] = campaignSignature({
+        edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
+      });
       // Kept in a ref as well as state: a handoff started in the same tick as a
       // save needs the revision the server just returned, and setState has not
       // landed yet.
@@ -2029,15 +2009,25 @@ function App() {
   // not express that.
   const editSaveTimers = useRef({});
   const pendingEdits = useRef({});
-  const scheduleDraftEditsSave = useCallback((playId, edits) => {
+  // Every debounced field for a campaign goes through here, merged into ONE
+  // pending payload. A second timer elsewhere would be invisible to the flush,
+  // which is exactly how the destination could still be in flight when a handoff
+  // decided nothing was pending.
+  const scheduleCampaignSave = useCallback((playId, fields) => {
     clearTimeout(editSaveTimers.current[playId]);
-    pendingEdits.current[playId] = edits;
+    pendingEdits.current[playId] = { ...(pendingEdits.current[playId] || {}), ...fields };
     editSaveTimers.current[playId] = setTimeout(() => {
       delete editSaveTimers.current[playId];
+      const payload = pendingEdits.current[playId];
       delete pendingEdits.current[playId];
-      saveCampaignState(playId, { draftEdits: edits });
+      saveCampaignState(playId, payload);
     }, 600);
   }, [saveCampaignState]);
+
+  const scheduleDraftEditsSave = useCallback(
+    (playId, edits) => scheduleCampaignSave(playId, { draftEdits: edits }),
+    [scheduleCampaignSave]
+  );
 
   // Flush any pending edit when the workspace closes or the page unloads, so the
   // last few characters before navigating away are not lost.
@@ -2062,10 +2052,10 @@ function App() {
         clearTimeout(timers[id]);
         delete timers[id];
       }
-      const edits = pendingEdits.current[id];
-      if (edits !== undefined) {
+      const payload = pendingEdits.current[id];
+      if (payload !== undefined) {
         delete pendingEdits.current[id];
-        saves.push(saveCampaignState(id, { draftEdits: edits }));
+        saves.push(saveCampaignState(id, payload));
       } else if (inFlightSaves.current[id]) {
         // Nothing queued, but a save is already on the wire. Waiting for it is
         // the whole point: it may still fail or conflict.
@@ -2217,6 +2207,15 @@ function App() {
       setEngineInput(result.input);
     } catch (_) {
       // Home can still render connection and workflow state before data is synced.
+    }
+  }
+
+  async function loadBrandEmailTemplate() {
+    try {
+      const result = await api.brandEmailTemplate();
+      setBrandTemplateVersion(result.active?.version ?? null);
+    } catch (_) {
+      // Additive: the preview's own response still reports brand_setup_required.
     }
   }
 
@@ -2516,12 +2515,18 @@ function App() {
     await flushPendingEdits(campaignDraft.id);
 
     const playId = campaignDraft.id;
+    const currentSignature = campaignSignature({
+      edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
+    });
     const verdict = canHandoff({
       status: saveStatusRef.current[playId],
-      currentSignature: draftSignature(draftEditsByPlay[playId]),
+      currentSignature,
       savedSignature: savedSignatureRef.current[playId],
       savedRevision: latestRevision.current[playId],
       hasCampaignRow: Boolean(campaignIdByPlay[playId]),
+      // The rendering the merchant actually looked at. The server refuses a
+      // handoff without it, and it should never be attempted without one.
+      approvedRenderSignature: approvedRender.current[playId]?.campaignSignature ?? null,
     });
     if (!verdict.ok) {
       showToast({ message: verdict.message, error: true });
@@ -2536,6 +2541,11 @@ function App() {
         // Identify the campaign so the server resolves the audience from its
         // ORIGIN run rather than whatever the latest run happens to be.
         campaignId: campaignIdByPlay[campaignDraft.id],
+        // Bind the send to the email that was actually reviewed. If the shell
+        // was re-approved or the copy moved since, the server refuses rather
+        // than sending something nobody looked at.
+        expectedTemplateVersion: approvedRender.current[campaignDraft.id]?.templateVersion ?? null,
+        expectedRenderFingerprint: approvedRender.current[campaignDraft.id]?.fingerprint ?? null,
         // The revision the merchant actually reviewed. The server reserves the
         // campaign against it before touching Klaviyo, so a campaign edited
         // since approval cannot be handed off as though it had been signed off.
@@ -2656,7 +2666,9 @@ function App() {
     setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
     setRunIdByPlay((prev) => ({ ...prev, [playId]: campaign.runId }));
     latestRevision.current[playId] = campaign.revision;
-    savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
+    savedSignatureRef.current[playId] = campaignSignature({
+      edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
+    });
     saveStatusRef.current[playId] = "saved";
     if (campaign.templateId) setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: campaign.templateId }));
     setDraftEditsByPlay((prev) => ({ ...prev, [playId]: campaign.draftEdits || {} }));
@@ -2686,6 +2698,24 @@ function App() {
     if (campaign.frozen) {
       showToast({ message: "This campaign was already sent — its content is read-only." });
     }
+  }
+
+  // The campaign's own destination. Debounced like copy edits, and persisted:
+  // an email whose button goes nowhere is not a campaign, and the value has to
+  // survive a refresh like everything else the merchant sets.
+  // Retry has to resend EVERYTHING a save persists. Resending only the copy
+  // could report "Saved" while a failed destination stayed unpersisted — and the
+  // handoff would go on refusing, with the UI insisting the campaign was saved.
+  function retrySave(playId) {
+    return saveCampaignState(playId, {
+      draftEdits: draftEditsByPlay[playId] || {},
+      destinationUrl: destinationByPlay[playId] ?? null,
+    });
+  }
+
+  function changeDestination(playId, value) {
+    setDestinationByPlay((prev) => ({ ...prev, [playId]: value }));
+    scheduleCampaignSave(playId, { destinationUrl: value });
   }
 
   function chooseTemplate(playId, templateId) {
@@ -3113,7 +3143,15 @@ function App() {
                                 copyStatus={copyStatusByPlay[reviewPlay.id] || null}
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
                                 saveState={saveStateByPlay[reviewPlay.id]}
-                                onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
+                                activeBrandTemplateVersion={brandTemplateVersion}
+                                destinationUrl={destinationByPlay[reviewPlay.id]}
+                                onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
+                                onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}
+                                campaignSignature={campaignSignature({
+                                  edits: draftEditsByPlay[reviewPlay.id],
+                                  destinationUrl: destinationByPlay[reviewPlay.id],
+                                })}
+                                onRetrySave={() => retrySave(reviewPlay.id)}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
                             ) : (

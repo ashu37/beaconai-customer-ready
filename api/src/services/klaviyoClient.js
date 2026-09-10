@@ -130,14 +130,20 @@ function campaignHtml(campaign) {
 </html>`;
 }
 
-async function createTemplate(privateKey, campaign) {
+async function createTemplate(privateKey, campaign, prerenderedHtml) {
   const client = createKlaviyoClient(privateKey);
 
-  // Rendered once and returned alongside the response, so the caller can freeze
-  // the EXACT html that was pushed. Re-rendering it afterwards would be a second
-  // call that could differ — which defeats the point of keeping a record of what
-  // was sent.
-  const html = campaignHtml(campaign);
+  // The caller renders and passes the bytes in — Ticket C: ONE renderer for both
+  // the preview and the provider draft. There is deliberately no fallback: a
+  // default here would silently put BeaconAI's own styling in front of a
+  // merchant's customers on any path that forgot to render, and it would look
+  // like it worked. Refusing is the whole point of brand_setup_required.
+  if (!prerenderedHtml) {
+    throw new Error(
+      "createCampaignSendPackage requires rendered html. Render the shop's approved brand shell first."
+    );
+  }
+  const html = prerenderedHtml;
   const payload = {
     data: {
       type: "template",
@@ -265,10 +271,10 @@ async function assignTemplateToCampaignMessage(privateKey, messageId, templateId
 // provider. "not_started" is the ONLY stage that proves nothing was created.
 const PROVIDER_STAGES = ["not_started", "template", "list", "import", "campaign", "message", "assignment"];
 
-async function createCampaignSendPackage(privateKey, campaign, audience) {
+async function createCampaignSendPackage(privateKey, campaign, audience, options = {}) {
   const progress = { stage: "not_started" };
   try {
-    return await createCampaignSendPackageInner(privateKey, campaign, audience, progress);
+    return await createCampaignSendPackageInner(privateKey, campaign, audience, progress, options);
   } catch (error) {
     error.providerStage = progress.stage;
     // True only before the first provider request is issued. Anything later may

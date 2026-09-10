@@ -14,7 +14,6 @@ const {
   getKlaviyoLists,
   getKlaviyoProfiles,
   getKlaviyoTemplates,
-  campaignHtml,
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,
@@ -40,10 +39,35 @@ const {
   UnverifiedInputError,
 } = require("./services/syncService");
 const {
+  BrandSetupRequired,
+  BrandTemplateInvalid,
+  MissingDestination,
+  SlotValueRejected,
+  buildStarterShell,
+  renderBrandEmail,
+  slotValuesForCampaign,
+} = require("./services/brandEmailRenderer");
+const {
+  getActiveBrandTemplate,
+  getBrandTemplateVersion,
+  listBrandTemplates,
+  requireActiveBrandTemplate,
+  saveBrandTemplate,
+} = require("./services/brandEmailTemplateService");
+const {
   applyBrandVoiceToCampaign,
   buildBeaconTemplates,
   buildBrandContext,
+  finalizeCampaignForRender,
 } = require("./services/brandContextService");
+const crypto = require("node:crypto");
+
+// A short fingerprint of the exact bytes that were previewed. The merchant
+// approves a specific rendering; this is how the handoff proves it is sending
+// that one and not something rebuilt differently in the meantime.
+function renderFingerprint(html) {
+  return crypto.createHash("sha256").update(String(html)).digest("hex").slice(0, 16);
+}
 const { getStartupState } = require("./startupState");
 const { generateCampaignCopy } = require("./services/copywriterService");
 const { splitAudience } = require("./services/holdoutService");
@@ -74,10 +98,68 @@ const {
 // absent: holdsReservation, which is internal authority and now travels as a
 // separate argument to the service rather than inside the patch.
 const PUBLIC_CAMPAIGN_PATCH_FIELDS = [
-  "status", "templateId", "copy", "draftEdits", "displayName",
+  "status", "templateId", "copy", "draftEdits", "displayName", "destinationUrl",
   "audienceSize", "holdoutSize", "holdoutPct", "klaviyoCampaignId",
   "expectedRevision",
 ];
+
+// Writing an email shell is founder work, not merchant work: the shell is
+// trusted markup that renders to every recipient. Until Ticket D establishes the
+// real authenticated boundary, this is an explicit shared secret that must be
+// configured — CLOSED by default, so an unconfigured deployment refuses rather
+// than accepting arbitrary HTML from anyone who finds the endpoint.
+function requireFounderAuth(req, res) {
+  const expected = process.env.BEACONAI_ADMIN_TOKEN;
+  if (!expected) {
+    res.status(503).json({
+      ok: false,
+      error: "Email-shell configuration is disabled: BEACONAI_ADMIN_TOKEN is not set on this deployment.",
+    });
+    return false;
+  }
+  const provided = req.get("x-beaconai-admin-token") || "";
+  // Length-independent comparison is not the concern here; an attacker cannot
+  // observe timing across a network for a secret of this shape. Constant-time
+  // would be better hygiene and is worth doing when Ticket D replaces this.
+  if (provided !== expected) {
+    res.status(403).json({ ok: false, error: "Not authorized to configure the email shell." });
+    return false;
+  }
+  return true;
+}
+
+// One shape for the three ways rendering can refuse, so the UI can tell "nothing
+// is configured yet" from "the shell is broken" from "this copy is unusable".
+function brandRenderErrorResponse(res, error) {
+  if (error instanceof MissingDestination) {
+    res.status(400).json({ ok: false, error: error.message, code: "missing_destination", slot: error.slot });
+    return true;
+  }
+  if (error && error.code === "preview_required") {
+    res.status(409).json({ ok: false, error: error.message, code: "preview_required" });
+    return true;
+  }
+  if (error && error.code === "preview_out_of_date") {
+    res.status(409).json({
+      ok: false, error: error.message, code: "preview_out_of_date",
+      reviewedVersion: error.reviewedVersion ?? null, activeVersion: error.activeVersion ?? null,
+    });
+    return true;
+  }
+  if (error instanceof BrandSetupRequired) {
+    res.status(409).json({ ok: false, error: error.message, code: "brand_setup_required" });
+    return true;
+  }
+  if (error instanceof BrandTemplateInvalid) {
+    res.status(400).json({ ok: false, error: error.message, code: "brand_template_invalid", problems: error.problems });
+    return true;
+  }
+  if (error instanceof SlotValueRejected) {
+    res.status(400).json({ ok: false, error: error.message, code: "slot_value_rejected", slot: error.slot });
+    return true;
+  }
+  return false;
+}
 
 function publicCampaignPatch(body) {
   const patch = {};
@@ -231,6 +313,76 @@ router.get("/connections/status", async (req, res) => {
     const status = await getConnectionStatus(shopDomain);
     res.json({ ok: true, status });
   } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// What shell this shop sends with, and every version it has had. Read-only, so
+// the founder can check setup without a token.
+router.get("/brand/email-template", async (req, res) => {
+  try {
+    const shopDomain = req.query.shopDomain || config.shopify.shopDomain;
+    const active = await getActiveBrandTemplate(shopDomain);
+    const versions = await listBrandTemplates(shopDomain);
+    res.json({
+      ok: true,
+      shopDomain,
+      configured: Boolean(active),
+      // `brand_setup_required` is a state the UI renders, not only an error it
+      // catches — the merchant should see that setup is outstanding before they
+      // try to preview an email.
+      code: active ? null : "brand_setup_required",
+      active: active ? { version: active.version, slots: active.slots, brand: active.brand, approvedAt: active.approvedAt, approvedBy: active.approvedBy } : null,
+      versions: versions.map((v) => ({ version: v.version, source: v.source, approvedAt: v.approvedAt, approvedBy: v.approvedBy, createdAt: v.createdAt })),
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Store a new version and make it active. Founder-only.
+router.post("/brand/email-template", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
+    if (!shopDomain) {
+      res.status(400).json({ ok: false, error: "shopDomain is required" });
+      return;
+    }
+    // Either the merchant's own approved HTML, or the parameterized starter
+    // filled from their colours. Both become an ordinary reviewed version.
+    const html = req.body.html || buildStarterShell(req.body.style || {});
+    const template = await saveBrandTemplate({
+      shopDomain,
+      html,
+      brand: req.body.brand || {},
+      source: req.body.html ? "merchant_html" : "starter_template",
+      approvedBy: req.body.approvedBy || null,
+      notes: req.body.notes || null,
+    });
+    res.json({
+      ok: true,
+      template: { version: template.version, slots: template.slots, source: template.source, approvedAt: template.approvedAt },
+    });
+  } catch (error) {
+    if (brandRenderErrorResponse(res, error)) return;
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Check a shell WITHOUT storing it — so an existing Klaviyo template can be
+// tested for compatibility rather than promised universal support.
+router.post("/brand/email-template/validate", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const { validateShell } = require("./services/brandEmailRenderer");
+    const result = validateShell(req.body.html || "");
+    res.json({ ok: true, compatible: true, slots: result.slots });
+  } catch (error) {
+    if (error instanceof BrandTemplateInvalid) {
+      res.status(200).json({ ok: true, compatible: false, problems: error.problems });
+      return;
+    }
     res.status(500).json({ ok: false, error: error.message });
   }
 });
@@ -569,7 +721,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
 
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
-    const campaign = applyBrandVoiceToCampaign(req.body.campaign, brandContext);
+    const campaign = finalizeCampaignForRender(req.body.campaign, brandContext);
     // ONE run, resolved once, then used for everything: the provenance check,
     // the audience, and the campaign row. Verifying one run while the audience
     // came from another would let a verified run id authorize membership from a
@@ -602,6 +754,20 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // sync — including anything the partial-sync incident produced — is
     // legacy_unverified and stops here until the store is re-synced.
     const provenance = await assertInputVerifiedForHandoff(runId, shopDomain);
+
+    // After ownership and provenance — those refusals hold whatever the preview
+    // state is — but before anything is reserved, split or written. A handoff
+    // with no approval binding cannot succeed, so refusing it here leaves no
+    // recipient rows or audience counts behind. Only the COMPARISON needs the
+    // rendered bytes; the requirement itself does not.
+    if (req.body.expectedTemplateVersion == null || !req.body.expectedRenderFingerprint) {
+      res.status(409).json({
+        ok: false,
+        code: "preview_required",
+        error: "This campaign has not been previewed. Refresh the preview and review the email before sending.",
+      });
+      return;
+    }
     const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
@@ -609,6 +775,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     const playId = existingCampaign?.playId || campaign.play_id || campaign.id;
     let split = { treated: audience.recipients || [], holdout: [], holdoutPct: 0 };
     let campaignRow = null;
+    let templateVersionUsed = null;
 
     if (audience.materialized && playId) {
       campaignRow = existingCampaign || await upsertCampaign({
@@ -649,9 +816,63 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // Only the treated arm goes to Klaviyo. The holdout is, by definition, the
     // group that receives nothing.
     const sendAudience = { ...audience, recipients: split.treated, count: split.treated.length };
+    // Rendered HERE, once, by the same function the preview used — then handed
+    // to the provider as bytes. Letting the provider client render again would
+    // reintroduce exactly the divergence this ticket exists to remove.
+    let renderedHtml;
+    try {
+      const brandTemplate = await requireActiveBrandTemplate(shopDomain);
+
+      // The shell the merchant REVIEWED, not whichever is active now. A version
+      // activated between the preview and the send would otherwise change an
+      // already-approved email without anyone seeing it.
+      //
+      // REQUIRED, both of them. Skipping the check when a field was absent made
+      // the binding optional exactly where it mattered: a caller with no
+      // successful preview sent null and the send proceeded unverified. There is
+      // no such thing as approving an email nobody rendered.
+      const reviewedVersion = req.body.expectedTemplateVersion;
+      const expectedFingerprint = req.body.expectedRenderFingerprint;
+      if (Number(reviewedVersion) !== brandTemplate.version) {
+        throw Object.assign(
+          new Error(
+            `The email shell changed since this was previewed (you reviewed version ` +
+            `${reviewedVersion}, the store now uses ${brandTemplate.version}). ` +
+            `Refresh the preview and review it again before sending.`
+          ),
+          { code: "preview_out_of_date", statusCode: 409, reviewedVersion, activeVersion: brandTemplate.version }
+        );
+      }
+
+      renderedHtml = renderBrandEmail(brandTemplate, slotValuesForCampaign(
+        campaign,
+        { ...(brandTemplate.brand || {}), brandName: brandContext?.brandName }
+      ));
+
+      // Byte-level binding. Whatever changed — copy, destination, shell — if the
+      // rendering is not the one that was approved, this refuses rather than
+      // sending something nobody reviewed.
+      const actualFingerprint = renderFingerprint(renderedHtml);
+      if (expectedFingerprint !== actualFingerprint) {
+        throw Object.assign(
+          new Error(
+            "This email is not the one that was previewed. Refresh the preview and review it again before sending."
+          ),
+          { code: "preview_out_of_date", statusCode: 409, expectedFingerprint, actualFingerprint }
+        );
+      }
+
+      templateVersionUsed = brandTemplate.version;
+    } catch (renderError) {
+      // A rendering failure blocks the handoff with something actionable, and
+      // hands the reservation back: nothing reached the provider.
+      if (campaignRow) await releaseHandoffReservation(campaignRow.id).catch(() => {});
+      throw renderError;
+    }
+
     let packageResult;
     try {
-      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience);
+      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience, { html: renderedHtml });
     } catch (providerError) {
       // Hand the reservation back ONLY on a PROVEN pre-creation failure — the
       // request never left us, so nothing can exist at the provider and a retry
@@ -679,8 +900,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     if (campaignRow) {
       campaignRow = await freezeCampaignAtHandoff(campaignRow.id, {
         approvedCopy: campaign,
-        renderedHtml: packageResult.html || packageResult.template?.html || null,
-        templateVersion: campaign.template_id || campaign.templateId || null,
+        // The exact bytes that went out, and the shell version that produced
+        // them — so a later brand version cannot change what this email was.
+        renderedHtml,
+        templateVersion: templateVersionUsed == null ? null : String(templateVersionUsed),
         audienceRef: {
           runId,
           audienceDefinitionId: audience.audienceDefinitionId || null,
@@ -735,6 +958,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       });
       return;
     }
+    if (brandRenderErrorResponse(res, error)) return;
     if (campaignConflictResponse(res, error)) return;
     res.status(500).json({
       ok: false,
@@ -749,9 +973,12 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
   }
 });
 
-// A2: read-only preview of the exact campaignHtml that would be pushed to
-// Klaviyo as a CODE template. Makes zero Klaviyo API calls and works with
-// Klaviyo disconnected. Must NOT create templates, lists, or campaigns.
+// Read-only preview of the exact html that would be pushed to Klaviyo as a CODE
+// template. Makes zero Klaviyo API calls and works with Klaviyo disconnected.
+// Must NOT create templates, lists, or campaigns.
+//
+// Ticket C: this and the handoff call the SAME renderer with the same inputs, so
+// the bytes previewed are the bytes sent.
 router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
   try {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
@@ -761,9 +988,30 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
       const input = await getEngineInput(shopDomain);
       brandContext = buildBrandContext(input);
     }
-    const html = campaignHtml({ ...draft, brandContext });
-    res.json({ ok: true, html });
+
+    // The SAME finalization and the SAME renderer the send uses. The preview
+    // used to render the raw draft while the handoff applied brand-copy defaults
+    // first, so the email approved and the email sent were built from different
+    // inputs — an intentionally emptied paragraph came back as filler.
+    const finalized = finalizeCampaignForRender(draft, brandContext);
+    const template = await requireActiveBrandTemplate(shopDomain);
+    const html = renderBrandEmail(template, slotValuesForCampaign(
+      finalized,
+      { ...(template.brand || {}), brandName: brandContext?.brandName }
+    ));
+
+    res.json({
+      ok: true,
+      html,
+      // The version this preview was rendered with, and a fingerprint of the
+      // bytes. The handoff requires both back, so approval binds to THIS
+      // rendering rather than to whatever is active later.
+      templateVersion: template.version,
+      renderFingerprint: renderFingerprint(html),
+      renderedForRevision: req.body.expectedRevision ?? null,
+    });
   } catch (error) {
+    if (brandRenderErrorResponse(res, error)) return;
     res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
@@ -796,11 +1044,11 @@ router.post("/campaigns", async (req, res) => {
     const shopDomain = req.body.shopDomain || config.shopify.shopDomain;
     const {
       runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-      holdoutPct, displayName, expectedRevision,
+      holdoutPct, displayName, destinationUrl, expectedRevision,
     } = req.body;
     const campaign = await upsertCampaign({
       shopDomain, runId, playId, status, templateId, copy, draftEdits, klaviyoCampaignId,
-      holdoutPct, displayName, expectedRevision,
+      holdoutPct, displayName, destinationUrl, expectedRevision,
     });
     res.json({ ok: true, campaign });
   } catch (error) {
