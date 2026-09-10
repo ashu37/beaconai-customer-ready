@@ -412,6 +412,7 @@ suite("a send is refused when the shell changed since the preview", async () => 
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP_A, campaignId: campaign.id, expectedRevision: campaign.revision,
     expectedTemplateVersion: 1,
+    expectedRenderFingerprint: "0123456789abcdef",
     campaign: { play_id: "play-1", ...draft },
   });
   assert.equal(response.status, 409);
@@ -453,6 +454,7 @@ suite("a send is refused when the rendering is not the one approved", async () =
 
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP_A, campaignId: campaign.id, expectedRevision: campaign.revision,
+    expectedTemplateVersion: 1,
     expectedRenderFingerprint: "0000000000000000",
     campaign: { play_id: "play-1", ...draft },
   });
@@ -545,4 +547,90 @@ suite("a missing logo or product image omits its block rather than breaking it",
     { ...template.brand, logoUrl: "https://cdn.shop-a.example/logo.png" }
   ));
   assert.ok(withBoth.includes("logo.png") && withBoth.includes("serum.jpg"));
+});
+
+suite("a send without a preview is refused, not waved through", async () => {
+  await db.resetDatabase();
+  const { upsertCampaign, getCampaign } = require("../src/services/campaignService");
+  await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(),
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/" }, approvedBy: "founder",
+  });
+  await query(`INSERT INTO clean.sync_runs (shop_domain, status) VALUES ($1, 'complete')`, [SHOP_A]);
+  await query(
+    `INSERT INTO clean.engine_run_snapshots (run_id, shop_domain, store_id, engine_run, input_provenance, sync_run_id)
+     VALUES ('run-r', $1, 'store', '{}'::jsonb, 'verified', (SELECT id FROM clean.sync_runs WHERE shop_domain = $1))`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.customers (id, shop_domain, email, created_at) VALUES ('c-1', $1, 'c1@example.com', NOW())`,
+    [SHOP_A]
+  );
+  await query(
+    `INSERT INTO clean.engine_audiences (run_id, audience_definition_id, play_id, materialization_status, customer_ids)
+     VALUES ('run-r', 'aud-r', 'play-1', 'MATERIALIZED', $1)`,
+    [["c-1"]]
+  );
+
+  // The binding used to be skipped whenever a field was absent, so a caller with
+  // no successful preview sent null and the send proceeded unverified — the
+  // approval binding was optional exactly where it mattered.
+  const missing = [
+    {},
+    { expectedTemplateVersion: 1 },
+    { expectedRenderFingerprint: "0123456789abcdef" },
+    { expectedTemplateVersion: null, expectedRenderFingerprint: null },
+    { expectedTemplateVersion: 1, expectedRenderFingerprint: "" },
+  ];
+
+  const campaign = await upsertCampaign({ shopDomain: SHOP_A, runId: "run-r", playId: "play-1" });
+  for (const binding of missing) {
+    const response = await api.post("/klaviyo/campaigns/from-engine", {
+      shopDomain: SHOP_A, campaignId: campaign.id, expectedRevision: campaign.revision,
+      ...binding, campaign: { play_id: "play-1", ...draft },
+    });
+    assert.equal(response.status, 409, `binding ${JSON.stringify(binding)} should be refused`);
+    assert.equal(response.body.code, "preview_required");
+    assert.match(response.body.error, /has not been previewed/);
+  }
+
+  // Refused before anything was written: no reservation, no recipient rows, no
+  // audience counts. The check is at the top of the route for that reason.
+  const after = await getCampaign(campaign.id);
+  assert.equal(after.handoffReservedAt, null);
+  assert.equal(after.frozen, false);
+  assert.equal(after.audienceSize, null, "no audience was recorded for a refused handoff");
+  assert.equal(after.revision, campaign.revision, "the campaign was not touched at all");
+  const recipients = await query(`SELECT count(*)::int AS n FROM clean.campaign_recipients`);
+  assert.equal(recipients.rows[0].n, 0);
+});
+
+suite("the destination a merchant types is the one in the email", async () => {
+  await db.resetDatabase();
+  const template = await saveBrandTemplate({
+    shopDomain: SHOP_A, html: buildStarterShell(),
+    // A shop default exists, which is exactly when a dropped campaign value is
+    // invisible: the email renders fine, just pointing at the wrong place.
+    brand: { brandName: "Shop A", ctaUrl: "https://shop-a.example/default" },
+    approvedBy: "founder",
+  });
+
+  const { ctaUrl, ...noCtaUrl } = draft;
+  const withDestination = { ...noCtaUrl, destinationUrl: "https://shop-a.example/collections/restock" };
+
+  const preview = await api.post("/klaviyo/campaigns/preview-html", {
+    shopDomain: SHOP_A, campaign: withDestination, brandContext: { brandName: "Shop A" },
+  });
+  assert.equal(preview.status, 200);
+  assert.ok(preview.body.html.includes("https://shop-a.example/collections/restock"));
+  assert.ok(!preview.body.html.includes("/default"), "the shop default did not win over the campaign's own");
+
+  // And the handoff renders from the same finalized draft, so the fingerprint
+  // the preview issued matches — a destination dropped on one side would not.
+  const { finalizeCampaignForRender } = require("../src/services/brandContextService");
+  const handoffHtml = renderBrandEmail(template, slotValuesForCampaign(
+    finalizeCampaignForRender(withDestination, { brandName: "Shop A" }),
+    { ...template.brand, brandName: "Shop A" }
+  ));
+  assert.equal(handoffHtml, preview.body.html);
 });

@@ -135,6 +135,10 @@ function brandRenderErrorResponse(res, error) {
     res.status(400).json({ ok: false, error: error.message, code: "missing_destination", slot: error.slot });
     return true;
   }
+  if (error && error.code === "preview_required") {
+    res.status(409).json({ ok: false, error: error.message, code: "preview_required" });
+    return true;
+  }
   if (error && error.code === "preview_out_of_date") {
     res.status(409).json({
       ok: false, error: error.message, code: "preview_out_of_date",
@@ -750,6 +754,20 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // sync — including anything the partial-sync incident produced — is
     // legacy_unverified and stops here until the store is re-synced.
     const provenance = await assertInputVerifiedForHandoff(runId, shopDomain);
+
+    // After ownership and provenance — those refusals hold whatever the preview
+    // state is — but before anything is reserved, split or written. A handoff
+    // with no approval binding cannot succeed, so refusing it here leaves no
+    // recipient rows or audience counts behind. Only the COMPARISON needs the
+    // rendered bytes; the requirement itself does not.
+    if (req.body.expectedTemplateVersion == null || !req.body.expectedRenderFingerprint) {
+      res.status(409).json({
+        ok: false,
+        code: "preview_required",
+        error: "This campaign has not been previewed. Refresh the preview and review the email before sending.",
+      });
+      return;
+    }
     const audience = await resolveCampaignAudience(shopDomain, campaign, { runId });
 
     // Split the audience before anything reaches Klaviyo. The held-out arm is
@@ -808,8 +826,14 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // The shell the merchant REVIEWED, not whichever is active now. A version
       // activated between the preview and the send would otherwise change an
       // already-approved email without anyone seeing it.
+      //
+      // REQUIRED, both of them. Skipping the check when a field was absent made
+      // the binding optional exactly where it mattered: a caller with no
+      // successful preview sent null and the send proceeded unverified. There is
+      // no such thing as approving an email nobody rendered.
       const reviewedVersion = req.body.expectedTemplateVersion;
-      if (reviewedVersion != null && Number(reviewedVersion) !== brandTemplate.version) {
+      const expectedFingerprint = req.body.expectedRenderFingerprint;
+      if (Number(reviewedVersion) !== brandTemplate.version) {
         throw Object.assign(
           new Error(
             `The email shell changed since this was previewed (you reviewed version ` +
@@ -828,9 +852,8 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // Byte-level binding. Whatever changed — copy, destination, shell — if the
       // rendering is not the one that was approved, this refuses rather than
       // sending something nobody reviewed.
-      const expectedFingerprint = req.body.expectedRenderFingerprint;
       const actualFingerprint = renderFingerprint(renderedHtml);
-      if (expectedFingerprint && expectedFingerprint !== actualFingerprint) {
+      if (expectedFingerprint !== actualFingerprint) {
         throw Object.assign(
           new Error(
             "This email is not the one that was previewed. Refresh the preview and review it again before sending."

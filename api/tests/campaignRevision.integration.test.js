@@ -24,7 +24,18 @@ const { buildStarterShell } = require("../src/services/brandEmailRenderer");
 const SHOP = "campaign-shop.myshopify.com";
 
 // Ticket C: a handoff renders the shop's approved shell before it touches the
-// provider, so any test that expects to REACH the provider needs one configured.
+// provider, so any test that expects to REACH the provider needs one configured
+// AND the approval binding a real client gets from previewing first.
+// What a real client sends: the version and fingerprint its preview returned.
+async function previewApproval(campaign, shopDomain = SHOP) {
+  const preview = await api.post("/klaviyo/campaigns/preview-html", { shopDomain, campaign });
+  assert.equal(preview.status, 200, `preview failed: ${JSON.stringify(preview.body)}`);
+  return {
+    expectedTemplateVersion: preview.body.templateVersion,
+    expectedRenderFingerprint: preview.body.renderFingerprint,
+  };
+}
+
 async function configureBrandShell(shopDomain = SHOP) {
   return saveBrandTemplate({
     shopDomain, html: buildStarterShell(),
@@ -383,10 +394,12 @@ suite("handoff resolves the audience from the campaign's own run", async () => {
   // The request fails at the Klaviyo call (no key in tests), which is AFTER the
   // audience is resolved, split and recorded — so the recipient rows are the
   // evidence of which run's membership was actually used.
+  const approval = await previewApproval({ play_id: PLAY });
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP,
     campaignId: campaign.id,
     expectedRevision: campaign.revision,
+    ...approval,
     campaign: { play_id: PLAY },
   });
   assert.equal(response.status, 500, "the Klaviyo call fails, well past run resolution");
@@ -550,9 +563,10 @@ suite("a provider failure after creation keeps the campaign locked", async () =>
   // No Klaviyo key in tests, so the package call fails — but it fails INSIDE the
   // provider sequence, at the template step, which may already have created
   // something. Releasing there would let the next click create a duplicate.
+  const approval = await previewApproval({ play_id: PLAY });
   const response = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP, campaignId: created.id, expectedRevision: created.revision,
-    campaign: { play_id: PLAY },
+    ...approval, campaign: { play_id: PLAY },
   });
   assert.equal(response.status, 500);
   assert.equal(response.body.providerStage, "template", "we were inside the provider sequence");
@@ -566,7 +580,7 @@ suite("a provider failure after creation keeps the campaign locked", async () =>
   // manual reconciliation step (Ticket D).
   const retry = await api.post("/klaviyo/campaigns/from-engine", {
     shopDomain: SHOP, campaignId: created.id, expectedRevision: after.revision,
-    campaign: { play_id: PLAY },
+    ...approval, campaign: { play_id: PLAY },
   });
   assert.equal(retry.status, 409);
   assert.equal(retry.body.conflict, "handoff_in_progress");

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { canHandoff, draftSignature } from "./campaignSaveGate";
+import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
+import { STANDARD_SUPPRESSIONS_NOTE, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE, previewFreshness } from "./previewFreshness";
 import "./styles.css";
 
@@ -19,7 +20,7 @@ const DEFAULT_STARTING_TEMPLATE = "beacon-lifecycle-soft-nudge";
 // CSV header nor the manifest audience entry). So this is an HONEST, generic
 // platform disclosure — true of every Klaviyo send — not a per-play data claim.
 // Do NOT reword this into a play-specific sentence (that would be invented prose).
-const STANDARD_SUPPRESSIONS_NOTE = "Standard suppressions apply — recent buyers and unsubscribers are excluded.";
+
 
 function templateForPlay(play) {
   const key = play?.play_id || play?.id;
@@ -192,49 +193,6 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages }) {
 
 // CA-4: map the copywriter's slot object to the draft's field shape. subject_variants[0]
 // is the pre-selected subject (adopt #5). Returns {} when no agent copy present.
-function agentCopyToDraftFields(agentCopy) {
-  if (!agentCopy) return {};
-  const out = {};
-  const variants = Array.isArray(agentCopy.subject_variants) ? agentCopy.subject_variants : [];
-  if (variants[0]) out.subject = variants[0];
-  if (agentCopy.preview_text != null) out.previewText = agentCopy.preview_text;
-  if (agentCopy.headline != null) out.bodyH2 = agentCopy.headline;
-  if (agentCopy.body != null) out.bodyP1 = agentCopy.body;
-  if (agentCopy.support != null) out.bodyP2 = agentCopy.support;
-  if (agentCopy.cta != null) out.cta = agentCopy.cta;
-  return out;
-}
-
-function buildCampaignFromSelection(play, template, edits = {}, agentCopy = null) {
-  if (!play || !template) return null;
-  const prompt = play.template_prompt || {};
-  // Base copy precedence: LLM agent copy (CA-4) > selected template > static
-  // template_prompt > neutral placeholder. Merchant edits always layer on top.
-  const agentFields = agentCopyToDraftFields(agentCopy);
-  const draft = {
-    // Key by play id (1:1 with its selected template). A composite id broke every
-    // downstream lookup (grouping, audience preview, klaviyo assets) that keys by play.id.
-    id: play.id,
-    playTitle: play.play_name || play.play_id,
-    templateName: template.name,
-    templateSource: template.source,
-    status: "draft",
-    customers: play.audience_size || 0,
-    segment: play.audience_archetype || "—",
-    subject: agentFields.subject || template.subject || prompt.subject || `${play.play_name} campaign`,
-    previewText: agentFields.previewText || template.previewText || prompt.previewText || "Selected template ready for campaign review.",
-    bodyH2: agentFields.bodyH2 || template.bodyH2 || prompt.headline || play.play_name || "BeaconAI campaign",
-    bodyP1: agentFields.bodyP1 || template.bodyP1 || prompt.body || prompt.support || "",
-    bodyP2: agentFields.bodyP2 != null ? agentFields.bodyP2 : (prompt.support || ""),
-    cta: agentFields.cta || template.cta || prompt.cta || "",
-    // CA-5: featured product for the image block (resolved from the agent copy).
-    featuredProduct: agentCopy?.featured_product || null,
-    sendTime: "Manual review",
-    suppression: STANDARD_SUPPRESSIONS_NOTE,
-  };
-  return { ...draft, ...edits, id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName, templateSource: draft.templateSource, status: draft.status };
-}
-
 function formatAudience(value) {
   return value?.toLocaleString?.() || "—";
 }
@@ -687,6 +645,7 @@ function CampaignReviewPane({
   onPreviewRendered,
   destinationUrl,
   onChangeDestination,
+  campaignSignature: currentCampaignSignature,
 }) {
   const [previewHtml, setPreviewHtml] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -722,6 +681,7 @@ function CampaignReviewPane({
           templateVersion: result.templateVersion ?? null,
           fingerprint: result.renderFingerprint ?? null,
           signature,
+          campaignSignature: currentCampaignSignature,
         });
       }
       setPreviewFailed(false);
@@ -1715,9 +1675,9 @@ function App() {
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
   const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
-  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id]) : null;
+  const selectedDraft = reviewPlay && selectedTemplate ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id]) : null;
   const finalCampaigns = approvedPlays
-    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id]))
+    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id], destinationByPlay[play.id]))
     .map((item) => {
       if (!item) return item;
       const asset = klaviyoAssetsByCampaign[item.id];
@@ -1960,7 +1920,9 @@ function App() {
         ));
         for (const c of thisRun) {
           latestRevision.current[c.playId] = c.revision;
-          savedSignatureRef.current[c.playId] = draftSignature(c.draftEdits);
+          savedSignatureRef.current[c.playId] = campaignSignature({
+            edits: c.draftEdits, destinationUrl: c.destinationUrl,
+          });
           saveStatusRef.current[c.playId] = "saved";
         }
         setRestoredApprovedPlayIds(live.map((c) => c.playId));
@@ -2051,18 +2013,18 @@ function App() {
         ...fields,
       });
       setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
-      if (savedSignatureRef.current[playId] === undefined) {
-        savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
-      }
+
       setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
       setRunIdByPlay((prev) => (prev[playId] === campaign.runId ? prev : { ...prev, [playId]: campaign.runId }));
       setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saved" }));
       saveStatusRef.current[playId] = "saved";
       // Record WHAT was persisted, not merely that something was. The handoff
       // compares the draft on screen against this.
-      if (fields.draftEdits !== undefined) {
-        savedSignatureRef.current[playId] = draftSignature(fields.draftEdits);
-      }
+      // Recorded from the row the server returned, so it reflects what was
+      // actually persisted rather than what was sent.
+      savedSignatureRef.current[playId] = campaignSignature({
+        edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
+      });
       // Kept in a ref as well as state: a handoff started in the same tick as a
       // save needs the revision the server just returned, and setState has not
       // landed yet.
@@ -2110,15 +2072,25 @@ function App() {
   // not express that.
   const editSaveTimers = useRef({});
   const pendingEdits = useRef({});
-  const scheduleDraftEditsSave = useCallback((playId, edits) => {
+  // Every debounced field for a campaign goes through here, merged into ONE
+  // pending payload. A second timer elsewhere would be invisible to the flush,
+  // which is exactly how the destination could still be in flight when a handoff
+  // decided nothing was pending.
+  const scheduleCampaignSave = useCallback((playId, fields) => {
     clearTimeout(editSaveTimers.current[playId]);
-    pendingEdits.current[playId] = edits;
+    pendingEdits.current[playId] = { ...(pendingEdits.current[playId] || {}), ...fields };
     editSaveTimers.current[playId] = setTimeout(() => {
       delete editSaveTimers.current[playId];
+      const payload = pendingEdits.current[playId];
       delete pendingEdits.current[playId];
-      saveCampaignState(playId, { draftEdits: edits });
+      saveCampaignState(playId, payload);
     }, 600);
   }, [saveCampaignState]);
+
+  const scheduleDraftEditsSave = useCallback(
+    (playId, edits) => scheduleCampaignSave(playId, { draftEdits: edits }),
+    [scheduleCampaignSave]
+  );
 
   // Flush any pending edit when the workspace closes or the page unloads, so the
   // last few characters before navigating away are not lost.
@@ -2143,10 +2115,10 @@ function App() {
         clearTimeout(timers[id]);
         delete timers[id];
       }
-      const edits = pendingEdits.current[id];
-      if (edits !== undefined) {
+      const payload = pendingEdits.current[id];
+      if (payload !== undefined) {
         delete pendingEdits.current[id];
-        saves.push(saveCampaignState(id, { draftEdits: edits }));
+        saves.push(saveCampaignState(id, payload));
       } else if (inFlightSaves.current[id]) {
         // Nothing queued, but a save is already on the wire. Waiting for it is
         // the whole point: it may still fail or conflict.
@@ -2606,12 +2578,18 @@ function App() {
     await flushPendingEdits(campaignDraft.id);
 
     const playId = campaignDraft.id;
+    const currentSignature = campaignSignature({
+      edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
+    });
     const verdict = canHandoff({
       status: saveStatusRef.current[playId],
-      currentSignature: draftSignature(draftEditsByPlay[playId]),
+      currentSignature,
       savedSignature: savedSignatureRef.current[playId],
       savedRevision: latestRevision.current[playId],
       hasCampaignRow: Boolean(campaignIdByPlay[playId]),
+      // The rendering the merchant actually looked at. The server refuses a
+      // handoff without it, and it should never be attempted without one.
+      approvedRenderSignature: approvedRender.current[playId]?.campaignSignature ?? null,
     });
     if (!verdict.ok) {
       showToast({ message: verdict.message, error: true });
@@ -2751,7 +2729,9 @@ function App() {
     setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
     setRunIdByPlay((prev) => ({ ...prev, [playId]: campaign.runId }));
     latestRevision.current[playId] = campaign.revision;
-    savedSignatureRef.current[playId] = draftSignature(campaign.draftEdits);
+    savedSignatureRef.current[playId] = campaignSignature({
+      edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
+    });
     saveStatusRef.current[playId] = "saved";
     if (campaign.templateId) setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: campaign.templateId }));
     setDraftEditsByPlay((prev) => ({ ...prev, [playId]: campaign.draftEdits || {} }));
@@ -2786,14 +2766,9 @@ function App() {
   // The campaign's own destination. Debounced like copy edits, and persisted:
   // an email whose button goes nowhere is not a campaign, and the value has to
   // survive a refresh like everything else the merchant sets.
-  const destinationTimers = useRef({});
   function changeDestination(playId, value) {
     setDestinationByPlay((prev) => ({ ...prev, [playId]: value }));
-    clearTimeout(destinationTimers.current[playId]);
-    destinationTimers.current[playId] = setTimeout(() => {
-      delete destinationTimers.current[playId];
-      saveCampaignState(playId, { destinationUrl: value });
-    }, 600);
+    scheduleCampaignSave(playId, { destinationUrl: value });
   }
 
   function chooseTemplate(playId, templateId) {
@@ -3225,6 +3200,10 @@ function App() {
                                 destinationUrl={destinationByPlay[reviewPlay.id]}
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
                                 onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}
+                                campaignSignature={campaignSignature({
+                                  edits: draftEditsByPlay[reviewPlay.id],
+                                  destinationUrl: destinationByPlay[reviewPlay.id],
+                                })}
                                 onRetrySave={() => saveCampaignState(reviewPlay.id, { draftEdits: draftEditsByPlay[reviewPlay.id] || {} })}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
                               />
