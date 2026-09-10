@@ -341,6 +341,36 @@ async function initSchema() {
   // destination in the record is the one that was actually mailed.
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS destination_url TEXT;`);
 
+  // Ticket D — durable provider delivery state. See
+  // docs/PROVIDER_HANDOFF_CONTRACT.md, which was written before this and is the
+  // authority for what each value means.
+  //
+  // The rule these columns exist to enforce: BeaconAI may only assert what the
+  // provider has confirmed. `status` and `sent_at` are local bookkeeping and are
+  // not evidence of anything happening at Klaviyo.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS delivery_state TEXT NOT NULL DEFAULT 'not_started';`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider TEXT;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_campaign_id TEXT;`);
+  // Stored ONLY when derived from a provider response. Never constructed from an
+  // id and a guessed account path: a link that 404s in front of a merchant
+  // mid-handoff is worse than no link.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_campaign_url TEXT;`);
+
+  // "When did we last look" and "when did the provider last tell us this" are
+  // different questions. A failed check updates the first and not the second, so
+  // a stale state cannot pass as fresh because someone retried.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS last_check_ok BOOLEAN;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS last_check_error TEXT;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS last_confirmed_at TIMESTAMPTZ;`);
+
+  // NULLABLE on purpose. A campaign that sent to 900 people and reported no
+  // count is not a campaign that sent to nobody, and coalescing to 0 would make
+  // those indistinguishable.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_sent_at TIMESTAMPTZ;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_sent_count INTEGER;`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS provider_send_status TEXT;`);
+
   // Claimed at the START of a handoff, before any provider call. Two
   // simultaneous sends cannot both hold it, which is what stops a duplicate
   // draft being created while the first request is still in flight.

@@ -655,11 +655,14 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
   .review-preview-pane { position: static; }
 }
 
-/* Phone. Preview first — at this width a merchant is far more often checking
-   what the email looks like than typing into it. */
+/* Phone. Editor first, preview below — the approved specification's order. An
+   earlier version put the preview first on the theory that merchants mostly
+   check on phones; that was an assumption with nothing behind it, and the
+   spec's order stands. A jump link covers the case where someone does want the
+   preview immediately. */
 @media (max-width: 720px) {
   .review-two-pane { display: flex; flex-direction: column; gap: 16px; }
-  .review-preview-pane { order: -1; width: 100%; justify-items: stretch; }
+  .review-preview-pane { width: 100%; justify-items: stretch; }
   .review-edit-pane { padding: 14px; }
   /* 44px touch targets, and long URLs wrap rather than scrolling the page. */
   .review-field input, .review-field textarea { min-height: 44px; font-size: 16px; }
@@ -684,3 +687,13 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .preview-viewport-btn { font-size: 12px; padding: 4px 10px; border: 1px solid var(--rule); background: #fff; border-radius: 4px; cursor: pointer; }
 .preview-viewport-btn.active { background: var(--ink, #151515); color: #fff; border-color: var(--ink, #151515); }
 .preview-frame-mobile { max-width: 375px; margin: 0 auto; }
+
+/* Only useful where the preview is below the fold, so it is hidden on desktop. */
+.preview-jump { display: none; }
+@media (max-width: 720px) {
+  .preview-jump { display: inline-block; font-size: 12.5px; margin-bottom: 4px; }
+}
+
+/* Seed harness only. Loud on purpose: a screenshot of sample data must never be
+   mistaken for a merchant's real campaign. */
+.sample-banner { background: #fff4d6; border: 1px solid #e0c168; border-radius: var(--radius-card); padding: 8px 12px; margin-bottom: 14px; font-size: 12.5px; font-weight: 600; }

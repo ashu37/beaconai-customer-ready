@@ -319,6 +319,35 @@ async function createCampaignSendPackageInner(privateKey, campaign, audience, pr
   };
 }
 
+/**
+ * Look this campaign up at the provider, by the name we gave it.
+ *
+ * Reconciliation's eyes. Returns EVERY match — more than one is a real answer
+ * ("we cannot tell which is yours") and must not be collapsed into a guess.
+ * Never creates anything.
+ */
+async function findKlaviyoCampaigns(privateKey, campaign) {
+  const client = createKlaviyoClient(privateKey);
+  const name = campaignName(campaign);
+  const response = await client.get(
+    `/campaigns?filter=${encodeURIComponent(`equals(messages.channel,'email')`)}`
+  );
+  const all = response.data?.data || [];
+  const matches = all
+    .filter((item) => (item.attributes?.name || "") === name)
+    .map((item) => ({
+      provider: "klaviyo",
+      id: item.id,
+      // Only a link the provider itself gave us.
+      url: item.links?.self || null,
+      status: item.attributes?.status || null,
+      sentAt: item.attributes?.send_time || null,
+      // Present-but-null when the provider reports no count. Not zero.
+      sentCount: item.attributes?.recipient_count ?? null,
+    }));
+  return { matches };
+}
+
 async function sendCampaign(privateKey, campaignId) {
   const client = createKlaviyoClient(privateKey);
   const response = await client.post("/campaign-send-jobs", {
@@ -352,6 +381,7 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 
 module.exports = {
   PROVIDER_STAGES,
+  findKlaviyoCampaigns,
   testKlaviyo,
   getKlaviyoLists,
   getKlaviyoProfiles,

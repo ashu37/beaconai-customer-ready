@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
-import { STANDARD_SUPPRESSIONS_NOTE, buildCampaignFromSelection } from "./campaignDraft";
+import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { usePreview } from "./usePreview";
 import "./styles.css";
@@ -623,7 +623,7 @@ function suggestedValueForField(play, field, agentCopy = null) {
   }
 }
 
-function CampaignReviewPane({
+export function CampaignReviewPane({
   play,
   brandContext,
   beaconTemplates,
@@ -647,6 +647,7 @@ function CampaignReviewPane({
   destinationUrl,
   onChangeDestination,
   campaignSignature: currentCampaignSignature,
+  brandDesign,
 }) {
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   // Default to the branded EMAIL. A merchant has to recognise the email they
@@ -797,6 +798,10 @@ function CampaignReviewPane({
       {draft ? (
         <div className="review-two-pane">
           <div className="review-edit-pane">
+            {/* Narrow screens only: the preview sits below the fields, so give
+                keyboard and touch users a way to it without scrolling past
+                every input. */}
+            <a className="preview-jump link-btn" href="#campaign-email-preview">View preview</a>
             {/* adopt #3: one merchant-facing "why" line above the fields. LLM-authored
                 + guarded server-side; shown only when present. */}
             {agentCopy?.rationale ? (
@@ -932,7 +937,7 @@ function CampaignReviewPane({
                 different things — words and branding — were the same control. */}
           </div>
 
-          <div className="review-preview-pane">
+          <div className="review-preview-pane" id="campaign-email-preview">
             {previewMode === "email" ? (
               <div className="preview-viewport" role="group" aria-label="Preview width">
                 {["desktop", "mobile"].map((mode) => (
@@ -1629,6 +1634,7 @@ function App() {
   // Ticket C: the brand shell version this shop currently sends with. A new
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
+  const [brandDesign, setBrandDesign] = useState(null);
   const [destinationByPlay, setDestinationByPlay] = useState({});
   // The rendering the merchant actually looked at, per play. Handoff sends this
   // back so approval binds to that email rather than to whatever renders later.
@@ -2286,6 +2292,7 @@ function App() {
     try {
       const result = await api.brandEmailTemplate();
       setBrandTemplateVersion(result.active?.version ?? null);
+      setBrandDesign(result);
     } catch (_) {
       // Additive: the preview's own response still reports brand_setup_required.
     }
@@ -3221,6 +3228,7 @@ function App() {
                                 draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
                                 saveState={saveStateByPlay[reviewPlay.id]}
                                 activeBrandTemplateVersion={brandTemplateVersion}
+                                brandDesign={brandDesign}
                                 destinationUrl={destinationByPlay[reviewPlay.id]}
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
                                 onPreviewRendered={(info) => { approvedRender.current[reviewPlay.id] = info; }}

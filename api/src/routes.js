@@ -17,6 +17,7 @@ const {
   createCampaignSendPackage,
   sendCampaign,
   saveKlaviyoAsset,
+  findKlaviyoCampaigns,
 } = require("./services/klaviyoClient");
 const {
   buildShopifyStartUrl,
@@ -28,6 +29,12 @@ const {
   resolveStoredKlaviyoToken,
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
+const {
+  DeliveryTransitionRejected,
+  getDelivery,
+  transitionDelivery,
+} = require("./services/deliveryStateService");
+const { reconcileCampaign } = require("./services/reconciliationService");
 const {
   assertReadyForAnalysis,
   getActiveInputSnapshot,
@@ -791,6 +798,9 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // revision the merchant reviewed, so a campaign edited since approval
       // cannot be handed off as if it had been signed off.
       campaignRow = await reserveCampaignForHandoff(campaignRow.id, req.body.expectedRevision);
+      // Durable from the moment we claim it, so a crash here is visible as
+      // `creating` rather than as a campaign that was never touched.
+      await transitionDelivery(campaignRow.id, "creating").catch(() => {});
       split = splitAudience(shopDomain, audience.recipients, campaignRow.holdoutPct ?? 0.1);
 
       // Recipients are persisted BEFORE the send, deliberately. If this write
@@ -885,8 +895,13 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       // ever set — so every failure released, including ones that may have
       // created a draft.
       if (campaignRow && providerError.provenNothingCreated === true) {
+        // Proven pre-creation: nothing exists there, so retry is safe.
+        await transitionDelivery(campaignRow.id, "failed").catch(() => {});
         await releaseHandoffReservation(campaignRow.id).catch(() => {});
       } else if (campaignRow) {
+        // Anything else may have created a campaign. `uncertain` has no retry
+        // edge; only reconciliation can resolve it.
+        await transitionDelivery(campaignRow.id, "uncertain").catch(() => {});
         providerError.reconciliationRequired = true;
         providerError.campaignId = campaignRow.id;
       }
@@ -916,6 +931,19 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       });
       if (klaviyoCampaignId) {
         campaignRow = await updateCampaign(campaignRow.id, { klaviyoCampaignId });
+        // CONFIRMED: the provider returned a campaign id. A template or list id
+        // would not qualify and is never stored here.
+        await transitionDelivery(campaignRow.id, "created", {
+          provider: "klaviyo",
+          providerCampaignId: klaviyoCampaignId,
+          // Only from a provider response. We do not build a link out of an id
+          // and a guessed account path.
+          providerCampaignUrl: packageResult.campaign?.links?.self || null,
+        }, { fromProvider: true }).catch(() => {});
+      } else {
+        // The package call returned without a campaign id. That is not a
+        // created campaign, whatever else succeeded.
+        await transitionDelivery(campaignRow.id, "uncertain").catch(() => {});
       }
     }
 
@@ -1096,6 +1124,52 @@ router.patch("/campaigns/:id", async (req, res) => {
   } catch (error) {
     if (campaignConflictResponse(res, error)) return;
     res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// The durable provider state for one campaign. Safe to poll: reads only.
+router.get("/campaigns/:id/delivery", async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const delivery = await getDelivery(id);
+    if (!delivery) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+    res.json({ ok: true, delivery });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Founder-triggered. Reads the provider and updates state; never creates.
+router.post("/campaigns/:id/reconcile", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const privateKey = await resolveKlaviyoKey(req.body);
+    const result = await reconcileCampaign(id, {
+      findProviderCampaigns: async ({ campaign }) => findKlaviyoCampaigns(privateKey, campaign),
+    });
+    if (!result) {
+      res.status(404).json({ ok: false, error: `No campaign ${id}` });
+      return;
+    }
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    if (error instanceof DeliveryTransitionRejected) {
+      res.status(409).json({ ok: false, error: error.message, from: error.from, to: error.to });
+      return;
+    }
+    res.status(500).json({ ok: false, error: error.response?.data || error.message });
   }
 });
 
