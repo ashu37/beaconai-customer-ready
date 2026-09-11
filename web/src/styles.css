@@ -837,3 +837,8 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
   .window-radio, .disclosure-btn { min-height: 44px; }
   .result-detail { padding: 12px; }
 }
+
+.sync-progress { border-color: var(--accent); }
+.sync-spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sync-spin 1s linear infinite; vertical-align: middle; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sync-spinner { animation: none; } }

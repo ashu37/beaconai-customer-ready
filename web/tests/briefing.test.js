@@ -227,3 +227,25 @@ test("each change unit is written out as that unit, and an unknown one not at al
     "last 28 days, compared with the 28 days before. A rise means more.",
   );
 });
+
+test("syncing an old briefing shows persistent progress and unlocks analysis on completion", async () => {
+  const previousStart = apiModule.api.syncShopify;
+  let complete;
+  apiModule.api.syncShopify = () => new Promise((resolve) => { complete = resolve; });
+  // Force the actual unverified-briefing recovery banner.
+  const previousStatus = apiModule.api.syncStatus;
+  apiModule.api.syncStatus = stub({ ready: true, latest: { syncRunId: 9, status: "complete" }, analysis: { provenance: "legacy_unverified" } });
+  try {
+    await mountBriefing();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Re-sync store" })); });
+    assert.ok(screen.getByText("Syncing store data"));
+    assert.match(document.body.textContent, /briefing below is from the previous analysis/);
+    assert.equal(screen.getByRole("button", { name: "Re-run analysis" }).disabled, true);
+    await act(async () => { complete({ published: true }); await new Promise((r) => setTimeout(r, 30)); });
+    assert.ok(screen.getByText("Store sync complete"));
+    assert.equal(screen.getByRole("button", { name: "Re-run analysis" }).disabled, false);
+  } finally {
+    apiModule.api.syncShopify = previousStart;
+    apiModule.api.syncStatus = previousStatus;
+  }
+});
