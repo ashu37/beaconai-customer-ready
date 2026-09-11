@@ -6,6 +6,7 @@ const suite = db.available ? test : test.skip;
 
 const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
+const { startFakeKlaviyo } = require("./helpers/fakeKlaviyo");
 const { runSync } = require("../src/services/syncService");
 const {
   freezeCampaignAtHandoff,
@@ -542,7 +543,10 @@ suite("content cannot change while a handoff holds the campaign", async () => {
   assert.deepEqual(final.copy, { subject: "Reviewed" }, "the reviewed content is intact");
 });
 
-suite("a provider failure after creation keeps the campaign locked", async () => {
+// An approved campaign that can reach the provider: a verified run, a
+// materialized audience with emails, an approved shell, and — unless told
+// otherwise — a Klaviyo key on file. Klaviyo itself is the local fake.
+async function seedHandoffableCampaign({ withKlaviyoKey = true } = {}) {
   await db.resetDatabase();
   await seedRun("run-1");
   for (const id of ["c-1", "c-2"]) {
@@ -558,32 +562,113 @@ suite("a provider failure after creation keeps the campaign locked", async () =>
     [PLAY, ["c-1", "c-2"]]
   );
   await configureBrandShell();
-  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" });
+  if (withKlaviyoKey) await connectKlaviyo();
+  return upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, status: "approved" });
+}
 
-  // No Klaviyo key in tests, so the package call fails — but it fails INSIDE the
-  // provider sequence, at the template step, which may already have created
-  // something. Releasing there would let the next click create a duplicate.
-  const approval = await previewApproval({ play_id: PLAY });
-  const response = await api.post("/klaviyo/campaigns/from-engine", {
-    shopDomain: SHOP, campaignId: created.id, expectedRevision: created.revision,
-    ...approval, campaign: { play_id: PLAY },
+async function connectKlaviyo() {
+  await query(
+    `INSERT INTO clean.connections (shop_domain, klaviyo_private_key) VALUES ($1, 'pk_test')
+     ON CONFLICT (shop_domain) DO UPDATE SET klaviyo_private_key = EXCLUDED.klaviyo_private_key`,
+    [SHOP]
+  );
+}
+
+// The copy a real client sends: previewed and handed off as the same object,
+// so the fingerprint the preview returned matches what the handoff renders.
+const HANDOFF_COPY = { play_id: PLAY, subject: "We saved your spot" };
+
+function handOff(campaign, approval) {
+  return api.post("/klaviyo/campaigns/from-engine", {
+    shopDomain: SHOP, campaignId: campaign.id, expectedRevision: campaign.revision,
+    ...approval, campaign: HANDOFF_COPY,
   });
-  assert.equal(response.status, 500);
-  assert.equal(response.body.providerStage, "template", "we were inside the provider sequence");
-  assert.equal(response.body.reconciliationRequired, true);
+}
 
-  const after = await getCampaign(created.id);
-  assert.ok(after.handoffReservedAt, "the reservation is KEPT, not handed back");
-  assert.equal(after.frozen, false);
+suite("a handoff creates one Klaviyo draft from the approved bytes", async () => {
+  const created = await seedHandoffableCampaign();
+  const approval = await previewApproval(HANDOFF_COPY);
+  const fake = await startFakeKlaviyo();
+  try {
+    const response = await handOff(created, approval);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
 
-  // A retry is refused rather than creating a second draft. Clearing this is a
-  // manual reconciliation step (Ticket D).
-  const retry = await api.post("/klaviyo/campaigns/from-engine", {
-    shopDomain: SHOP, campaignId: created.id, expectedRevision: after.revision,
-    ...approval, campaign: { play_id: PLAY },
-  });
-  assert.equal(retry.status, 409);
-  assert.equal(retry.body.conflict, "handoff_in_progress");
+    const calls = fake.calls();
+    assert.equal(calls.filter((c) => c === "POST /templates").length, 1);
+    assert.equal(calls.filter((c) => c === "POST /campaigns").length, 1);
+
+    const after = await getCampaign(created.id);
+    assert.equal(after.deliveryState, "created");
+    assert.equal(after.klaviyoCampaignId, "camp-1");
+    assert.equal(after.frozen, true);
+    // What Klaviyo received is what the campaign record says was sent.
+    const sentHtml = fake.requests.find((r) => r.path === "/templates").body.data.attributes.html;
+    assert.ok(sentHtml, "the template carried html");
+    assert.equal(after.renderedHtml, sentHtml);
+
+    // Only the treated arm is imported; the holdout receives nothing.
+    const imported = fake.requests.find((r) => r.path === "/profile-bulk-import-jobs")
+      .body.data.attributes.profiles.data;
+    assert.equal(imported.length, response.body.holdout.treated);
+  } finally {
+    await fake.close();
+  }
+});
+
+suite("a provider failure after creation keeps the campaign locked", async () => {
+  const created = await seedHandoffableCampaign();
+  const approval = await previewApproval(HANDOFF_COPY);
+
+  // Klaviyo has accepted a template, a list and an import when campaign
+  // creation fails. Releasing now would let the next click build a second set.
+  const fake = await startFakeKlaviyo({ failAt: { "POST /campaigns": 500 } });
+  try {
+    const response = await handOff(created, approval);
+    assert.equal(response.status, 500);
+    assert.equal(response.body.providerStage, "campaign", "we were inside the provider sequence");
+    assert.equal(response.body.reconciliationRequired, true);
+
+    const after = await getCampaign(created.id);
+    assert.ok(after.handoffReservedAt, "the reservation is KEPT, not handed back");
+    assert.equal(after.frozen, false);
+    assert.equal(after.deliveryState, "uncertain");
+
+    // A retry is refused rather than creating a second draft. Clearing this is a
+    // manual reconciliation step (Ticket D).
+    const before = fake.requests.length;
+    const retry = await handOff(after, approval);
+    assert.equal(retry.status, 409);
+    assert.equal(retry.body.conflict, "handoff_in_progress");
+    assert.equal(fake.requests.length, before, "and the refusal never reached Klaviyo");
+  } finally {
+    await fake.close();
+  }
+});
+
+suite("a handoff refused before Klaviyo is contacted can be retried", async () => {
+  // Klaviyo not connected yet: knowable without asking the provider.
+  const created = await seedHandoffableCampaign({ withKlaviyoKey: false });
+  const approval = await previewApproval(HANDOFF_COPY);
+  const fake = await startFakeKlaviyo();
+  try {
+    const response = await handOff(created, approval);
+    assert.equal(response.status, 500);
+    assert.equal(response.body.providerStage, "not_started");
+    assert.equal(response.body.reconciliationRequired, false);
+    assert.deepEqual(fake.calls(), [], "Klaviyo was never contacted");
+
+    const after = await getCampaign(created.id);
+    assert.equal(after.handoffReservedAt, null, "released: nothing exists to duplicate");
+    assert.equal(after.deliveryState, "failed");
+
+    // The merchant connects Klaviyo and tries again.
+    await connectKlaviyo();
+    const retry = await handOff(after, approval);
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    assert.equal((await getCampaign(created.id)).deliveryState, "created");
+  } finally {
+    await fake.close();
+  }
 });
 
 suite("a failure before any provider call releases the reservation", async () => {
