@@ -37,6 +37,11 @@ async function initSchema() {
     );
   `);
 
+  // PKCE: the verifier belongs to ONE authorization request, so it lives with
+  // that request's state row and dies with it. Stored encrypted like every other
+  // secret at rest, even though these rows expire in 15 minutes.
+  await query(`ALTER TABLE clean.oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;`);
+
   await query(`
     CREATE TABLE IF NOT EXISTS raw.shopify_events (
       id SERIAL PRIMARY KEY,

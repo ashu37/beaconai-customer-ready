@@ -49,6 +49,8 @@ const config = {
     // talk to any other host. Tests point it at a local fake provider by
     // assigning to it directly.
     apiBaseUrl: "https://a.klaviyo.com/api",
+    authorizeUrl: "https://www.klaviyo.com/oauth/authorize",
+    tokenUrl: "https://a.klaviyo.com/oauth/token",
   },
 };
 
