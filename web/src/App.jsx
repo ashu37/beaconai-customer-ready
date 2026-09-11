@@ -7,6 +7,7 @@ import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
+import { useStoreSync } from "./useStoreSync";
 import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
 import { signInState } from "./signInState";
 import {
@@ -2692,42 +2693,19 @@ export function App() {
     }
   }
 
-  async function syncShopify() {
-    try {
-      const result = await runStep("Shopify sync", () => api.syncShopify());
+  const storeSync = useStoreSync({
+    start: () => api.syncShopify(),
+    status: () => api.syncStatus(),
+    onStatus: setSyncStatus,
+    onComplete: async (result) => {
       setSync(result);
-
-      // A sync that came back partial is NOT a synced store. It publishes
-      // nothing, so the previous good data is still what is on screen — say
-      // which, rather than showing a success toast over unchanged numbers.
-      if (result?.published === false) {
-        await loadSyncStatus();
-        const reason = result.validationFailures?.[0]?.message
-          || "Shopify returned an incomplete copy of the store.";
-        showToast({
-          message: `Store not updated: ${reason}`,
-          error: true,
-          actionLabel: "Retry",
-          onAction: () => { setToast(null); syncShopify(); },
-        });
-        return result;
-      }
-
-      await preloadStoreSnapshot();
       await loadSyncStatus();
-      const days = result?.coverage?.daysCovered;
-      showToast({ message: days ? `Store synced · ${days} days of history` : "Store synced" });
-      return result;
-    } catch (err) {
-      setError(""); // P-C1: surface this via toast, not the page-level error-box.
-      showToast({
-        message: "Store sync hit a problem.",
-        error: true,
-        actionLabel: "Retry",
-        onAction: () => { setToast(null); syncShopify(); },
-      });
-      return null;
-    }
+      await preloadStoreSnapshot();
+    },
+  });
+
+  async function syncShopify() {
+    return storeSync.run(syncStatus?.latest?.syncRunId);
   }
 
   // Shared result-handling path for both a fresh engine run and O1 rehydration.
@@ -3401,9 +3379,25 @@ export function App() {
               ) : null}
               <DataStateBanner
                 syncStatus={syncStatus}
-                busy={loading}
+                busy={loading || storeSync.busy}
                 onSync={syncShopify}
               />
+              {storeSync.phase !== "idle" ? (
+                <div className="data-state-banner sync-progress" role="status" aria-live="polite">
+                  <div className="data-state-main">
+                    <strong>{storeSync.busy ? <span className="sync-spinner" aria-hidden="true" /> : null}
+                      {storeSync.phase === "running" ? "Syncing store data" : storeSync.phase === "uncertain" ? "Sync is taking longer — checking its status" : storeSync.phase === "failed" ? "Store sync needs attention" : "Store sync complete"}
+                    </strong>
+                    {storeSync.busy ? <span>{storeSync.elapsed}s elapsed. The briefing below is from the previous analysis. Re-run analysis becomes available when sync finishes.</span> : null}
+                    {storeSync.message ? <span>{storeSync.message}</span> : null}
+                    {storeSync.lastCheck ? <span>Last status check: {new Date(storeSync.lastCheck).toLocaleTimeString()}{storeSync.serverStatus === "running" ? " · Server reports sync in progress" : ""}</span> : null}
+                    {storeSync.checkError ? <span>{storeSync.checkError}</span> : null}
+                    {storeSync.elapsed >= 60 && storeSync.busy ? <span>This is taking longer than usual. Status checks continue; this is not confirmation that the sync has stopped.</span> : null}
+                  </div>
+                  {storeSync.busy ? <button className="btn small" onClick={storeSync.check}>Check sync status</button> : null}
+                  {storeSync.phase === "failed" ? <button className="btn small" onClick={syncShopify}>Retry sync</button> : null}
+                </div>
+              ) : null}
               {!onboardingHidden ? (
                 <OnboardingBanner
                   status={status}
@@ -3454,7 +3448,7 @@ export function App() {
                   <button
                     className="btn"
                     onClick={() => runAtulEngine(false)}
-                    disabled={loading}
+                    disabled={loading || storeSync.busy || syncStatus?.latest?.status === "running"}
                     title="Analyses the store data from the last sync. It doesn't pull new data from Shopify."
                   >
                     Re-run analysis
@@ -4000,7 +3994,7 @@ export function App() {
               onRetry={() => setResultsReload((n) => n + 1)}
               onLoadMore={() => setResultsLimit((n) => n + 100)}
               onResync={async () => { await syncShopify(); setResultsReload((n) => n + 1); }}
-              resyncBusy={loading}
+              resyncBusy={loading || storeSync.busy}
               onGoToCampaigns={() => setActivePage("campaigns")}
               playTitleFor={(playId) =>
                 workflowPlays.find((p) => (p.play_id || p.id) === playId)?.play_name
