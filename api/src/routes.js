@@ -26,7 +26,6 @@ const {
   getKlaviyoProfiles,
   getKlaviyoTemplates,
   createCampaignSendPackage,
-  sendCampaign,
   saveKlaviyoAsset,
   campaignNameForProvider,
   getKlaviyoSender,
@@ -1226,26 +1225,25 @@ router.post("/klaviyo/campaigns/preview-html", async (req, res) => {
   }
 });
 
-router.post("/klaviyo/campaigns/send", async (req, res) => {
-  try {
-    const shopDomain = authorizedShop(req, res, req.body.shopDomain);
-    if (!shopDomain) return;
-    const privateKey = await resolveKlaviyoKey(shopDomain, req.body);
-    const campaignId = req.body.campaignId;
-    if (!campaignId) throw new Error("campaignId is required to send a Klaviyo campaign.");
-
-    const sendJob = await sendCampaign(privateKey, campaignId);
-    await saveKlaviyoAsset({
-      shopDomain,
-      assetType: "campaign_send_job",
-      externalId: sendJob?.data?.id || campaignId,
-      payload: { campaignId, sendJob },
-    });
-
-    res.json({ ok: true, campaignId, sendJob });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.response?.data || error.message });
-  }
+// Sending from BeaconAI is off. This route used to send whatever provider
+// campaign id it was given, without looking up the local campaign's approval,
+// frozen content, audience import or delivery state — a draft-only UI does not
+// protect an endpoint anyone with a session can call. The merchant reviews and
+// sends inside Klaviyo, and reconciliation records the send.
+//
+// There is deliberately no flag to turn it back on. Sending from here again
+// means building those checks on the server, not flipping a switch.
+//
+// The session check stays first: an anonymous or cross-shop caller is still
+// told 401/403, not handed the reason sending is disabled.
+router.post("/klaviyo/campaigns/send", (req, res) => {
+  const shopDomain = authorizedShop(req, res, req.body.shopDomain);
+  if (!shopDomain) return;
+  res.status(410).json({
+    ok: false,
+    code: "direct_send_disabled",
+    error: "Sending from BeaconAI is turned off. Review and send this campaign in Klaviyo.",
+  });
 });
 
 // Campaign persistence. The frontend still keeps its own state in this phase;

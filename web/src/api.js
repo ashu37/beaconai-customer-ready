@@ -120,7 +120,6 @@ export const api = {
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
   generateCopy: ({ playId, templateId, regenerate, lockedSlots, steer } = {}) =>
     request("/copy/generate", { method: "POST", body: JSON.stringify({ shopDomain, playId, templateId, regenerate, lockedSlots, steer }) }),
-  sendCampaign: (campaignId) => request("/klaviyo/campaigns/send", { method: "POST", body: JSON.stringify({ shopDomain, campaignId }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
   // Measured results: the program-level holdout comparison plus every sent
   // campaign, across every run.
