@@ -45,6 +45,10 @@ const config = {
     clientSecret: process.env.KLAVIYO_CLIENT_SECRET,
     scopes: process.env.KLAVIYO_SCOPES || "accounts:read campaigns:read campaigns:write catalogs:read flows:read lists:write profiles:read profiles:write segments:read templates:read templates:write",
     revision: process.env.KLAVIYO_REVISION || "2026-04-15",
+    // Not read from the environment on purpose: a deployment has no reason to
+    // talk to any other host. Tests point it at a local fake provider by
+    // assigning to it directly.
+    apiBaseUrl: "https://a.klaviyo.com/api",
   },
 };
 

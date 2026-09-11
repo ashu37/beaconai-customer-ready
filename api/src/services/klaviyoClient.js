@@ -8,7 +8,7 @@ function createKlaviyoClient(privateKey) {
   }
 
   return axios.create({
-    baseURL: "https://a.klaviyo.com/api",
+    baseURL: config.klaviyo.apiBaseUrl,
     timeout: 30000,
     headers: {
       Authorization: `Klaviyo-API-Key ${privateKey}`,
@@ -208,17 +208,33 @@ async function importProfilesToList(privateKey, listId, recipients = []) {
   return response.data;
 }
 
-async function createCampaign(privateKey, campaign, listId) {
+// The envelope of the email: who it is from and what the inbox shows. The HTML
+// body goes in separately as a template. Reply-to is left to Klaviyo, which
+// uses the sender address; the account does not report a separate one.
+function emailContent(campaign, sender) {
+  const content = {
+    subject: campaign.subject,
+    preview_text: campaign.previewText || null,
+    from_email: sender.email,
+    from_label: sender.name || null,
+  };
+  return Object.fromEntries(Object.entries(content).filter(([, value]) => value));
+}
+
+// Klaviyo's Create Campaign body. `campaign-messages` is required and carries
+// the envelope; without it the request is refused, after the template, list
+// and import have already been created.
+//
+// No send_strategy. Creating a campaign does not send it — the merchant sends
+// or schedules it in Klaviyo — and the old "manual" value is not one Klaviyo
+// accepts.
+async function createCampaign(privateKey, campaign, listId, sender) {
   const client = createKlaviyoClient(privateKey);
   const response = await client.post("/campaigns", {
     data: {
       type: "campaign",
       attributes: {
         name: campaignName(campaign),
-        channel: "email",
-        send_strategy: {
-          method: "manual",
-        },
         audiences: {
           included: [listId],
           excluded: [],
@@ -227,12 +243,24 @@ async function createCampaign(privateKey, campaign, listId) {
           use_smart_sending: true,
         },
         tracking_options: {
-          is_add_utm: true,
-          utm_params: [
-            { name: "utm_source", value: "beaconai" },
-            { name: "utm_medium", value: "email" },
-            { name: "utm_campaign", value: campaign.playTitle || campaign.play_name || "beaconai" },
+          add_tracking_params: true,
+          custom_tracking_params: [
+            { type: "static", name: "utm_source", value: "beaconai" },
+            { type: "static", name: "utm_medium", value: "email" },
+            { type: "static", name: "utm_campaign", value: campaign.playTitle || campaign.play_name || "beaconai" },
           ],
+        },
+        "campaign-messages": {
+          data: [{
+            type: "campaign-message",
+            attributes: {
+              definition: {
+                channel: "email",
+                label: campaignName(campaign),
+                content: emailContent(campaign, sender),
+              },
+            },
+          }],
         },
       },
     },
@@ -271,10 +299,47 @@ async function assignTemplateToCampaignMessage(privateKey, messageId, templateId
 // provider. "not_started" is the ONLY stage that proves nothing was created.
 const PROVIDER_STAGES = ["not_started", "template", "list", "import", "campaign", "message", "assignment"];
 
+// Everything that can be known to fail without asking the provider is checked
+// here, while the stage is still "not_started". A failure found only once the
+// sequence has begun is reported as "something may exist at the provider",
+// which locks the campaign for reconciliation; these failures prove nothing was
+// sent, so the merchant can fix the cause and retry.
+function assertPackageSendable(privateKey, campaign, audience, options) {
+  if (!privateKey) {
+    throw new Error("Klaviyo is not connected for this store. Connect Klaviyo, then try again.");
+  }
+  if (!options.html) {
+    throw new Error(
+      "createCampaignSendPackage requires rendered html. Render the shop's approved brand shell first."
+    );
+  }
+  if (!String(campaign?.subject || "").trim()) {
+    throw new Error("This campaign has no subject line. Add one, then try again.");
+  }
+  if (!(audience?.recipients || []).some((recipient) => recipient.email)) {
+    throw new Error("Cannot create a Klaviyo audience list without recipient emails.");
+  }
+}
+
+// The sender the review screen showed, read from the same account setting. A
+// read creates nothing, so a missing sender is still a proven pre-creation
+// failure — and a campaign with no "from" is not one to leave in Klaviyo.
+async function requireSender(privateKey) {
+  const sender = await getKlaviyoSender(privateKey);
+  if (!sender?.email) {
+    throw new Error(
+      "The Klaviyo account has no default sender email. Set one in Klaviyo (Settings → Account), then try again."
+    );
+  }
+  return sender;
+}
+
 async function createCampaignSendPackage(privateKey, campaign, audience, options = {}) {
   const progress = { stage: "not_started" };
   try {
-    return await createCampaignSendPackageInner(privateKey, campaign, audience, progress, options);
+    assertPackageSendable(privateKey, campaign, audience, options);
+    const sender = await requireSender(privateKey);
+    return await createCampaignSendPackageInner(privateKey, campaign, audience, progress, { ...options, sender });
   } catch (error) {
     error.providerStage = progress.stage;
     // True only before the first provider request is issued. Anything later may
@@ -284,12 +349,15 @@ async function createCampaignSendPackage(privateKey, campaign, audience, options
   }
 }
 
-async function createCampaignSendPackageInner(privateKey, campaign, audience, progress) {
+async function createCampaignSendPackageInner(privateKey, campaign, audience, progress, options) {
   // The stage is advanced BEFORE each call, not after: a request that times out
   // may still have been executed by the provider, so "we were at the campaign
   // step" has to mean "a campaign may exist".
   progress.stage = "template";
-  const template = await createTemplate(privateKey, campaign);
+  // The reviewed bytes. Dropping this argument once meant every handoff threw
+  // here — and, being past "not_started", locked the campaign as uncertain
+  // although nothing had been sent.
+  const template = await createTemplate(privateKey, campaign, options.html);
   const templateId = template?.data?.id;
   progress.stage = "list";
   const list = await createList(privateKey, `${campaignName(campaign)} - Audience`);
@@ -297,7 +365,7 @@ async function createCampaignSendPackageInner(privateKey, campaign, audience, pr
   progress.stage = "import";
   const importJob = await importProfilesToList(privateKey, listId, audience.recipients || []);
   progress.stage = "campaign";
-  const klaviyoCampaign = await createCampaign(privateKey, campaign, listId);
+  const klaviyoCampaign = await createCampaign(privateKey, campaign, listId, options.sender);
   const campaignId = klaviyoCampaign?.data?.id;
   progress.stage = "message";
   const messages = await getCampaignMessages(privateKey, campaignId);
