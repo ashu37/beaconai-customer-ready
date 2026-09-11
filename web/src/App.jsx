@@ -1900,7 +1900,6 @@ export function App() {
   const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
   const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
   const [publishingCampaignId, setPublishingCampaignId] = useState("");
-  const [sendingCampaignId, setSendingCampaignId] = useState("");
   const [audiencePreviewsByCampaign, setAudiencePreviewsByCampaign] = useState({});
   const [previewingCampaignId, setPreviewingCampaignId] = useState("");
   const [reviewPlayId, setReviewPlayId] = useState("");
@@ -3036,42 +3035,6 @@ export function App() {
       return null;
     } finally {
       setPublishingCampaignId("");
-    }
-  }
-
-  async function sendKlaviyoCampaign(campaignDraft) {
-    const campaignId = campaignDraft.klaviyoCampaignId;
-    if (!campaignId) {
-      setError("Create the Klaviyo send package before sending.");
-      return null;
-    }
-    const holdoutPreview = audiencePreviewsByCampaign[campaignDraft.id]?.holdout;
-    const heldNote = holdoutPreview?.held
-      ? `\n\n${holdoutPreview.held.toLocaleString()} customers are held back and will receive nothing, so Results can measure what this earned.`
-      : "";
-    const confirmed = window.confirm(
-      `Send this campaign now in Klaviyo to ${campaignDraft.klaviyoAudience?.count || "the matched"} recipients?${heldNote}`
-    );
-    if (!confirmed) return null;
-
-    setSendingCampaignId(campaignDraft.id);
-    try {
-      const result = await runStep("Klaviyo campaign send", () => api.sendCampaign(campaignId));
-      setKlaviyoAssetsByCampaign((prev) => ({
-        ...prev,
-        [campaignDraft.id]: {
-          ...(prev[campaignDraft.id] || {}),
-          sendJobId: result.sendJob?.data?.id || campaignId,
-          sendJob: result.sendJob,
-          sentAt: new Date().toISOString(),
-        },
-      }));
-      // The send is the moment the campaign is deployed; stamp it on the row so
-      // Results can report on it later.
-      saveCampaignState(campaignDraft.id, { status: "sent" });
-      return result;
-    } finally {
-      setSendingCampaignId("");
     }
   }
 

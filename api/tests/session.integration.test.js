@@ -225,6 +225,40 @@ suite("no route spends another shop's stored credentials", async () => {
   }
 });
 
+suite("sending from BeaconAI is refused even for the store's own session", async () => {
+  await db.resetDatabase();
+  const shop = "acme.myshopify.com";
+  // A real credential is on file, so a refusal cannot be explained by a missing
+  // key: the route must refuse before it ever resolves one.
+  await query(
+    `INSERT INTO clean.connections (shop_domain, klaviyo_private_key) VALUES ($1, 'a-key')`,
+    [shop]
+  );
+
+  const own = await api.post("/klaviyo/campaigns/send", { shopDomain: shop, campaignId: "01KLAVIYO" });
+  assert.equal(own.status, 410);
+  assert.equal(own.body.code, "direct_send_disabled");
+
+  // Nor does the founder token reopen it: there is no path that sends.
+  process.env.BEACONAI_ADMIN_TOKEN = "test-token";
+  try {
+    const response = await fetch(`${api.base}/klaviyo/campaigns/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-beaconai-admin-token": "test-token" },
+      body: JSON.stringify({ shopDomain: shop, campaignId: "01KLAVIYO" }),
+    });
+    assert.equal(response.status, 410);
+  } finally {
+    delete process.env.BEACONAI_ADMIN_TOKEN;
+  }
+
+  // The old handler recorded a send job for every call it accepted.
+  const { rows } = await query(
+    `SELECT count(*)::int AS n FROM clean.klaviyo_assets WHERE asset_type = 'campaign_send_job'`
+  );
+  assert.equal(rows[0].n, 0);
+});
+
 suite("the connection tests are not anonymous", async () => {
   await db.resetDatabase();
   const shop = "acme.myshopify.com";
