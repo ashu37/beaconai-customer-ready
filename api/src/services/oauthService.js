@@ -65,27 +65,40 @@ function decryptToken(value) {
   ]).toString("utf8");
 }
 
-async function createOauthState({ provider, shopDomain, returnTo }) {
+// PKCE (RFC 7636), which Klaviyo requires. A fresh verifier per authorization
+// request, 43-128 characters of high entropy: 32 random bytes in base64url are
+// 43. The challenge is its SHA-256, and only the challenge travels through the
+// browser — so an authorization code intercepted there cannot be exchanged
+// without the verifier, which never leaves this server.
+function createPkcePair() {
+  const codeVerifier = crypto.randomBytes(32).toString("base64url");
+  const codeChallenge = crypto.createHash("sha256").update(codeVerifier).digest("base64url");
+  return { codeVerifier, codeChallenge };
+}
+
+async function createOauthState({ provider, shopDomain, returnTo, pkce = false }) {
   const state = crypto.randomBytes(24).toString("hex");
+  const { codeVerifier, codeChallenge } = pkce ? createPkcePair() : {};
   await query(
-    `INSERT INTO clean.oauth_states (state, provider, shop_domain, return_to, expires_at)
-     VALUES ($1, $2, $3, $4, NOW() + INTERVAL '15 minutes')`,
-    [state, provider, shopDomain || null, returnTo || null],
+    `INSERT INTO clean.oauth_states (state, provider, shop_domain, return_to, code_verifier, expires_at)
+     VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '15 minutes')`,
+    [state, provider, shopDomain || null, returnTo || null, codeVerifier ? encryptToken(codeVerifier) : null],
   );
-  return state;
+  return { state, codeChallenge: codeChallenge || null };
 }
 
 async function consumeOauthState({ state, provider }) {
   const result = await query(
     `DELETE FROM clean.oauth_states
      WHERE state = $1 AND provider = $2 AND expires_at > NOW()
-     RETURNING state, provider, shop_domain, return_to`,
+     RETURNING state, provider, shop_domain, return_to, code_verifier`,
     [state, provider],
   );
   if (!result.rows[0]) {
     throw new Error("OAuth state is missing, expired, or already used.");
   }
-  return result.rows[0];
+  const row = result.rows[0];
+  return { ...row, code_verifier: decryptToken(row.code_verifier) };
 }
 
 function verifyShopifyHmac(queryParams) {
@@ -110,7 +123,8 @@ function verifyShopifyHmac(queryParams) {
 async function buildShopifyStartUrl({ shop, returnTo }) {
   requireOauthConfig("shopify");
   const shopDomain = normalizeShopDomain(shop);
-  const state = await createOauthState({ provider: "shopify", shopDomain, returnTo });
+  // No PKCE: Shopify's authorization-code flow does not accept a challenge.
+  const { state } = await createOauthState({ provider: "shopify", shopDomain, returnTo });
   const url = new URL(`https://${shopDomain}/admin/oauth/authorize`);
   url.searchParams.set("client_id", config.shopify.clientId);
   url.searchParams.set("scope", config.shopify.scopes);
@@ -173,13 +187,19 @@ async function buildKlaviyoStartUrl({ shopDomain: authorizedShopDomain, returnTo
   if (!authorizedShopDomain) throw new Error("An authenticated shop is required to connect Klaviyo.");
   requireOauthConfig("klaviyo");
   const shopDomain = normalizeShopDomain(authorizedShopDomain);
-  const state = await createOauthState({ provider: "klaviyo", shopDomain, returnTo });
-  const url = new URL("https://www.klaviyo.com/oauth/authorize");
+  const { state, codeChallenge } = await createOauthState({
+    provider: "klaviyo", shopDomain, returnTo, pkce: true,
+  });
+  const url = new URL(config.klaviyo.authorizeUrl);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", config.klaviyo.clientId);
   url.searchParams.set("redirect_uri", callbackUrl("klaviyo"));
   url.searchParams.set("scope", config.klaviyo.scopes);
   url.searchParams.set("state", state);
+  // Klaviyo requires PKCE for public AND confidential clients, so this is not
+  // optional hardening — without it the exchange is refused.
+  url.searchParams.set("code_challenge", codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
 }
 
@@ -190,13 +210,22 @@ async function handleKlaviyoCallback(queryParams) {
     throw new Error("Klaviyo callback is missing code.");
   }
 
+  // The verifier for THIS authorization request, gone from the table the moment
+  // the state was consumed. Its absence means the row predates PKCE or was
+  // written by something that skipped it; either way the exchange would be
+  // refused by Klaviyo, and starting the connection again is the fix.
+  if (!state.code_verifier) {
+    throw new Error("This Klaviyo connection is missing its security code. Start connecting Klaviyo again.");
+  }
+
   const form = new URLSearchParams();
   form.set("grant_type", "authorization_code");
   form.set("code", queryParams.code);
   form.set("redirect_uri", callbackUrl("klaviyo"));
+  form.set("code_verifier", state.code_verifier);
 
   const basic = Buffer.from(`${config.klaviyo.clientId}:${config.klaviyo.clientSecret}`).toString("base64");
-  const response = await axios.post("https://a.klaviyo.com/oauth/token", form.toString(), {
+  const response = await axios.post(config.klaviyo.tokenUrl, form.toString(), {
     headers: {
       Authorization: `Basic ${basic}`,
       "Content-Type": "application/x-www-form-urlencoded",
@@ -303,10 +332,14 @@ async function resolveStoredKlaviyoToken(shopDomain) {
     const shouldRefresh = refreshToken && expiresAt && expiresAt < Date.now() + 120000;
     if (shouldRefresh) {
       const form = new URLSearchParams();
+      // No verifier here: PKCE binds one authorization code to one browser
+      // exchange. A refresh is this server talking to Klaviyo with its own
+      // client credentials, and Klaviyo's refresh request takes only the grant
+      // type and the refresh token.
       form.set("grant_type", "refresh_token");
       form.set("refresh_token", refreshToken);
       const basic = Buffer.from(`${config.klaviyo.clientId}:${config.klaviyo.clientSecret}`).toString("base64");
-      const response = await axios.post("https://a.klaviyo.com/oauth/token", form.toString(), {
+      const response = await axios.post(config.klaviyo.tokenUrl, form.toString(), {
         headers: {
           Authorization: `Basic ${basic}`,
           "Content-Type": "application/x-www-form-urlencoded",
