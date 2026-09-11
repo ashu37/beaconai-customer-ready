@@ -241,6 +241,7 @@ Use clearly labeled seed examples. Keep the existing campaign list and simple de
 **Freshness correction (after review):**
 - Every calculation records the sync it read, and is recalculated when the active sync changes as well as when it ages past 24 hours.
 - Coverage and freshness are judged against the calculation's own sync. A failed recalculation keeps the old figures with their original provenance, flagged as superseded.
+- Each window's arms are published in one transaction, so a failure halfway leaves the previous result whole. A window whose rows come from different calculations is withheld rather than presented as one result.
 - The handoff email carries C-UI's wording, the exposure caveat is always shown, and seeded demonstration shops show a persistent "Sample data — illustrative results" banner.
 
 **Open:** the campaign assessment policy (floors and critical value), which awaits the statistical review. Comparisons stay disabled until then.

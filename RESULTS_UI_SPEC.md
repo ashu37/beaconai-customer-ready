@@ -155,7 +155,8 @@ Each row becomes a stacked card: name → status chip → sent line → "30-day 
 | Calculated more than 24h ago | "Last calculated {relative} ago." | Recalculate |
 | Figures use an older sync than the active one | "Newer store data is available. These figures still use the sync from {date}." Coverage and freshness are judged against **that** sync, never the newer one. | Recalculate |
 | The sync behind the figures is more than 24h old | "The store data behind these figures is over 24 hours old, so recent orders may be missing from this window." | Re-sync store |
-| Recalculation failed | "Couldn't recalculate. Showing the result calculated {date}." The old figures keep their original sync. | Try again |
+| Recalculation failed | "Couldn't recalculate. Showing the result calculated {date}." The old figures keep their original sync: each window's arms are published in one transaction, so a failure leaves the previous result whole. | Try again |
+| A window's rows come from different calculations | "This window's stored figures come from different calculations, so they aren't shown. Recalculate to refresh them." No figures, no provenance claim. | Recalculate |
 
 **Recalculation:** figures are recalculated when they are over 24 hours old **or** when the active sync differs from the sync they used. A newer sync never marks an older calculation as fresh or complete.
 

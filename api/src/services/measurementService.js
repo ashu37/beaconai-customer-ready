@@ -10,7 +10,7 @@
 // whose interval spans zero reports "no effect found" rather than a hopeful
 // point estimate.
 
-const { query } = require("../db");
+const { query, pool } = require("../db");
 const { getCampaign } = require("./campaignService");
 const { config } = require("../config");
 
@@ -193,8 +193,20 @@ async function measureWindow(campaign, windowDays, sourceSyncRunId = null) {
     byArm.set(row.arm, arm);
   }
 
-  for (const [arm, totals] of byArm) {
-    await query(
+  // Both arms of a window are published together or not at all. Writing them
+  // one statement at a time let a failure halfway leave one arm from the new
+  // sync beside the other from the old one — a window that describes no single
+  // calculation. Delete-then-insert also removes an arm the new calculation no
+  // longer has.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM clean.campaign_measurements WHERE campaign_id = $1 AND window_days = $2`,
+      [campaign.id, windowDays]
+    );
+    for (const [arm, totals] of byArm) {
+      await client.query(
       `INSERT INTO clean.campaign_measurements
          (campaign_id, window_days, arm, n_customers, n_purchasers, n_orders, revenue, revenue_sq, measured_at, source_sync_run_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)
@@ -208,7 +220,14 @@ async function measureWindow(campaign, windowDays, sourceSyncRunId = null) {
          source_sync_run_id = EXCLUDED.source_sync_run_id`,
       [campaign.id, windowDays, arm, totals.n_customers, totals.n_purchasers, totals.n_orders,
        totals.revenue.toFixed(2), totals.revenue_sq.toFixed(4), sourceSyncRunId]
-    );
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
   }
 
   return Object.fromEntries(byArm);
@@ -391,13 +410,18 @@ async function summarizeCampaign(campaignId, {
         revenue_sq: Number(row.revenue_sq),
       };
     };
-    const assigned = raw("treated");
-    const heldBack = raw("holdout");
+    // Rows from different calculations are not one result. Writes are atomic
+    // now, but rows written before that — or by any future path — must still
+    // not be presented as a coherent window. They are withheld, and the
+    // source mismatch makes the campaign stale so it is recalculated.
+    const mixedCalculation = new Set(forWindow.map((r) => r.source_sync_run_id ?? "none")).size > 1;
+    const assigned = mixedCalculation ? null : raw("treated");
+    const heldBack = mixedCalculation ? null : raw("holdout");
     const measuredTimes = forWindow.map((r) => new Date(r.measured_at).getTime());
     const calculatedAt = measuredTimes.length ? new Date(Math.max(...measuredTimes)) : null;
     const complete = now >= end.getTime();
 
-    const calcSyncId = forWindow.find((r) => r.source_sync_run_id != null)?.source_sync_run_id ?? null;
+    const calcSyncId = mixedCalculation ? null : (forWindow.find((r) => r.source_sync_run_id != null)?.source_sync_run_id ?? null);
     const calcSync = calcSyncId != null ? syncById.get(calcSyncId) : null;
     const calculatedFrom = sourceFreshness({
       syncRunId: calcSyncId,
@@ -405,7 +429,9 @@ async function summarizeCampaign(campaignId, {
       ordersCoveredThrough: calcSync?.started_at || null,
     }, now);
     // Coverage is checked against the data the figures were calculated from.
-    const assessment = assessWindow({ complete, end, assigned, heldBack, source: calculatedFrom, policy });
+    const assessment = mixedCalculation
+      ? { state: "not_calculated", reasons: ["mixed_calculation"], comparison: null }
+      : assessWindow({ complete, end, assigned, heldBack, source: calculatedFrom, policy });
 
     results.push({
       windowDays,
@@ -416,9 +442,10 @@ async function summarizeCampaign(campaignId, {
       calculatedAt: calculatedAt ? calculatedAt.toISOString() : null,
       calculationStale: calculatedAt ? now - calculatedAt.getTime() > FRESHNESS_MS : true,
       calculatedFrom,
+      mixedCalculation,
       // A newer sync exists than the one these figures used. They stand as a
       // record of that older data until recalculated; they are not current.
-      sourceSuperseded: forWindow.length > 0 && freshness.syncRunId != null && calcSyncId !== freshness.syncRunId,
+      sourceSuperseded: forWindow.length > 0 && freshness.syncRunId != null && (mixedCalculation || calcSyncId !== freshness.syncRunId),
       assigned: figures(assigned),
       heldBack: figures(heldBack),
       assessment: { state: assessment.state, reasons: assessment.reasons },

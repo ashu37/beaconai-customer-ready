@@ -1339,7 +1339,9 @@ function assessmentSentence(w, source) {
     case "assessment_policy_pending":
       return "Group figures are shown as observations. A comparison isn't reported yet.";
     case "not_calculated":
-      return "This window hasn't been calculated yet.";
+      return w.assessment.reasons.includes("mixed_calculation")
+        ? "This window's stored figures come from different calculations, so they aren't shown. Recalculate to refresh them."
+        : "This window hasn't been calculated yet.";
     case "higher_spending":
       return "Customers assigned to receive the campaign spent more per customer. The 95% range is above zero for this window.";
     case "lower_spending":

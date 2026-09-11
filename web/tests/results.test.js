@@ -329,3 +329,19 @@ test("a seeded demonstration shows a persistent sample-data banner; a real shop 
   assert.ok(banner, "the banner is the first thing on the page");
   assert.match(banner.textContent, /^Sample data — illustrative results\./);
 });
+
+test("a window whose stored figures come from different calculations shows no figures", async () => {
+  payload = freshPayload();
+  payload.results = payload.results.map((r) => (r.campaignId === 2 ? {
+    ...r,
+    windows: r.windows.map((w) => (w.windowDays === 30 ? { ...w, assigned: null, heldBack: null, mixedCalculation: true,
+      assessment: { state: "not_calculated", reasons: ["mixed_calculation"] }, sourceSuperseded: true,
+      calculatedFrom: { syncRunId: null, lastSuccessfulSyncAt: null, ordersCoveredThrough: null, stale: true, reason: "no_successful_sync" } } : w)),
+  } : r));
+  await openResults();
+  await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
+  const detail = document.getElementById("result-detail-2");
+  assert.match(detail.textContent, /come from different calculations, so they aren't shown/);
+  assert.equal(detail.querySelector("table"), null, "no group table");
+  assert.doesNotMatch(detail.textContent, /\$6\.02/);
+});

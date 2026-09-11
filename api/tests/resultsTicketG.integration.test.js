@@ -354,3 +354,92 @@ suite("a seeded demonstration shop is labelled sample data; a real one is not", 
   await query(`UPDATE clean.shop SET sample_data = true WHERE shop_domain = $1`, [SHOP]);
   assert.equal((await api.get(`/results/${SHOP}`)).body.sampleData, true);
 });
+
+// The reported defect: arms were written one statement at a time, so a failure
+// on the second write left one arm from the new sync beside the other from the
+// old — labelled as the new sync, fresh, not superseded. A trigger fails the
+// SECOND measurement write of the new sync, whichever arm comes first.
+suite("a recalculation that fails halfway leaves the previous result whole", async () => {
+  await db.resetDatabase();
+  const first = await activeSync({ startedAt: new Date(Date.now() - 2 * 3600000), publishedAt: new Date(Date.now() - 3600000) });
+  const c = await sentCampaign("play-atomic", ago(40), { treated: ["a", "b"], held: ["h", "i"] });
+  await order("a", ago(35), 30);
+  await order("h", ago(35), 20);
+  const before = win((await api.get(`/results/${SHOP}`)).body.results[0], 30);
+  assert.equal(before.assigned.revenue, 30);
+  assert.equal(before.heldBack.revenue, 20);
+  assert.equal(before.calculatedFrom.syncRunId, first.syncRunId);
+
+  // New data in both arms, and a newer sync.
+  await order("b", ago(33), 70);
+  await order("i", ago(33), 100);
+  const second = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
+
+  await query(`CREATE TABLE IF NOT EXISTS public.test_fault_count (n INTEGER NOT NULL)`);
+  await query(`DELETE FROM public.test_fault_count`);
+  await query(`INSERT INTO public.test_fault_count VALUES (0)`);
+  await query(`
+    CREATE OR REPLACE FUNCTION public.test_fail_second_write() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.source_sync_run_id = ${Number(second.syncRunId)} THEN
+        UPDATE public.test_fault_count SET n = n + 1;
+        IF (SELECT n FROM public.test_fault_count) >= 2 THEN
+          RAISE EXCEPTION 'injected failure on the second measurement write';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql`);
+  await query(`
+    CREATE TRIGGER test_fail_second_write BEFORE INSERT OR UPDATE ON clean.campaign_measurements
+      FOR EACH ROW EXECUTE FUNCTION public.test_fail_second_write()`);
+  try {
+    const { body } = await api.get(`/results/${SHOP}`);
+    const result = body.results.find((r) => r.campaignId === c.id);
+    const w30 = win(result, 30);
+
+    assert.equal(result.calculationFailed, true, "the failure is reported");
+    // Both previous figures, from the previous sync — neither half of the new one.
+    assert.equal(w30.assigned.revenue, 30);
+    assert.equal(w30.heldBack.revenue, 20);
+    assert.equal(w30.calculatedFrom.syncRunId, first.syncRunId, "provenance is still the first sync");
+    assert.equal(w30.sourceSuperseded, true, "and it is labelled as superseded, not fresh");
+    assert.equal(w30.mixedCalculation, false);
+
+    const { rows } = await query(
+      `SELECT arm, source_sync_run_id FROM clean.campaign_measurements WHERE campaign_id = $1 AND window_days = 30 ORDER BY arm`,
+      [c.id]
+    );
+    assert.deepEqual(rows.map((r) => r.source_sync_run_id), [first.syncRunId, first.syncRunId], "no row from the failed attempt survived");
+  } finally {
+    await query(`DROP TRIGGER IF EXISTS test_fail_second_write ON clean.campaign_measurements`);
+    await query(`DROP FUNCTION IF EXISTS public.test_fail_second_write()`);
+    await query(`DROP TABLE IF EXISTS public.test_fault_count`);
+  }
+
+  // With the fault gone, the next load recalculates from the second sync.
+  const after = win((await api.get(`/results/${SHOP}`)).body.results[0], 30);
+  assert.equal(after.assigned.revenue, 100);
+  assert.equal(after.heldBack.revenue, 120);
+  assert.equal(after.calculatedFrom.syncRunId, second.syncRunId);
+});
+
+suite("rows from different calculations are never presented as one result", async () => {
+  await db.resetDatabase();
+  const first = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
+  const c = await sentCampaign("play-mixed", ago(40), { treated: ["a", "b"], held: ["h", "i"] });
+  await order("a", ago(35), 30); await order("h", ago(35), 20);
+  await measureCampaign(c.id, { source: first });
+  const second = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
+  // Simulate a mixed window, as the old non-atomic writes could leave behind.
+  await query(
+    `UPDATE clean.campaign_measurements SET source_sync_run_id = $2 WHERE campaign_id = $1 AND arm = 'holdout'`,
+    [c.id, second.syncRunId]
+  );
+  const w30 = win(await summarizeCampaign(c.id, { source: second }), 30);
+  assert.equal(w30.mixedCalculation, true);
+  assert.equal(w30.assigned, null, "no figures are shown");
+  assert.equal(w30.heldBack, null);
+  assert.deepEqual(w30.assessment, { state: "not_calculated", reasons: ["mixed_calculation"] });
+  assert.equal(w30.calculatedFrom.syncRunId, null, "no single sync is claimed");
+  assert.equal(w30.sourceSuperseded, true);
+});
