@@ -134,7 +134,7 @@ suite("measurement waits for the provider-confirmed send, and runs from it", asy
 
   const summary = await measureCampaign(campaign.id);
   const w30 = summary.windows.find((w) => w.windowDays === 30);
-  assert.equal(w30.treated.revenue, 40, "only the order after the confirmed send counts");
+  assert.equal(w30.assigned.revenue, 40, "only the order after the confirmed send counts");
   assert.ok(Math.abs(new Date(summary.sentAt).getTime() - ago(20).getTime()) < 5000, "reported anchor is the provider send");
 });
 
@@ -149,8 +149,8 @@ suite("treated customers the provider never delivered to stay in the analysis", 
   await confirmSend(campaign.id, ago(5), { providerSentCount: 1 });
   const summary = await measureCampaign(campaign.id);
   const w30 = summary.windows.find((w) => w.windowDays === 30);
-  assert.equal(w30.treated.n_customers, 3);
-  assert.equal(w30.holdout.n_customers, 2);
+  assert.equal(w30.assigned.customers, 3);
+  assert.equal(w30.heldBack.customers, 2);
 });
 
 suite("the ever-treated program comparison is withdrawn, not computed", async () => {

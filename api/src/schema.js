@@ -448,6 +448,19 @@ async function initSchema() {
       ADD COLUMN IF NOT EXISTS revenue_sq NUMERIC(18,4) NOT NULL DEFAULT 0;
   `);
 
+  // Ticket G: unique purchasers per window and arm, counted separately from
+  // orders. Null on rows measured before this existed; those are recomputed.
+  await query(`ALTER TABLE clean.campaign_measurements ADD COLUMN IF NOT EXISTS n_purchasers INTEGER;`);
+
+  // The sync a calculation read. A figure is only as current as the store data
+  // behind it: when the active sync changes, figures from an older one are
+  // recalculated, and until they are they keep saying which sync they used.
+  await query(`ALTER TABLE clean.campaign_measurements ADD COLUMN IF NOT EXISTS source_sync_run_id INTEGER;`);
+
+  // Seeded demonstration shops. Results shows a persistent "Sample data" banner
+  // for them, so a screenshot shared without context is still labelled.
+  await query(`ALTER TABLE clean.shop ADD COLUMN IF NOT EXISTS sample_data BOOLEAN NOT NULL DEFAULT false;`);
+
   // clean.refunds has no natural key, so before this every re-sync appended a
   // second copy of every refund and doubled the store's refund total. The fix
   // needs three steps, and the first two are what make the third work at all.

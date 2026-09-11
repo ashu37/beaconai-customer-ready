@@ -214,11 +214,37 @@ The specification must include:
 
 Use clearly labeled seed examples. Keep the existing campaign list and simple detail interaction unless a small change is necessary for readability. Daily charts, advanced search/filtering, a full registry redesign and the four-card analytics redesign remain deferred.
 
+**Status: founder decisions recorded; the spec is revised in [RESULTS_UI_SPEC.md](RESULTS_UI_SPEC.md) and implemented in Ticket G (PR #42).** The decisions:
+- early observations with no verdict
+- Higher spending / Lower spending / No clear difference / Insufficient data / Measuring / Comparison unavailable
+- Original campaign collapsed
+- 24-hour source and calculation freshness, checked separately
+- the program band text
+
 **Exit criterion:** the founder reviews the wireframe, wording and state examples and confirms the intended pilot UI before the engineer implements it. Store the agreed specification as `RESULTS_UI_SPEC.md` and link it from Ticket G. Resolve open layout choices here rather than leaving them implicit in implementation. This is a scope-clarification checkpoint, not another product redesign phase.
 
 ## Ticket G — truthful minimal Results (P2 fixes; P3 presentation)
 
 **UI dependency:** complete the Results UI clarification step above and attach the agreed `RESULTS_UI_SPEC.md` before implementing the screen. Ticket G's UI acceptance includes matching that specification.
+
+**Status: Ticket G's UI is implemented (PR #42); program measurement is NOT ready (Ticket F gate open; Ticket H not built).**
+
+- **Rows:** the saved campaign name, the durable delivery state, "assigned to receive" and "held back" counts, and the provider's sent count shown separately (or "unavailable").
+- **Windows:** the row always shows a labelled 30-day result. The detail follows its own 30/60/90 selection for every figure, date, assessment and note.
+- **Assessment:** each window gets a typed assessment. Before a window closes there are early observations only. A closed window isn't assessed until order coverage reaches its end.
+- **Floors:** unique purchasers are counted separately from orders. Only structural minimums apply until a campaign assessment policy is set; until then, comparable windows report "comparison unavailable" with descriptive figures.
+- **Notes:** exposure is checked per window (present / unknown / none), and the other-marketing note is always shown.
+- **Freshness:** source and calculation freshness are checked separately. Stale data and failed recalculations keep persistent messages with recovery actions.
+- **Original campaign:** collapsed, loading the frozen email and its originating recommendation.
+- **Navigation:** `?campaign=` survives a refresh, and "Show older campaigns" appears only when more exist.
+
+**Freshness correction (after review):**
+- Every calculation records the sync it read, and is recalculated when the active sync changes as well as when it ages past 24 hours.
+- Coverage and freshness are judged against the calculation's own sync. A failed recalculation keeps the old figures with their original provenance, flagged as superseded.
+- Each window's arms are published in one transaction, so a failure halfway leaves the previous result whole. A window whose rows come from different calculations is withheld rather than presented as one result.
+- The handoff email carries C-UI's wording, the exposure caveat is always shown, and seeded demonstration shops show a persistent "Sample data — illustrative results" banner.
+
+**Open:** the campaign assessment policy (floors and critical value), which awaits the statistical review. Comparisons stay disabled until then.
 
 **Files:** `measurementService.js`, Results routes, `schema.js`, `web/src/App.jsx`.
 

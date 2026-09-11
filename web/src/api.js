@@ -124,6 +124,9 @@ export const api = {
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
   // Measured results: the program-level holdout comparison plus every sent
   // campaign, across every run.
-  getResults: () => request(`/results/${encodeURIComponent(shopDomain)}`),
+  // `limit` grows with "Show older campaigns"; the server says whether more exist.
+  getResults: (limit = 100) => request(`/results/${encodeURIComponent(shopDomain)}?limit=${limit}`),
+  // The frozen email and its originating recommendation, loaded on demand.
+  campaignOriginal: (campaignId) => request(`/campaigns/${campaignId}/original`),
   getStatsSeries: (weeks = 12) => request(`/stats/series/${encodeURIComponent(shopDomain)}?weeks=${weeks}`),
 };
