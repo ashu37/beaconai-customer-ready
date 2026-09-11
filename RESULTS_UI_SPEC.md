@@ -92,13 +92,13 @@ Each row becomes a stacked card: name → status chip → sent line → "30-day 
 1. **Header:** `Sent {date, time}, confirmed by Klaviyo` · `Klaviyo sent {n}` or `Sent count unavailable`.
 2. **Window selector:** a radio group, `30 days` (default) · `60 days` · `90 days`, each with ` · open` until complete.
 3. **Window dates:** `{start} – {end}` · `complete` or `day {d} of {n}`.
-4. **Freshness:** `Last successful sync {date time}` · `Calculated {date time}`, with the §6.4 messages when needed.
+4. **Freshness:** `Last successful sync {date time}` · `Calculated {date time} from the store sync of {date time}`, with the §6.4 messages when needed. Every calculation records the sync it read.
 5. **Outcome sentence** for the selected window (§6).
 6. **Comparison:** `Assigned to receive $X.XX per customer` · `Held back $Y.YY per customer`. Then `Difference +$Z.ZZ per customer (95% range $L to $H)` **only** when the assessment permits it.
 7. **Group table** (§5.3).
 8. **Notes:** the exposure note (§6.5) when applicable, and the other-marketing note (§6.6) always.
 9. **"How this is measured"** (collapsed): the window dates, and "Revenue is net of refunds; cancelled and test orders are excluded. Not profit. Customers Klaviyo did not deliver to stay in the assigned group."
-10. **"Original campaign"** (collapsed; loaded when opened): subject, preview text, destination link, a `View email` frame (the frozen rendered email, sandboxed), and "Why it was suggested" (the originating run's recommendation — evidence source and observed change, as in Ticket E — with its audience size and definition).
+10. **"Original campaign"** (collapsed; loaded when opened): subject, preview text, destination link, and the **Handoff email** frame (sandboxed) captioned with C-UI's wording: "Email handed to Klaviyo on {time}. Changes made later in Klaviyo aren't reflected here." It is never called "as sent". Then "Why it was suggested": the originating run's recommendation (evidence source and observed change, as in Ticket E), with its audience size and definition.
 
 ### 5.3 Group table (selected window)
 | | Assigned to receive | Held back |
@@ -153,14 +153,19 @@ Each row becomes a stacked card: name → status chip → sent line → "30-day 
 | Last successful sync more than 24h ago | "Store data last synced {relative} ago. Results can't include orders since then." Shown even when the calculation itself is recent — recalculating old data doesn't make it fresh. | Re-sync store |
 | No successful sync | "No successful store sync, so results can't be checked against complete order data." | Re-sync store |
 | Calculated more than 24h ago | "Last calculated {relative} ago." | Recalculate |
-| Recalculation failed | "Couldn't recalculate. Showing the result calculated {date}." | Try again |
+| Figures use an older sync than the active one | "Newer store data is available. These figures still use the sync from {date}." Coverage and freshness are judged against **that** sync, never the newer one. | Recalculate |
+| The sync behind the figures is more than 24h old | "The store data behind these figures is over 24 hours old, so recent orders may be missing from this window." | Re-sync store |
+| Recalculation failed | "Couldn't recalculate. Showing the result calculated {date}." The old figures keep their original sync. | Try again |
+
+**Recalculation:** figures are recalculated when they are over 24 hours old **or** when the active sync differs from the sync they used. A newer sync never marks an older calculation as fresh or complete.
 
 ### 6.5 Repeated exposure (checked per selected window)
 The API checks whether any of this campaign's customers were assigned to receive another BeaconAI campaign that was confirmed sent **before this campaign's send or during the selected window**.
 
 - **Found:** "These customers may have been included in other BeaconAI campaigns. This comparison does not isolate this email's effect."
 - **Unknown** (another campaign's send time isn't confirmed, so it could fall in the window): "Other BeaconAI campaigns may have reached these customers; their send times aren't confirmed, so this comparison does not isolate this email's effect."
-- **None established:** no note, and nothing claiming there were none.
+- **None established:** no specific note, and nothing claiming there were none.
+- **Always shown:** "Other BeaconAI campaign exposure may not be fully identified." Matching uses recorded customer ids, so a customer known by two ids can be missed. Expanding identity handling is deferred.
 
 ### 6.6 Other marketing (always shown)
 > "Your other marketing may also affect these results."
@@ -179,6 +184,8 @@ Today it shows only the §1 text. Its later states (enrolled / measuring / estim
 | Klaviyo sent | `delivery.providerSentCount` | "Sent count unavailable" |
 | Window dates and progress | `windows[].start`, `.end`, `.complete`, `.daysElapsed` | — |
 | Calculated | `windows[].calculatedAt` | "Not calculated yet" |
+| Calculated from | `windows[].calculatedFrom` (`syncRunId`, `lastSuccessfulSyncAt`, `ordersCoveredThrough`, `stale`) and `windows[].sourceSuperseded` | No sync recorded: assessment becomes `awaiting_order_data` |
+| Sample data | `sampleData` | No banner |
 | Last successful sync | `source.lastSuccessfulSyncAt` (the active sync's `publishedAt`) | §6.4, no successful sync |
 | Order coverage | `source.ordersCoveredThrough` (the active sync's start time) | Assessment becomes `awaiting_order_data` |
 | Assessment | `windows[].assessment.state`, `.reasons[]` | Never inferred in React |
@@ -196,6 +203,7 @@ Today it shows only the §1 text. Its later states (enrolled / measuring / estim
 - A visible focus ring on every control; table headers use `scope`; the email frame is sandboxed and titled.
 
 ## 10. Acceptance
-- **Seed screenshots** at 1440, 1024 and 390px, labelled as sample data: measuring, completed (policy pending), insufficient data, stale source / failed load, and an unconfirmed send.
+- **Sample data banner:** a seeded demonstration shop (`clean.shop.sample_data`) shows a persistent first-line banner: "Sample data — illustrative results." A screenshot shared without context still carries the label.
+- **Seed screenshots** at 1440, 1024 and 390px: measuring, completed (policy pending), insufficient data, stale source / failed load, and an unconfirmed send.
 - **Windows:** the row and the detail may show different windows **when each is labelled**. The row always reads "30-day result", and every figure, date and sentence in the detail follows the selected window.
 - **Wording:** no page uses "received" or "sent" for an assignment count.

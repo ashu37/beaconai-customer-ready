@@ -1404,6 +1404,7 @@ router.get("/campaigns/:id/results", async (req, res) => {
 async function resultsSource(shopDomain) {
   const status = await getSyncStatus(shopDomain);
   return {
+    syncRunId: status.active?.syncRunId ?? null,
     lastSuccessfulSyncAt: status.active?.publishedAt || null,
     ordersCoveredThrough: status.active?.startedAt || null,
   };
@@ -1420,7 +1421,7 @@ router.get("/results/:shopDomain", async (req, res) => {
     const source = await resultsSource(shopDomain);
 
     const failed = new Set();
-    for (const id of await staleCampaignIds(shopDomain)) {
+    for (const id of await staleCampaignIds(shopDomain, { currentSyncRunId: source.syncRunId })) {
       await measureCampaign(id, { source }).catch(() => failed.add(id));
     }
 
@@ -1452,8 +1453,11 @@ router.get("/results/:shopDomain", async (req, res) => {
       });
     }
     const program = await summarizeProgram(shopDomain);
+    const { rows: shopRows } = await query(`SELECT sample_data FROM clean.shop WHERE shop_domain = $1`, [shopDomain]);
     res.json({
       ok: true,
+      // A seeded demonstration shop: the page labels itself as sample data.
+      sampleData: Boolean(shopRows[0]?.sample_data),
       program,
       results,
       source: sourceFreshness(source),
@@ -1506,6 +1510,7 @@ router.get("/campaigns/:id/original", async (req, res) => {
       ok: true,
       campaignId: id,
       frozen: campaign.frozen,
+      frozenAt: campaign.frozenAt || null,
       displayName: campaign.displayName || null,
       approvedCopy: campaign.approvedCopy || null,
       renderedHtml: campaign.renderedHtml || null,

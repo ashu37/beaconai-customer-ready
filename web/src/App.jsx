@@ -1281,6 +1281,10 @@ const UNMEASURED_NOTE = {
 const PROGRAM_BAND_TEXT =
   "Program comparison isn't available yet. Campaign-level observations appear below; they should not be added together.";
 const OTHER_MARKETING_NOTE = "Your other marketing may also affect these results.";
+// Exposure matching uses recorded customer ids; a person known by two ids can
+// be missed. Always said, so "no note" is never read as "no other exposure".
+const EXPOSURE_CAVEAT = "Other BeaconAI campaign exposure may not be fully identified.";
+const SAMPLE_BANNER = "Sample data — illustrative results";
 const EXPOSURE_NOTE = {
   present: "These customers may have been included in other BeaconAI campaigns. This comparison does not isolate this email's effect.",
   unknown: "Other BeaconAI campaigns may have reached these customers; their send times aren't confirmed, so this comparison does not isolate this email's effect.",
@@ -1448,7 +1452,16 @@ function OriginalCampaign({ campaignId }) {
             <p><strong>Button link</strong> · <a href={data.destinationUrl} target="_blank" rel="noopener noreferrer">{data.destinationUrl}</a></p>
           ) : null}
           {data.renderedHtml ? (
-            <iframe className="original-email-frame" title="Original email as sent" sandbox="" srcDoc={data.renderedHtml} />
+            <>
+              {/* C-UI's wording: this is the handoff snapshot. The merchant can
+                  still edit the draft in Klaviyo, and nothing here reads back
+                  what Klaviyo finally sent. */}
+              <p>
+                <strong>Handoff email</strong> · Email handed to Klaviyo
+                {data.frozenAt ? ` on ${formatDay(data.frozenAt, { time: true })}` : ""}. Changes made later in Klaviyo aren't reflected here.
+              </p>
+              <iframe className="original-email-frame" title="Handoff email" sandbox="" srcDoc={data.renderedHtml} />
+            </>
           ) : null}
           <p><strong>Why it was suggested</strong></p>
           {rec ? (
@@ -1508,10 +1521,17 @@ function ResultDetail({ result, onRetry }) {
             <span>
               Last successful sync {formatDay(result.source?.lastSuccessfulSyncAt, { time: true }) || "not available"}
               {" · "}Calculated {formatDay(w.calculatedAt, { time: true }) || "not yet"}
+              {w.calculatedFrom?.lastSuccessfulSyncAt ? ` from the store sync of ${formatDay(w.calculatedFrom.lastSuccessfulSyncAt, { time: true })}` : ""}
             </span>
           </div>
-          {result.source?.stale ? (
-            <p className="result-warn">Store data is over 24 hours old, so recent orders may be missing from this window.</p>
+          {w.sourceSuperseded ? (
+            <p className="result-warn" role="status">
+              Newer store data is available. These figures still use the sync from {formatDay(w.calculatedFrom?.lastSuccessfulSyncAt, { time: true }) || "an earlier sync"}.
+              {!result.calculationFailed ? <button type="button" className="btn small" onClick={onRetry}>Recalculate</button> : null}
+            </p>
+          ) : null}
+          {w.calculatedFrom?.stale ? (
+            <p className="result-warn">The store data behind these figures is over 24 hours old, so recent orders may be missing from this window.</p>
           ) : null}
           {result.calculationFailed ? (
             <p className="result-warn" role="alert">
@@ -1567,6 +1587,7 @@ function ResultDetail({ result, onRetry }) {
 
           <ul className="result-notes">
             {exposureNote ? <li>{exposureNote}</li> : null}
+            <li>{EXPOSURE_CAVEAT}</li>
             <li>{OTHER_MARKETING_NOTE}</li>
           </ul>
 
@@ -1653,6 +1674,13 @@ function ResultsPage({ data, loading, error, openId, onToggle, onRetry, onLoadMo
 
   return (
     <div className="results-page">
+      {data?.sampleData ? (
+        // Persistent, first on the page: a screenshot shared without context
+        // must still say these are not a store's real results.
+        <div className="sample-banner" role="note">
+          {SAMPLE_BANNER}. These campaigns and figures were generated for a demonstration, not taken from a real store.
+        </div>
+      ) : null}
       <div className="results-head">
         <h2>Campaign results</h2>
         <p>What happened after each campaign, compared with customers held back.</p>

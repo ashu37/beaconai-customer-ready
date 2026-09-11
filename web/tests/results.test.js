@@ -22,10 +22,12 @@ function win(days, sentMs, overrides = {}) {
     assigned: null, heldBack: null,
     assessment: { state: "measuring", reasons: ["window_open"] }, comparison: null,
     otherExposure: { status: "none", customers: 0 },
+    calculatedFrom: { syncRunId: 9, lastSuccessfulSyncAt: iso(now - HOUR), ordersCoveredThrough: iso(now - HOUR), stale: false, reason: null },
+    sourceSuperseded: false,
     ...overrides,
   };
 }
-const FRESH = { lastSuccessfulSyncAt: iso(now - HOUR), ordersCoveredThrough: iso(now - HOUR), stale: false, reason: null };
+const FRESH = { syncRunId: 9, lastSuccessfulSyncAt: iso(now - HOUR), ordersCoveredThrough: iso(now - HOUR), stale: false, reason: null };
 
 // 1. Measuring: day 5 of 30.
 const s1 = now - 5 * DAY;
@@ -99,6 +101,7 @@ Object.assign(apiModule.api, {
     return {
       ok: true, campaignId: id,
       approvedCopy: { subject: "Worth full price — here's why", previewText: "Quality that lasts" },
+      frozenAt: "2026-07-02T16:01:00.000Z",
       renderedHtml: "<html><body>Frozen email</body></html>",
       destinationUrl: "https://shop.example/collections/all",
       recommendation: {
@@ -215,14 +218,19 @@ test("stale store data is flagged even when the calculation is fresh, with a re-
   payload = freshPayload({
     source: { lastSuccessfulSyncAt: iso(now - 3 * DAY), ordersCoveredThrough: iso(now - 3 * DAY), stale: true, reason: "sync_older_than_24h" },
   });
-  payload.results = payload.results.map((r) => (r.measurable ? { ...r, source: payload.source } : r));
+  // Recalculated just now — but from that same three-day-old sync.
+  payload.results = payload.results.map((r) => (r.measurable ? {
+    ...r,
+    source: payload.source,
+    windows: r.windows.map((w) => ({ ...w, calculatedFrom: { ...payload.source } })),
+  } : r));
   await openResults();
   assert.match(document.body.textContent, /Store data last synced 3 days ago\. Results can't include orders since then\./);
   assert.ok(screen.getByRole("button", { name: "Re-sync store" }));
   await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
   const detail = document.getElementById("result-detail-2");
   assert.match(detail.textContent, /Calculated/);
-  assert.match(detail.textContent, /Store data is over 24 hours old/);
+  assert.match(detail.textContent, /The store data behind these figures is over 24 hours old/);
 });
 
 test("an unconfirmed send is listed with its delivery state and no result", async () => {
@@ -271,6 +279,11 @@ test("the original campaign stays collapsed until opened, then shows the frozen 
   assert.match(text, /Share of revenue from heavy-discount customers: Up 5\.3 percentage points/);
   const frame = document.querySelector("iframe.original-email-frame");
   assert.equal(frame.getAttribute("sandbox"), "", "the frozen email runs no scripts");
+  // The handoff snapshot, in C-UI's words. Never "as sent": the merchant can edit
+  // the draft in Klaviyo afterwards.
+  assert.match(text, /Email handed to Klaviyo on Jul 2, 2026.*\. Changes made later in Klaviyo aren't reflected here\./);
+  assert.equal(frame.getAttribute("title"), "Handoff email");
+  assert.doesNotMatch(text, /as sent/i);
 });
 
 test("a campaign link reopens that result after a refresh", async () => {
@@ -287,4 +300,32 @@ test("older campaigns are offered only when the server says more exist", async (
   payload = freshPayload({ hasMore: true });
   await openResults();
   assert.ok(screen.getByRole("button", { name: "Show older campaigns" }));
+});
+
+test("figures from a superseded sync say so and offer a recalculation; the exposure caveat is always shown", async () => {
+  payload = freshPayload();
+  payload.results = payload.results.map((r) => (r.campaignId === 2 ? {
+    ...r,
+    windows: r.windows.map((w) => ({ ...w, sourceSuperseded: true,
+      calculatedFrom: { syncRunId: 8, lastSuccessfulSyncAt: "2026-09-01T10:00:00.000Z", ordersCoveredThrough: "2026-09-01T09:50:00.000Z", stale: true, reason: "sync_older_than_24h" } })),
+  } : r));
+  await openResults();
+  await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
+  const detail = document.getElementById("result-detail-2");
+  assert.match(detail.textContent, /Newer store data is available\. These figures still use the sync from Sep 1, 2026/);
+  assert.match(detail.textContent, /from the store sync of Sep 1, 2026/);
+  assert.ok(within(detail).getByRole("button", { name: "Recalculate" }));
+  assert.match(detail.textContent, /The store data behind these figures is over 24 hours old/);
+  assert.match(detail.textContent, /Other BeaconAI campaign exposure may not be fully identified\./);
+});
+
+test("a seeded demonstration shows a persistent sample-data banner; a real shop does not", async () => {
+  await openResults();
+  assert.doesNotMatch(document.body.textContent, /Sample data — illustrative results/);
+  cleanup();
+  payload = freshPayload({ sampleData: true });
+  await openResults();
+  const banner = document.querySelector(".results-page > .sample-banner");
+  assert.ok(banner, "the banner is the first thing on the page");
+  assert.match(banner.textContent, /^Sample data — illustrative results\./);
 });

@@ -90,7 +90,9 @@ async function clean() {
   // campaign_recipients and campaign_measurements cascade from campaigns;
   // engine_audiences cascades from the run snapshot.
   await query(`DELETE FROM clean.campaigns WHERE shop_domain = $1`, [SEED_SHOP]);
+  await query(`DELETE FROM clean.active_sync WHERE shop_domain = $1`, [SEED_SHOP]);
   await query(`DELETE FROM clean.engine_run_snapshots WHERE run_id = $1`, [SEED_RUN]);
+  await query(`DELETE FROM clean.sync_runs WHERE shop_domain = $1`, [SEED_SHOP]);
   const orders = await query(`DELETE FROM clean.orders WHERE shop_domain = $1`, [SEED_SHOP]);
   await query(`DELETE FROM clean.customers WHERE shop_domain = $1`, [SEED_SHOP]);
   console.log(`Removed seed data for ${SEED_SHOP} (${orders.rowCount} orders).`);
@@ -98,6 +100,28 @@ async function clean() {
 
 async function seed() {
   await clean();
+  // Label the demo shop as sample data: Results shows a persistent banner for it.
+  await query(
+    `INSERT INTO clean.shop (shop_domain, currency, sample_data) VALUES ($1, 'USD', true)
+     ON CONFLICT (shop_domain) DO UPDATE SET sample_data = true`,
+    [SEED_SHOP]
+  );
+  // A real published sync covering the seeded orders. Results judges every
+  // calculation against the sync it read, so the demo needs one like any store.
+  const { rows: [demoSync] } = await query(
+    `INSERT INTO clean.sync_runs (shop_domain, status, started_at, finished_at, published_at)
+     VALUES ($1, 'complete', NOW(), NOW(), NOW()) RETURNING id, started_at, published_at`,
+    [SEED_SHOP]
+  );
+  await query(
+    `INSERT INTO clean.active_sync (shop_domain, sync_run_id, published_at, started_at) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (shop_domain) DO UPDATE SET sync_run_id = EXCLUDED.sync_run_id,
+       published_at = EXCLUDED.published_at, started_at = EXCLUDED.started_at`,
+    [SEED_SHOP, demoSync.id, demoSync.published_at, demoSync.started_at]
+  );
+  const demoSource = {
+    syncRunId: demoSync.id, lastSuccessfulSyncAt: demoSync.published_at, ordersCoveredThrough: demoSync.started_at,
+  };
 
   const fromStore = await realStorePlays();
   const plays = fromStore.length ? fromStore : FALLBACK_PLAYS;
@@ -187,7 +211,7 @@ async function seed() {
     // check the interval against the planted lift. It is not what merchants see.
     const summary = await measureCampaign(c.campaignId, {
       policy: { minCustomersPerArm: 2, minPurchasersPerArm: 1, criticalValue: 1.96 },
-      source: { lastSuccessfulSyncAt: new Date(), ordersCoveredThrough: new Date() },
+      source: demoSource,
     });
     const w30 = summary.windows.find((w) => w.windowDays === 30);
     const cmp = w30.comparison;

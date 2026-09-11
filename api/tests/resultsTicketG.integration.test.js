@@ -8,7 +8,7 @@ const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
 const { upsertCampaign, recordRecipients, freezeCampaignAtHandoff } = require("../src/services/campaignService");
 const { transitionDelivery } = require("../src/services/deliveryStateService");
-const { measureCampaign, assessWindow } = require("../src/services/measurementService");
+const { measureCampaign, summarizeCampaign, assessWindow } = require("../src/services/measurementService");
 
 // Ticket G: the per-window Results response, against RESULTS_UI_SPEC §5–§8.
 // Provider states are reached through Ticket D's real transitions.
@@ -60,15 +60,19 @@ async function order(customerId, at, total, shop = SHOP) {
     [`g-${seq += 1}`, shop, customerId, `${customerId}@example.invalid`, at, total]
   );
 }
+// Publishes a sync and makes it the active one, as a real sync would.
 async function activeSync({ startedAt, publishedAt }, shop = SHOP) {
   const { rows } = await query(
     `INSERT INTO clean.sync_runs (shop_domain, status, started_at, finished_at, published_at)
      VALUES ($1, 'complete', $2, $3, $3) RETURNING id`, [shop, startedAt, publishedAt]
   );
   await query(
-    `INSERT INTO clean.active_sync (shop_domain, sync_run_id, published_at, started_at) VALUES ($1, $2, $3, $4)`,
+    `INSERT INTO clean.active_sync (shop_domain, sync_run_id, published_at, started_at) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (shop_domain) DO UPDATE SET sync_run_id = EXCLUDED.sync_run_id,
+       published_at = EXCLUDED.published_at, started_at = EXCLUDED.started_at`,
     [shop, rows[0].id, publishedAt, startedAt]
   );
+  return { syncRunId: rows[0].id, lastSuccessfulSyncAt: publishedAt, ordersCoveredThrough: startedAt };
 }
 const win = (summary, days) => summary.windows.find((w) => w.windowDays === days);
 
@@ -92,12 +96,14 @@ suite("unique purchasers are counted separately from orders", async () => {
 suite("every figure, date and assessment follows its own window", async () => {
   await db.resetDatabase();
   const sent = ago(70);
+  // A real, current sync: coverage is judged against the sync a calculation read.
+  const current = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
   const c = await sentCampaign("play-w", sent, { treated: ["a", "b"], held: ["h", "i"] });
   await order("a", ago(60), 100); // day 10: in 30, 60, 90
   await order("a", ago(25), 50);  // day 45: in 60 and 90, not 30
   await order("h", ago(60), 20);
 
-  const summary = await measureCampaign(c.id, { source: FRESH() });
+  const summary = await measureCampaign(c.id, { source: current });
   const [w30, w60, w90] = [30, 60, 90].map((d) => win(summary, d));
 
   assert.equal(w30.start, sent.toISOString());
@@ -270,6 +276,7 @@ suite("the original campaign is the frozen email and its originating recommendat
   assert.equal(status, 200);
   assert.equal(body.approvedCopy.subject, "We saved something for you");
   assert.equal(body.renderedHtml, "<html><body>Frozen email</body></html>");
+  assert.ok(body.frozenAt, "the handoff time travels with the snapshot");
   assert.equal(body.recommendation.playName, "Bring back lapsed customers");
   assert.equal(body.recommendation.evidenceLine, "Observed in your store");
   assert.equal(body.recommendation.observedChange.unit, "percentage_points");
@@ -290,4 +297,60 @@ suite("older campaigns are offered only when more exist", async () => {
   const all = (await api.get(`/results/${SHOP}?limit=5`)).body;
   assert.equal(all.hasMore, false);
   assert.equal(all.results.length, 3);
+});
+
+// The reported defect, reproduced as a route test: calculate, add a $123 order,
+// publish a newer sync, reload. Results reported $0 with both freshness
+// warnings cleared.
+suite("a newer sync recalculates the figures, which record the sync they used", async () => {
+  await db.resetDatabase();
+  const first = await activeSync({ startedAt: new Date(Date.now() - 2 * 3600000), publishedAt: new Date(Date.now() - 3600000) });
+  const c = await sentCampaign("play-fresh", ago(40), { treated: ["a", "b"], held: ["h", "i"] });
+
+  let w30 = win((await api.get(`/results/${SHOP}`)).body.results[0], 30);
+  assert.equal(w30.assigned.revenue, 0);
+  assert.equal(w30.calculatedFrom.syncRunId, first.syncRunId);
+
+  await order("a", ago(35), 123);
+  const second = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
+
+  const { body } = await api.get(`/results/${SHOP}`);
+  w30 = win(body.results.find((r) => r.campaignId === c.id), 30);
+  assert.equal(w30.assigned.revenue, 123, "the newer sync's order is counted");
+  assert.equal(w30.calculatedFrom.syncRunId, second.syncRunId, "figures name the sync they were calculated from");
+  assert.equal(w30.sourceSuperseded, false);
+  assert.equal(body.source.syncRunId, second.syncRunId);
+});
+
+// If recalculation does not happen (it failed), the old figures stand as a
+// record of the OLD sync: flagged as superseded, and judged against the old
+// sync's coverage. A newer sync must never certify them as complete.
+suite("a newer sync never certifies figures calculated from an older one", async () => {
+  await db.resetDatabase();
+  // The old sync's orders stop 20 days ago; the 30-day window ended 10 days ago.
+  const old = await activeSync({ startedAt: ago(20), publishedAt: ago(20) });
+  const c = await sentCampaign("play-old", ago(40), { treated: ["a", "b"], held: ["h", "i"] });
+  await order("a", ago(35), 30); await order("h", ago(35), 20);
+  await measureCampaign(c.id, { source: old });
+
+  const fresh = await activeSync({ startedAt: new Date(), publishedAt: new Date() });
+  await order("b", ago(35), 99); // only the new sync would see this
+  const summary = await summarizeCampaign(c.id, { source: fresh });
+  const w30 = win(summary, 30);
+
+  assert.equal(w30.sourceSuperseded, true);
+  assert.equal(w30.calculatedFrom.syncRunId, old.syncRunId, "provenance stays with the original sync");
+  assert.equal(w30.calculatedFrom.stale, true);
+  assert.equal(w30.assigned.revenue, 30, "the old figures are kept, not silently replaced");
+  assert.equal(w30.assessment.state, "awaiting_order_data", "completeness is judged by the data used, not the newest sync");
+  assert.deepEqual(w30.assessment.reasons, ["orders_not_synced_through_window_end"]);
+  assert.equal(summary.source.syncRunId, fresh.syncRunId, "the page still knows the current sync");
+});
+
+suite("a seeded demonstration shop is labelled sample data; a real one is not", async () => {
+  await db.resetDatabase();
+  await query(`INSERT INTO clean.shop (shop_domain, currency) VALUES ($1, 'USD')`, [SHOP]);
+  assert.equal((await api.get(`/results/${SHOP}`)).body.sampleData, false);
+  await query(`UPDATE clean.shop SET sample_data = true WHERE shop_domain = $1`, [SHOP]);
+  assert.equal((await api.get(`/results/${SHOP}`)).body.sampleData, true);
 });

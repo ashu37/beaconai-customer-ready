@@ -172,7 +172,7 @@ function notMeasurable(campaign) {
 //
 // Purchasers are counted separately from orders: ten orders from one customer
 // are one purchaser. Any floor on "people who bought" reads this, never orders.
-async function measureWindow(campaign, windowDays) {
+async function measureWindow(campaign, windowDays, sourceSyncRunId = null) {
   const sentAt = new Date(campaign.providerSentAt);
   const windowEnd = new Date(sentAt.getTime() + windowDays * DAY_MS);
 
@@ -196,17 +196,18 @@ async function measureWindow(campaign, windowDays) {
   for (const [arm, totals] of byArm) {
     await query(
       `INSERT INTO clean.campaign_measurements
-         (campaign_id, window_days, arm, n_customers, n_purchasers, n_orders, revenue, revenue_sq, measured_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         (campaign_id, window_days, arm, n_customers, n_purchasers, n_orders, revenue, revenue_sq, measured_at, source_sync_run_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)
        ON CONFLICT (campaign_id, window_days, arm) DO UPDATE SET
-         n_customers  = EXCLUDED.n_customers,
-         n_purchasers = EXCLUDED.n_purchasers,
-         n_orders     = EXCLUDED.n_orders,
-         revenue      = EXCLUDED.revenue,
-         revenue_sq   = EXCLUDED.revenue_sq,
-         measured_at  = NOW()`,
+         n_customers        = EXCLUDED.n_customers,
+         n_purchasers       = EXCLUDED.n_purchasers,
+         n_orders           = EXCLUDED.n_orders,
+         revenue            = EXCLUDED.revenue,
+         revenue_sq         = EXCLUDED.revenue_sq,
+         measured_at        = NOW(),
+         source_sync_run_id = EXCLUDED.source_sync_run_id`,
       [campaign.id, windowDays, arm, totals.n_customers, totals.n_purchasers, totals.n_orders,
-       totals.revenue.toFixed(2), totals.revenue_sq.toFixed(4)]
+       totals.revenue.toFixed(2), totals.revenue_sq.toFixed(4), sourceSyncRunId]
     );
   }
 
@@ -219,7 +220,8 @@ async function measureCampaign(campaignId, options = {}) {
   if (!campaign) return { measurable: false, reason: "no_campaign" };
   if (!sendConfirmed(campaign)) return notMeasurable(campaign);
 
-  for (const windowDays of windows) await measureWindow(campaign, windowDays);
+  const sourceSyncRunId = options.source?.syncRunId ?? null;
+  for (const windowDays of windows) await measureWindow(campaign, windowDays, sourceSyncRunId);
   return summarizeCampaign(campaignId, { ...options, windows });
 }
 
@@ -232,6 +234,7 @@ function sourceFreshness(source = {}, now = Date.now()) {
   const covered = source?.ordersCoveredThrough ? new Date(source.ordersCoveredThrough) : null;
   const old = last ? now - last.getTime() > FRESHNESS_MS : true;
   return {
+    syncRunId: source?.syncRunId ?? null,
     lastSuccessfulSyncAt: last ? last.toISOString() : null,
     ordersCoveredThrough: covered ? covered.toISOString() : null,
     stale: old,
@@ -356,11 +359,20 @@ async function summarizeCampaign(campaignId, {
   if (!sendConfirmed(campaign)) return { ...notMeasurable(campaign), assignment };
 
   const { rows } = await query(
-    `SELECT window_days, arm, n_customers, n_purchasers, n_orders, revenue, revenue_sq, measured_at
+    `SELECT window_days, arm, n_customers, n_purchasers, n_orders, revenue, revenue_sq, measured_at, source_sync_run_id
        FROM clean.campaign_measurements
       WHERE campaign_id = $1`,
     [campaignId]
   );
+
+  // The sync each stored calculation read, so its freshness and completeness
+  // are judged against ITS data. A newer sync proves nothing about figures
+  // calculated before it existed.
+  const syncIds = [...new Set(rows.map((r) => r.source_sync_run_id).filter((id) => id != null))];
+  const { rows: syncRows } = syncIds.length
+    ? await query(`SELECT id, published_at, started_at FROM clean.sync_runs WHERE id = ANY($1::int[])`, [syncIds])
+    : { rows: [] };
+  const syncById = new Map(syncRows.map((r) => [r.id, r]));
 
   const sentAt = new Date(campaign.providerSentAt);
   const freshness = sourceFreshness(source || {}, now);
@@ -384,7 +396,16 @@ async function summarizeCampaign(campaignId, {
     const measuredTimes = forWindow.map((r) => new Date(r.measured_at).getTime());
     const calculatedAt = measuredTimes.length ? new Date(Math.max(...measuredTimes)) : null;
     const complete = now >= end.getTime();
-    const assessment = assessWindow({ complete, end, assigned, heldBack, source: freshness, policy });
+
+    const calcSyncId = forWindow.find((r) => r.source_sync_run_id != null)?.source_sync_run_id ?? null;
+    const calcSync = calcSyncId != null ? syncById.get(calcSyncId) : null;
+    const calculatedFrom = sourceFreshness({
+      syncRunId: calcSyncId,
+      lastSuccessfulSyncAt: calcSync?.published_at || null,
+      ordersCoveredThrough: calcSync?.started_at || null,
+    }, now);
+    // Coverage is checked against the data the figures were calculated from.
+    const assessment = assessWindow({ complete, end, assigned, heldBack, source: calculatedFrom, policy });
 
     results.push({
       windowDays,
@@ -394,6 +415,10 @@ async function summarizeCampaign(campaignId, {
       daysElapsed: Math.max(0, Math.min(windowDays, Math.floor((now - sentAt.getTime()) / DAY_MS))),
       calculatedAt: calculatedAt ? calculatedAt.toISOString() : null,
       calculationStale: calculatedAt ? now - calculatedAt.getTime() > FRESHNESS_MS : true,
+      calculatedFrom,
+      // A newer sync exists than the one these figures used. They stand as a
+      // record of that older data until recalculated; they are not current.
+      sourceSuperseded: forWindow.length > 0 && freshness.syncRunId != null && calcSyncId !== freshness.syncRunId,
       assigned: figures(assigned),
       heldBack: figures(heldBack),
       assessment: { state: assessment.state, reasons: assessment.reasons },
@@ -443,13 +468,17 @@ async function summarizeProgram(shopDomain, { sinceDays = 90 } = {}) {
 // Campaigns whose stored measurement needs recomputing: confirmed sent, and
 // never measured, measured over a day ago, or measured before purchasers were
 // counted. Cheap enough at this volume to run on read.
-async function staleCampaignIds(shopDomain, { olderThanHours = 24 } = {}) {
+async function staleCampaignIds(shopDomain, { olderThanHours = 24, currentSyncRunId = null } = {}) {
+  // Also stale: any figure calculated from a sync other than the active one.
+  // Age alone missed the case that matters — a new sync published minutes after
+  // a calculation left the old figures looking current.
   const { rows } = await query(
     `SELECT c.id
        FROM clean.campaigns c
        LEFT JOIN LATERAL (
          SELECT MAX(measured_at) AS measured_at,
-                BOOL_OR(n_purchasers IS NULL) AS missing_purchasers
+                BOOL_OR(n_purchasers IS NULL) AS missing_purchasers,
+                BOOL_OR(source_sync_run_id IS DISTINCT FROM $3::int) AS other_source
            FROM clean.campaign_measurements m
           WHERE m.campaign_id = c.id
        ) m ON true
@@ -458,8 +487,9 @@ async function staleCampaignIds(shopDomain, { olderThanHours = 24 } = {}) {
         AND c.provider_sent_at IS NOT NULL
         AND (m.measured_at IS NULL
              OR m.missing_purchasers
+             OR m.other_source
              OR m.measured_at < NOW() - ($2 || ' hours')::interval)`,
-    [shopDomain, String(olderThanHours)]
+    [shopDomain, String(olderThanHours), currentSyncRunId]
   );
   return rows.map((r) => r.id);
 }

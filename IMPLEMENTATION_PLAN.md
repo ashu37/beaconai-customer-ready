@@ -238,7 +238,12 @@ Use clearly labeled seed examples. Keep the existing campaign list and simple de
 - **Original campaign:** collapsed, loading the frozen email and its originating recommendation.
 - **Navigation:** `?campaign=` survives a refresh, and "Show older campaigns" appears only when more exist.
 
-**Open:** the campaign assessment policy (floors and critical value), which awaits the statistical review.
+**Freshness correction (after review):**
+- Every calculation records the sync it read, and is recalculated when the active sync changes as well as when it ages past 24 hours.
+- Coverage and freshness are judged against the calculation's own sync. A failed recalculation keeps the old figures with their original provenance, flagged as superseded.
+- The handoff email carries C-UI's wording, the exposure caveat is always shown, and seeded demonstration shops show a persistent "Sample data — illustrative results" banner.
+
+**Open:** the campaign assessment policy (floors and critical value), which awaits the statistical review. Comparisons stay disabled until then.
 
 **Files:** `measurementService.js`, Results routes, `schema.js`, `web/src/App.jsx`.
 
