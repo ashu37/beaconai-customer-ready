@@ -565,7 +565,7 @@ router.post("/copy/generate", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.body.shopDomain);
     if (!shopDomain) return;
-    const { playId, templateId, regenerate, lockedSlots, steer } = req.body;
+    const { playId, runId: requestedRunId, templateId, regenerate, lockedSlots, steer } = req.body;
     if (!playId) {
       res.status(400).json({ ok: false, error: "playId is required" });
       return;
@@ -576,8 +576,13 @@ router.post("/copy/generate", async (req, res) => {
     const beaconTemplates = buildBeaconTemplates(brandContext);
     const template = beaconTemplates.find((t) => t.id === templateId) || beaconTemplates[0] || null;
 
-    // Find the play in the latest run (read-only; never triggers an engine run).
-    const latest = await readLatestRun({ shopDomain });
+    // Find the play in the campaign's own run when the client names it, else the
+    // latest (read-only; never triggers an engine run). A named run that is not
+    // this shop's is not found — never silently swapped for the latest, which
+    // wrote an older campaign's copy onto a newer run's campaign.
+    const latest = requestedRunId
+      ? await readRunById({ shopDomain, runId: requestedRunId })
+      : await readLatestRun({ shopDomain });
     const presented = latest ? presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null, presenterOptions(latest)) : null;
     const play = presented
       ? [...(presented.recommendations || []), ...(presented.considered || [])].find((p) => p.play_id === playId || p.id === playId)

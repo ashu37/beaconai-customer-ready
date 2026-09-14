@@ -133,8 +133,8 @@ export const api = {
   // Ticket C: which branded shell this shop sends with, if any.
   brandEmailTemplate: () => request(`/brand/email-template?shopDomain=${encodeURIComponent(shopDomain)}`),
   // CA-1: customer-facing copywriter. Fails soft (available:false => static copy).
-  generateCopy: ({ playId, templateId, regenerate, lockedSlots, steer } = {}) =>
-    request("/copy/generate", { method: "POST", body: JSON.stringify({ shopDomain, playId, templateId, regenerate, lockedSlots, steer }) }),
+  generateCopy: ({ playId, runId, templateId, regenerate, lockedSlots, steer } = {}) =>
+    request("/copy/generate", { method: "POST", body: JSON.stringify({ shopDomain, playId, runId, templateId, regenerate, lockedSlots, steer }) }),
   getEngineInput: () => request(`/engine/input/${encodeURIComponent(shopDomain)}`),
   // Measured results: the program-level holdout comparison plus every sent
   // campaign, across every run.

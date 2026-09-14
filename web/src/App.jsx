@@ -6,7 +6,10 @@ import { NARRATION_POLL_MS, isNarrationPending, thesisPlaceholder, waitForAnalys
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
-import { briefingOrder, mergeByPlay, mergePlayIdList, runMapsFromCampaigns, shouldApplyBriefing } from "./campaignReconciliation";
+import {
+  briefingCampaignKeyByPlay, briefingOrder, campaignKey, earlierCampaigns, mergeByKey, mergeKeyList,
+  railCampaignKeys, shouldApplyBriefing, workspaceMapsFromCampaigns, workspacePlay,
+} from "./campaignReconciliation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import { useStoreSync } from "./useStoreSync";
@@ -181,7 +184,7 @@ function normalizeAtulPlay(play, index) {
   };
 }
 
-function buildWorkflowPlays({ atulEngineResult, campaignPackages }) {
+function buildWorkflowPlays({ atulEngineResult }) {
   const presented = atulEngineResult?.presentedRun?.recommendations || [];
   const presentedConsidered = atulEngineResult?.presentedRun?.considered || [];
   const rawEngineCards = [
@@ -189,21 +192,7 @@ function buildWorkflowPlays({ atulEngineResult, campaignPackages }) {
     ...(atulEngineResult?.engineRun?.recommended_experiments || []),
     ...(atulEngineResult?.engineRun?.considered || []),
   ];
-  const atulPlays = (presented.length || presentedConsidered.length ? [...presented, ...presentedConsidered] : rawEngineCards).map(normalizeAtulPlay);
-  if (atulPlays.length) return atulPlays;
-
-  const packagePlays = campaignPackages.map((item) => ({
-    id: item.id,
-    play_id: item.id,
-    play_name: item.playTitle,
-    mechanism: item.bodyP1 || item.previewText,
-    audience_archetype: item.segment,
-    audience_size: item.customers,
-    confidence: item.status,
-    source: "workflow",
-    raw: item,
-  }));
-  return packagePlays;
+  return (presented.length || presentedConsidered.length ? [...presented, ...presentedConsidered] : rawEngineCards).map(normalizeAtulPlay);
 }
 
 // CA-4: map the copywriter's slot object to the draft's field shape. subject_variants[0]
@@ -1845,41 +1834,38 @@ export function App() {
   const [klaviyoTemplates, setKlaviyoTemplates] = useState([]);
   // C3: true only when Klaviyo is connected but its template fetch failed/fell back.
   const [klaviyoTemplatesFailed, setKlaviyoTemplatesFailed] = useState(false);
-  const [selectedTemplateByPlay, setSelectedTemplateByPlay] = useState({});
-  const [draftEditsByPlay, setDraftEditsByPlay] = useState({});
+  // Everything below that is per-draft is keyed by CAMPAIGN id (as a string),
+  // never by play: two campaigns can share a play id. See campaignReconciliation.
+  const [selectedTemplateByKey, setSelectedTemplateByKey] = useState({});
+  const [draftEditsByKey, setDraftEditsByKey] = useState({});
   // CA-4: LLM-authored copy per play, keyed by play id. The "Suggested" value
   // for a field reads from here (falling back to static template_prompt) so the
   // Edited badge + edit-preserving rewrite know what the AGENT wrote vs. what the
-  // MERCHANT edited (draftEditsByPlay). Persisted so it survives refresh (#8v1).
-  const [agentCopyByPlay, setAgentCopyByPlay] = useState({});
+  // MERCHANT edited (draftEditsByKey). Persisted so it survives refresh (#8v1).
+  const [agentCopyByKey, setAgentCopyByKey] = useState({});
   // Per-play copy-generation status: "loading" | "ready" | "static" (fell back).
-  const [copyStatusByPlay, setCopyStatusByPlay] = useState({});
+  const [copyStatusByKey, setCopyStatusByKey] = useState({});
   // Explicit merchant sign-off (end of stepper) that moves a campaign from
   // "Needs review" to "Ready to send". Distinct from a template being selected,
   // which auto-happens on view and only means "has a draft".
   const [approvedForSend, setApprovedForSend] = useState([]);
-  const [authorizedPackageIds, setAuthorizedPackageIds] = useState([]);
   const [klaviyoAssetsByCampaign, setKlaviyoAssetsByCampaign] = useState({});
   const [publishingCampaignId, setPublishingCampaignId] = useState("");
   const [audiencePreviewsByCampaign, setAudiencePreviewsByCampaign] = useState({});
   const [previewingCampaignId, setPreviewingCampaignId] = useState("");
-  const [reviewPlayId, setReviewPlayId] = useState("");
+  // The campaign open in the workspace.
+  const [reviewKey, setReviewKey] = useState("");
   // C2: which stepper step (copy | audience | send) the workspace shows.
   const [workspaceStep, setWorkspaceStep] = useState("copy");
   const rightPaneRef = useRef(null);
   const [selectedBriefingPlayId, setSelectedBriefingPlayId] = useState("");
   const [onboardingHidden, setOnboardingHidden] = useState(() => localStorage.getItem("beaconai:onboarding-complete") === "true");
-  const [campaignPackages, setCampaignPackages] = useState([]);
-  // Per-play "saving" | "saved" | "failed" | "conflict". A silent write failure
+  // Every campaign row this shop has, across runs, and the ones in the rail.
+  const [campaignRowsByKey, setCampaignRowsByKey] = useState({});
+  const [railKeys, setRailKeys] = useState([]);
+  // Per-campaign "saving" | "saved" | "failed" | "conflict". A silent write failure
   // used to leave the merchant editing a draft that was no longer being stored.
-  const [saveStateByPlay, setSaveStateByPlay] = useState({});
-  // Revision each play's campaign was last read at, for optimistic checks.
-  const [revisionByPlay, setRevisionByPlay] = useState({});
-  // The run each play's campaign actually belongs to — its origin, which is not
-  // necessarily the current run.
-  const [runIdByPlay, setRunIdByPlay] = useState({});
-  // Campaigns from earlier runs, kept so the merchant can still find them.
-  const [historicalCampaigns, setHistoricalCampaigns] = useState([]);
+  const [saveStateByKey, setSaveStateByKey] = useState({});
   // Ticket C: the brand shell version this shop currently sends with. A new
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
@@ -1894,10 +1880,9 @@ export function App() {
   const [deliveryByCampaignId, setDeliveryByCampaignId] = useState({});
   // Reported by the provider, or absent. Never derived from the store domain.
   const [senderIdentity, setSenderIdentity] = useState(null);
-  const [campaignRowByPlay, setCampaignRowByPlay] = useState({});
   // The html the preview last rendered, lifted so the final review can show the
   // same email rather than a description of it.
-  const [reviewPreviewHtmlByPlay, setReviewPreviewHtmlByPlay] = useState({});
+  const [reviewPreviewHtmlByKey, setReviewPreviewHtmlByKey] = useState({});
 
   const loadDelivery = useCallback(async (campaignId) => {
     if (!campaignId) return null;
@@ -1914,8 +1899,8 @@ export function App() {
       return null;
     }
   }, []);
-  const [destinationByPlay, setDestinationByPlay] = useState({});
-  // The rendering the merchant actually looked at, per play. Handoff sends this
+  const [destinationByKey, setDestinationByKey] = useState({});
+  // The rendering the merchant actually looked at, per campaign. Handoff sends this
   // back so approval binds to that email rather than to whatever renders later.
   const approvedRender = useRef({});
   const [selectedEvidence, setSelectedEvidence] = useState(null);
@@ -1935,7 +1920,6 @@ export function App() {
   const [firstRunStage, setFirstRunStage] = useState(null); // null | syncing | synced | analyzing | done
   const [firstRunError, setFirstRunError] = useState(null); // { phase: "sync"|"engine", message }
   const [sparseInterstitialDismissed, setSparseInterstitialDismissed] = useState(false);
-  const [restoredApprovedPlayIds, setRestoredApprovedPlayIds] = useState([]);
   const firstRunStartedRef = useRef(false);
   // Which run the campaign workspace was last reconciled against, and a counter
   // that lets a slow campaign read notice it has been overtaken.
@@ -1943,8 +1927,17 @@ export function App() {
   const hydrationSeqRef = useRef(0);
   // The briefing on screen, for ordering a later one against it.
   const appliedBriefingRef = useRef(null);
-  // playId -> campaigns.id, so a mutation can patch the row it already has.
-  const [campaignIdByPlay, setCampaignIdByPlay] = useState({});
+  // The rows a save or handoff reads its identity from — a ref, because a
+  // debounced save runs long after the render that scheduled it.
+  const campaignRowsRef = useRef({});
+  // The revision the server last reported per campaign: what the next save quotes.
+  // Distinct from latestRevision (the last revision this tab SAVED), which is
+  // what a handoff may claim was reviewed.
+  const knownRevisionRef = useRef({});
+  // Earlier-run campaigns the merchant reopened, kept in the rail across reads.
+  const openedKeysRef = useRef(new Set());
+  // (run:play) pairs being created, so a double click cannot open two.
+  const creatingRef = useRef(new Set());
   const [resultsData, setResultsData] = useState(null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [resultsError, setResultsError] = useState("");
@@ -1956,41 +1949,45 @@ export function App() {
   currentRunIdRef.current = currentRunId;
   const activePageRef = useRef(activePage);
   activePageRef.current = activePage;
-  const reviewPlayIdRef = useRef(reviewPlayId);
-  reviewPlayIdRef.current = reviewPlayId;
+  const reviewKeyRef = useRef(reviewKey);
+  reviewKeyRef.current = reviewKey;
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
   // Briefing content cache — shop-keyed (no run_id needed at mount) so a browser
   // refresh repaints the last briefing instantly, independent of the server.
   const briefingCacheKey = shopDomain ? `beaconai:${shopDomain}:latest-briefing` : null;
-  const workflowPlays = useMemo(
-    () => buildWorkflowPlays({ atulEngineResult, campaignPackages }),
-    [atulEngineResult, campaignPackages]
-  );
+  const workflowPlays = useMemo(() => buildWorkflowPlays({ atulEngineResult }), [atulEngineResult]);
   const reviewablePlays = useMemo(() => workflowPlays.filter((play) => classifyPlayLane(play) !== "considered"), [workflowPlays]);
-  // Only plays the merchant explicitly approved in Briefing (greenlightEnginePlay
-  // pushes them into campaignPackages) appear on the Campaigns page. reviewablePlays
-  // is the full universe; the campaigns view is the approved subset.
-  const approvedPlayIdSet = useMemo(() => new Set(campaignPackages.map((item) => item.id)), [campaignPackages]);
-  const approvedPlays = useMemo(
-    () => reviewablePlays.filter((play) => approvedPlayIdSet.has(play.play_id || play.id)),
-    [reviewablePlays, approvedPlayIdSet]
+  // The briefing's link from a play to this run's campaign for it. An older
+  // analysis's campaign for the same play is not a campaign for THIS
+  // recommendation, so it never marks the card as in Campaigns.
+  const briefingKeyByPlay = useMemo(
+    () => briefingCampaignKeyByPlay(campaignRowsByKey, currentRunId),
+    [campaignRowsByKey, currentRunId]
   );
-  const reviewPlay = approvedPlays.find((play) => play.id === reviewPlayId) || approvedPlays[0];
+  // The Campaigns rail: one entry per CAMPAIGN. Two entries can share a play.
+  const workspacePlays = useMemo(
+    () => railKeys
+      .map((key) => campaignRowsByKey[key])
+      .filter((row) => row && row.status !== "dismissed")
+      .map((row) => workspacePlay(row, reviewablePlays, currentRunId)),
+    [railKeys, campaignRowsByKey, reviewablePlays, currentRunId]
+  );
+  const reviewPlay = workspacePlays.find((play) => play.id === reviewKey) || workspacePlays[0];
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
   const klaviyoOnlyTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source === "klaviyo"), [klaviyoTemplates]);
-  const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[reviewPlay.id]) : null;
+  const selectedTemplate = reviewPlay ? klaviyoTemplates.find((item) => item.id === selectedTemplateByKey[reviewPlay.id]) : null;
   // Memoized so the object identity only changes when its inputs do. Rebuilding
   // it every render is what let a preview response trigger the next request.
   const selectedDraft = useMemo(
     () => (reviewPlay && selectedTemplate
-      ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByPlay[reviewPlay.id], agentCopyByPlay[reviewPlay.id], destinationByPlay[reviewPlay.id])
+      ? buildCampaignFromSelection(reviewPlay, selectedTemplate, draftEditsByKey[reviewPlay.id], agentCopyByKey[reviewPlay.id], destinationByKey[reviewPlay.id])
       : null),
-    [reviewPlay, selectedTemplate, draftEditsByPlay, agentCopyByPlay, destinationByPlay]
+    [reviewPlay, selectedTemplate, draftEditsByKey, agentCopyByKey, destinationByKey]
   );
-  const finalCampaigns = approvedPlays
-    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByPlay[play.id]), draftEditsByPlay[play.id], agentCopyByPlay[play.id], destinationByPlay[play.id]))
+  const finalCampaigns = workspacePlays
+    .map((play) => buildCampaignFromSelection(play, klaviyoTemplates.find((item) => item.id === selectedTemplateByKey[play.id]), draftEditsByKey[play.id], agentCopyByKey[play.id], destinationByKey[play.id]))
     .map((item) => {
       if (!item) return item;
       const asset = klaviyoAssetsByCampaign[item.id];
@@ -2008,14 +2005,18 @@ export function App() {
     })
     .filter(Boolean);
 
-  // CA-4: generate LLM copy for a play. On rewrite, the merchant's edited fields
+  // CA-4: generate LLM copy for a campaign. On rewrite, the merchant's edited fields
   // are sent as LOCKED context (adopt #1) and the result is applied to Suggested
   // slots only. Fails soft: available:false leaves the static copy untouched.
+  //
+  // Pinned to the campaign it started for: the key, play and run are read once,
+  // so a response that lands after the merchant switches campaigns is stored on
+  // the campaign that asked for it.
   const fetchCopyForPlay = React.useCallback(async (play, template, { regenerate = false, steer = null } = {}) => {
     if (!play || !template) return;
-    const playId = play.id;
+    const key = play.id;
     // Map the merchant's current edits back to copywriter slot names to lock them.
-    const edits = draftEditsByPlay[playId] || {};
+    const edits = draftEditsByKey[key] || {};
     const lockedSlots = {};
     if (regenerate) {
       if (edits.subject != null) lockedSlots.subject = edits.subject;
@@ -2025,44 +2026,45 @@ export function App() {
       if (edits.bodyP2 != null) lockedSlots.support = edits.bodyP2;
       if (edits.cta != null) lockedSlots.cta = edits.cta;
     }
-    setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "loading" }));
+    setCopyStatusByKey((prev) => ({ ...prev, [key]: "loading" }));
     try {
       const res = await api.generateCopy({
-        playId, templateId: template.id, regenerate,
+        // The campaign's own analysis. Without it the server wrote the copy
+        // against the latest run's campaign for this play.
+        playId: play.play_id, runId: play.run_id || null, templateId: template.id, regenerate,
         lockedSlots: regenerate ? lockedSlots : null, steer,
       });
       if (res && res.available && res.copy) {
-        setAgentCopyByPlay((prev) => ({ ...prev, [playId]: res.copy }));
-        setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "ready" }));
+        setAgentCopyByKey((prev) => ({ ...prev, [key]: res.copy }));
+        setCopyStatusByKey((prev) => ({ ...prev, [key]: "ready" }));
       } else {
         // No key / fell back → keep static copy, no message (adopt #9).
-        setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "static" }));
+        setCopyStatusByKey((prev) => ({ ...prev, [key]: "static" }));
       }
     } catch (_) {
-      setCopyStatusByPlay((prev) => ({ ...prev, [playId]: "static" }));
+      setCopyStatusByKey((prev) => ({ ...prev, [key]: "static" }));
     }
-  }, [draftEditsByPlay]);
+  }, [draftEditsByKey]);
 
-  // Fire once when the merchant enters the Copy step for a play/template with no
-  // cached agent copy yet (adopt: fetch-on-enter, once per play/template).
+  // Fire once when the merchant enters the Copy step for a campaign/template with no
+  // cached agent copy yet (adopt: fetch-on-enter, once per campaign/template).
   useEffect(() => {
     if (!reviewPlay || !selectedTemplate) return;
-    if (agentCopyByPlay[reviewPlay.id]) return;            // already have copy
-    if (copyStatusByPlay[reviewPlay.id] === "loading") return; // in flight
+    if (agentCopyByKey[reviewPlay.id]) return;            // already have copy
+    if (copyStatusByKey[reviewPlay.id] === "loading") return; // in flight
     fetchCopyForPlay(reviewPlay, selectedTemplate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewPlay?.id, selectedTemplate?.id]);
 
-  // Counts reflect only approved campaigns: those still needing review sign-off.
-  const reviewPendingCount = approvedPlays.filter((play) => !approvedForSend.includes(play.id)).length;
+  // Counts reflect only campaigns in the workspace: those still needing review sign-off.
+  const reviewPendingCount = workspacePlays.filter((play) => !approvedForSend.includes(play.id)).length;
   const sentCampaigns = finalCampaigns.filter((item) => item.klaviyoSendJobId);
   const readyToSendCampaigns = finalCampaigns.filter((item) => (item.status === "approved" || item.status === "created") && !item.klaviyoSendJobId);
   const approvedCount = readyToSendCampaigns.length;
 
-  // C1: unified master-detail item list, keyed off reviewable PLAYS so a play
-  // appears the moment it's approved in Briefing. Grouping is driven by the
-  // explicit approvedForSend sign-off — NOT by template selection (which
-  // auto-happens on view and only means "has a draft").
+  // C1: unified master-detail item list, one row per campaign. Grouping is
+  // driven by the explicit approvedForSend sign-off — NOT by template selection
+  // (which auto-happens on view and only means "has a draft").
   const finalCampaignById = new Map(finalCampaigns.map((item) => [item.id, item]));
   const campaignGroupFor = (play) => {
     const campaign = finalCampaignById.get(play.id);
@@ -2070,7 +2072,7 @@ export function App() {
     if (approvedForSend.includes(play.id)) return "ready";
     return "review";
   };
-  const campaignItems = approvedPlays.map((play) => ({
+  const campaignItems = workspacePlays.map((play) => ({
     play,
     campaign: finalCampaignById.get(play.id) || null,
     group: campaignGroupFor(play),
@@ -2082,6 +2084,10 @@ export function App() {
   ].filter((g) => g.rows.length);
   const selectedCampaign = finalCampaignById.get(reviewPlay?.id) || null;
   const selectedCampaignGroup = reviewPlay ? campaignGroupFor(reviewPlay) : null;
+  const historicalCampaigns = useMemo(
+    () => earlierCampaigns(campaignRowsByKey, currentRunId).filter((row) => !railKeys.includes(campaignKey(row))),
+    [campaignRowsByKey, currentRunId, railKeys]
+  );
   const productCount = counts.products ?? engineInput?.products?.length ?? "—";
   const customerCount = counts.customers ?? engineInput?.customers?.length ?? "—";
   const orderCount = counts.orders ?? engineInput?.orders?.length ?? "—";
@@ -2171,16 +2177,16 @@ export function App() {
     document.title = shopDomain ? `BeaconAI — ${shopDomain}` : "BeaconAI";
   }, [shopDomain]);
 
-  // Keep the selected campaign valid against the APPROVED set (the campaigns view).
+  // Keep the selected campaign valid against the rail.
   useEffect(() => {
-    if (reviewPlayId && !approvedPlays.some((play) => play.id === reviewPlayId)) {
-      setReviewPlayId("");
+    if (reviewKey && !workspacePlays.some((play) => play.id === reviewKey)) {
+      setReviewKey("");
       return;
     }
-    if (!reviewPlayId && approvedPlays[0]) {
-      setReviewPlayId(approvedPlays[0].id);
+    if (!reviewKey && workspacePlays[0]) {
+      setReviewKey(workspacePlays[0].id);
     }
-  }, [reviewPlayId, approvedPlays]);
+  }, [reviewKey, workspacePlays]);
 
   useEffect(() => {
     if (!selectableRows.length) return;
@@ -2223,14 +2229,13 @@ export function App() {
   // "Approved" for another run's campaign. A same-tab re-run kept the old
   // bindings the same way (2026-09-14).
   //
-  // Campaign rows come from EVERY run, so earlier work stays reachable. Rows for
-  // the run on screen drive the workspace; the rest are listed as history.
+  // Campaign rows come from EVERY run and are keyed by campaign id, so earlier
+  // work stays reachable and two campaigns for one play never share state. The
+  // run on screen decides only what the briefing links to and what the rail
+  // lists by default.
   //
-  // A play the merchant is working on is left exactly as it is: the open editor,
-  // and any play with an edit waiting to save or on the wire. Its campaign id,
-  // revision, run and content stay bound, so a refreshed briefing can appear
-  // while the editor — and every pending save — stays attached to its original
-  // campaign.
+  // A campaign the merchant is working on is left exactly as it is: the open
+  // editor, and any campaign with an edit waiting to save or on the wire.
   useEffect(() => {
     if (!shopDomain || !currentRunId || hydratedRunRef.current === currentRunId) return;
     hydratedRunRef.current = currentRunId;
@@ -2244,52 +2249,47 @@ export function App() {
         // for a briefing no longer on screen.
         if (seq !== hydrationSeqRef.current || currentRunIdRef.current !== requestedRunId) return;
 
-        const protectedPlayIds = new Set([
+        const protectedKeys = new Set([
           ...Object.keys(editSaveTimers.current),
           ...Object.keys(pendingEdits.current),
           ...Object.keys(inFlightSaves.current),
-          ...(activePageRef.current === "campaigns" && reviewPlayIdRef.current ? [reviewPlayIdRef.current] : []),
+          ...(activePageRef.current === "campaigns" && reviewKeyRef.current ? [reviewKeyRef.current] : []),
         ]);
-        const maps = runMapsFromCampaigns(campaigns, requestedRunId);
-        const merge = (fromServer) => (prev) => mergeByPlay(prev, fromServer, protectedPlayIds);
+        const maps = workspaceMapsFromCampaigns(campaigns);
+        const knownKeys = new Set(Object.keys(maps.rowsByKey));
+        const scope = { protectedKeys, knownKeys };
+        const merge = (fromServer) => (prev) => mergeByKey(prev, fromServer, scope);
 
-        setHistoricalCampaigns(maps.historicalCampaigns);
-        setCampaignIdByPlay(merge(maps.campaignIdByPlay));
-        setRevisionByPlay(merge(maps.revisionByPlay));
-        setRunIdByPlay(merge(maps.runIdByPlay));
-        // The stored rows carry the frozen handoff snapshot; the workspace's own
-        // campaign objects are built from the slate and know nothing of a send.
-        setCampaignRowByPlay(merge(maps.campaignRowByPlay));
-        setDestinationByPlay(merge(maps.destinationByPlay));
-        setSelectedTemplateByPlay(merge(maps.selectedTemplateByPlay));
-        setDraftEditsByPlay(merge(maps.draftEditsByPlay));
-        setAgentCopyByPlay(merge(maps.agentCopyByPlay));
-        setSaveStateByPlay(merge({}));
-        // A render or audience preview belongs to the campaign it was made for.
-        setReviewPreviewHtmlByPlay(merge({}));
-        setAudiencePreviewsByCampaign(merge({}));
-        setApprovedForSend((prev) => mergePlayIdList(prev, maps.approvedPlayIds, protectedPlayIds));
-        setAuthorizedPackageIds((prev) => mergePlayIdList(prev, maps.authorizedPlayIds, protectedPlayIds));
+        const rows = mergeByKey(campaignRowsRef.current, maps.rowsByKey, scope);
+        campaignRowsRef.current = rows;
+        setCampaignRowsByKey(rows);
+        setDestinationByKey(merge(maps.destinationByKey));
+        setSelectedTemplateByKey(merge(maps.selectedTemplateByKey));
+        setDraftEditsByKey(merge(maps.draftEditsByKey));
+        setAgentCopyByKey(merge(maps.agentCopyByKey));
+        setApprovedForSend((prev) => mergeKeyList(prev, maps.approvedKeys, scope));
 
-        // Refs read by the save and handoff paths, reconciled the same way.
-        for (const store of [latestRevision.current, savedSignatureRef.current, saveStatusRef.current, approvedRender.current]) {
-          for (const playId of Object.keys(store)) {
-            if (!protectedPlayIds.has(playId)) delete store[playId];
-          }
-        }
-        for (const row of campaigns.filter((c) => c.runId === requestedRunId && !protectedPlayIds.has(c.playId))) {
-          latestRevision.current[row.playId] = row.revision;
-          savedSignatureRef.current[row.playId] = campaignSignature({
+        // Refs read by the save and handoff paths, reconciled the same way. A
+        // render stays with the campaign it was made for; the handoff gate
+        // compares it against the campaign's current content anyway.
+        for (const row of Object.values(maps.rowsByKey)) {
+          const key = campaignKey(row);
+          if (protectedKeys.has(key)) continue;
+          knownRevisionRef.current[key] = row.revision;
+          latestRevision.current[key] = row.revision;
+          savedSignatureRef.current[key] = campaignSignature({
             edits: row.draftEdits, destinationUrl: row.destinationUrl,
           });
-          saveStatusRef.current[row.playId] = "saved";
+          saveStatusRef.current[key] = "saved";
         }
 
-        // The pipeline rail: keep what the merchant is working on, drop entries
-        // belonging to another run, and restore this run's live campaigns.
-        const live = new Set(maps.livePlayIds);
-        setCampaignPackages((prev) => prev.filter((item) => protectedPlayIds.has(item.id) || live.has(item.id)));
-        setRestoredApprovedPlayIds(maps.livePlayIds.filter((playId) => !protectedPlayIds.has(playId)));
+        // The rail: this run's live campaigns, plus what the merchant is still
+        // holding — a campaign being edited, or an earlier one they reopened.
+        setRailKeys((prev) => railCampaignKeys({
+          rowsByKey: rows,
+          runId: requestedRunId,
+          keep: prev.filter((key) => protectedKeys.has(key) || openedKeysRef.current.has(key) || !knownKeys.has(key)),
+        }));
       } catch (_) {
         // A read failure must not block the briefing. Let the next run change —
         // or the next load of this one — try again.
@@ -2298,40 +2298,35 @@ export function App() {
     })();
   }, [shopDomain, currentRunId]);
 
-  // O4: once workflow plays are loaded, rebuild campaign packages for restored approved ids.
-  useEffect(() => {
-    if (!restoredApprovedPlayIds.length || !workflowPlays.length) return;
-    setCampaignPackages((prev) => {
-      const existing = new Set(prev.map((item) => item.id));
-      const additions = restoredApprovedPlayIds
-        .filter((id) => !existing.has(id))
-        .map((id) => workflowPlays.find((play) => (play.play_id || play.id) === id))
-        .filter(Boolean)
-        .map((play) => ({
-          id: play.play_id || play.id,
-          playTitle: play.play_name || play.play_id,
-          status: "building",
-          customers: play.audience_size || 0,
-          segment: play.audience_archetype || "—",
-          subject: "Placeholder subject from engine play",
-          previewText: "Waiting for real engine copy.",
-          bodyH2: play.play_name || play.play_id,
-          bodyP1: play.mechanism,
-          bodyP2: "Replace this package with Atul engine output when available.",
-          cta: "Review package",
-          sendTime: "Manual review",
-          suppression: STANDARD_SUPPRESSIONS_NOTE,
-        }));
-      if (!additions.length) return prev;
-      return [...prev, ...additions];
-    });
-    setRestoredApprovedPlayIds([]);
-  }, [restoredApprovedPlayIds, workflowPlays]);
+  // Record a campaign row the server returned, so it has an identity the
+  // workspace can key by BEFORE anything is edited. Content is only filled in
+  // where this tab holds none, so a late answer never overwrites typing.
+  const registerCampaignRow = useCallback((row) => {
+    const key = campaignKey(row);
+    if (!key) return null;
+    const known = Boolean(campaignRowsRef.current[key]);
+    campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...(campaignRowsRef.current[key] || {}), ...row } };
+    setCampaignRowsByKey(campaignRowsRef.current);
+    knownRevisionRef.current[key] = row.revision;
+    if (!known) {
+      latestRevision.current[key] = row.revision;
+      savedSignatureRef.current[key] = campaignSignature({ edits: row.draftEdits, destinationUrl: row.destinationUrl });
+      saveStatusRef.current[key] = "saved";
+      const fill = (setter, value) => {
+        if (value) setter((prev) => (key in prev ? prev : { ...prev, [key]: value }));
+      };
+      fill(setSelectedTemplateByKey, row.templateId);
+      fill(setDraftEditsByKey, row.draftEdits);
+      fill(setAgentCopyByKey, row.copy?.copy);
+      fill(setDestinationByKey, row.destinationUrl);
+      if (row.status === "approved" || row.status === "sent") {
+        setApprovedForSend((prev) => (prev.includes(key) ? prev : [...prev, key]));
+      }
+    }
+    return key;
+  }, []);
 
-  // Write one play's campaign state through to the database. Upsert rather than
-  // patch-by-id: the row may not exist yet (first greenlight), and the endpoint
-  // is idempotent on (shop, run, play). Returns the row so the caller can learn
-  // its id for later patches.
+  // Write one campaign's state through to the database.
   const latestRevision = useRef({});
   // Saves already sent to the server. The debounce timer map only knows about
   // edits still WAITING; once a save fires it leaves that map, so a flush that
@@ -2345,77 +2340,109 @@ export function App() {
   // a settled failure from looking like "nothing pending".
   const saveStatusRef = useRef({});
   const savedSignatureRef = useRef({});
-  const saveCampaignState = useCallback(async (playId, fields) => {
-    // A campaign belongs to the run it was created in. Writing it against
-    // whatever run is current would open a second campaign for the same play the
-    // moment a new engine run lands, orphaning the one the merchant was editing.
-    const runId = runIdByPlay[playId] || currentRunId;
-    if (!runId || !playId) return null;
-    setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saving" }));
+  const saveCampaignState = useCallback(async (key, fields) => {
+    // Identity is read ONCE, from the campaign record, when the save starts. A
+    // campaign belongs to the run it was created in; writing it against
+    // whatever run is current would open a second campaign for the same play.
+    // There is no fallback to the play or the current run: a save without a
+    // campaign has nowhere correct to go.
+    const identity = key ? campaignRowsRef.current[key] : null;
+    if (!identity?.runId || !identity?.playId) return { ok: false, reason: "no_campaign", key };
+    const { runId, playId } = identity;
+    setSaveStateByKey((prev) => ({ ...prev, [key]: "saving" }));
     const tracked = (async () => {
     try {
       const { campaign } = await api.saveCampaign({
         runId, playId,
         // Optimistic check: the server refuses the write if the row moved on
         // since we last read it, rather than overwriting someone else's edit.
-        expectedRevision: revisionByPlay[playId],
+        expectedRevision: knownRevisionRef.current[key],
         ...fields,
       });
-      setCampaignIdByPlay((prev) => (prev[playId] === campaign.id ? prev : { ...prev, [playId]: campaign.id }));
-
-      setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
-      setRunIdByPlay((prev) => (prev[playId] === campaign.runId ? prev : { ...prev, [playId]: campaign.runId }));
-      setSaveStateByPlay((prev) => ({ ...prev, [playId]: "saved" }));
-      saveStatusRef.current[playId] = "saved";
+      if (campaignKey(campaign) !== key) {
+        // (shop, run, play) is unique, so this cannot happen — but if it ever
+        // did, recording it here would attach one campaign's save to another.
+        setSaveStateByKey((prev) => ({ ...prev, [key]: "failed" }));
+        saveStatusRef.current[key] = "failed";
+        return { ok: false, reason: "failed", key };
+      }
+      campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...campaignRowsRef.current[key], ...campaign } };
+      setCampaignRowsByKey(campaignRowsRef.current);
+      knownRevisionRef.current[key] = campaign.revision;
+      setSaveStateByKey((prev) => ({ ...prev, [key]: "saved" }));
+      saveStatusRef.current[key] = "saved";
       // Record WHAT was persisted, not merely that something was. The handoff
       // compares the draft on screen against this.
       // Recorded from the row the server returned, so it reflects what was
       // actually persisted rather than what was sent.
-      savedSignatureRef.current[playId] = campaignSignature({
+      savedSignatureRef.current[key] = campaignSignature({
         edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
       });
       // Kept in a ref as well as state: a handoff started in the same tick as a
       // save needs the revision the server just returned, and setState has not
       // landed yet.
-      latestRevision.current[playId] = campaign.revision;
-      return { ok: true, campaign, revision: campaign.revision, playId };
+      latestRevision.current[key] = campaign.revision;
+      return { ok: true, campaign, revision: campaign.revision, key };
     } catch (error) {
       // A conflict is not a failure to save — it is a save that would have
       // destroyed a newer edit. Take the server's version as the new baseline so
       // a retry is against reality, and tell the merchant rather than silently
       // dropping either copy.
       if (error.conflict && error.campaign) {
-        // The server's revision is recorded for display, but NOT adopted as the
-        // reviewed revision: the merchant's copy has not been resolved against
-        // it, so handing off would freeze one of the two arbitrarily.
-        setRevisionByPlay((prev) => ({ ...prev, [playId]: error.campaign.revision }));
-        saveStatusRef.current[playId] = "conflict";
-        setSaveStateByPlay((prev) => ({ ...prev, [playId]: "conflict" }));
+        // The server's revision is recorded for the next save, but NOT adopted
+        // as the reviewed revision: the merchant's copy has not been resolved
+        // against it, so handing off would freeze one of the two arbitrarily.
+        knownRevisionRef.current[key] = error.campaign.revision;
+        saveStatusRef.current[key] = "conflict";
+        setSaveStateByKey((prev) => ({ ...prev, [key]: "conflict" }));
         showToast({
           message: error.conflict === "frozen"
             ? "This campaign has already been sent, so its content can't be changed."
             : "This campaign changed elsewhere. Reload before editing further.",
           error: true,
         });
-        return { ok: false, reason: error.conflict, campaign: error.campaign, playId };
+        return { ok: false, reason: error.conflict, campaign: error.campaign, key };
       }
       // Anything else is a real write failure. Surfaced, not swallowed: the
       // merchant is otherwise editing a draft that is no longer being stored.
-      setSaveStateByPlay((prev) => ({ ...prev, [playId]: "failed" }));
-      saveStatusRef.current[playId] = "failed";
-      return { ok: false, reason: "failed", playId };
+      setSaveStateByKey((prev) => ({ ...prev, [key]: "failed" }));
+      saveStatusRef.current[key] = "failed";
+      return { ok: false, reason: "failed", key };
     }
     })();
 
-    inFlightSaves.current[playId] = tracked;
+    inFlightSaves.current[key] = tracked;
     try {
       return await tracked;
     } finally {
-      if (inFlightSaves.current[playId] === tracked) delete inFlightSaves.current[playId];
+      if (inFlightSaves.current[key] === tracked) delete inFlightSaves.current[key];
     }
-  }, [currentRunId, revisionByPlay, runIdByPlay]);
+    // Everything it reads is a ref or a setter, so it never goes stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Copy edits fire on every keystroke, so they are debounced per play — one
+  // Find or create THE campaign for a play on a run, before anything is edited.
+  // (shop, run, play) is unique on the server, so an existing row — including a
+  // dismissed one being brought back — is updated rather than duplicated.
+  const ensureCampaign = useCallback(async ({ runId, playId, fields }) => {
+    const existing = Object.values(campaignRowsRef.current).find((row) => row.runId === runId && row.playId === playId);
+    if (existing) return saveCampaignState(campaignKey(existing), fields);
+    try {
+      const { campaign } = await api.saveCampaign({ runId, playId, ...fields });
+      const key = registerCampaignRow(campaign);
+      return { ok: true, campaign, key };
+    } catch (error) {
+      // Created elsewhere between our read and this write: adopt that row and
+      // apply the change to it, quoting its revision.
+      if (error.conflict && error.campaign) {
+        const key = registerCampaignRow(error.campaign);
+        return saveCampaignState(key, fields);
+      }
+      return { ok: false, reason: "failed" };
+    }
+  }, [registerCampaignRow, saveCampaignState]);
+
+  // Copy edits fire on every keystroke, so they are debounced per campaign — one
   // request per pause, not per character. The whole edit object is sent rather
   // than a delta: "Restore suggested" works by DELETING a key, and a delta could
   // not express that.
@@ -2424,20 +2451,21 @@ export function App() {
   // Every debounced field for a campaign goes through here, merged into ONE
   // pending payload. A second timer elsewhere would be invisible to the flush,
   // which is exactly how the destination could still be in flight when a handoff
-  // decided nothing was pending.
-  const scheduleCampaignSave = useCallback((playId, fields) => {
-    clearTimeout(editSaveTimers.current[playId]);
-    pendingEdits.current[playId] = { ...(pendingEdits.current[playId] || {}), ...fields };
-    editSaveTimers.current[playId] = setTimeout(() => {
-      delete editSaveTimers.current[playId];
-      const payload = pendingEdits.current[playId];
-      delete pendingEdits.current[playId];
-      saveCampaignState(playId, payload);
+  // decided nothing was pending. The key is captured when the edit is made, so
+  // switching campaigns never redirects it.
+  const scheduleCampaignSave = useCallback((key, fields) => {
+    clearTimeout(editSaveTimers.current[key]);
+    pendingEdits.current[key] = { ...(pendingEdits.current[key] || {}), ...fields };
+    editSaveTimers.current[key] = setTimeout(() => {
+      delete editSaveTimers.current[key];
+      const payload = pendingEdits.current[key];
+      delete pendingEdits.current[key];
+      saveCampaignState(key, payload);
     }, 600);
   }, [saveCampaignState]);
 
   const scheduleDraftEditsSave = useCallback(
-    (playId, edits) => scheduleCampaignSave(playId, { draftEdits: edits }),
+    (key, edits) => scheduleCampaignSave(key, { draftEdits: edits }),
     [scheduleCampaignSave]
   );
 
@@ -2453,10 +2481,10 @@ export function App() {
   // while the last edit was still in flight — and the record is frozen straight
   // afterwards, so the edit would be missing from the thing it can no longer be
   // added to.
-  const flushPendingEdits = useCallback(async (playId = null) => {
+  const flushPendingEdits = useCallback(async (onlyKey = null) => {
     const timers = editSaveTimers.current;
-    const ids = playId
-      ? [playId]
+    const ids = onlyKey
+      ? [onlyKey]
       : Array.from(new Set([...Object.keys(timers), ...Object.keys(inFlightSaves.current)]));
     const saves = [];
     for (const id of ids) {
@@ -2520,38 +2548,36 @@ export function App() {
   // instead of requiring a manual Refresh the empty page never surfaced.
   const templatesRequestedRef = useRef(false);
   useEffect(() => {
-    if (!approvedPlays.length || klaviyoTemplates.length || templatesRequestedRef.current) return;
+    if (!workspacePlays.length || klaviyoTemplates.length || templatesRequestedRef.current) return;
     templatesRequestedRef.current = true;
     loadKlaviyoTemplates().catch(() => {
       // Allow a later retry (e.g. after connecting Klaviyo) if this load failed.
       templatesRequestedRef.current = false;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approvedPlays.length, klaviyoTemplates.length]);
+  }, [workspacePlays.length, klaviyoTemplates.length]);
 
-  // C3: auto-apply the mapped starting template when a reviewable play has none.
-  // Only fires once BeaconAI templates have loaded and the play is untouched.
+  // C3: auto-apply the mapped starting template when a campaign has none.
+  // Only fires once BeaconAI templates have loaded and the campaign is untouched.
   useEffect(() => {
-    if (!reviewPlay || selectedTemplateByPlay[reviewPlay.id]) return;
+    if (!reviewPlay || selectedTemplateByKey[reviewPlay.id]) return;
     const wantedId = templateForPlay(reviewPlay);
     const match = beaconTemplates.find((item) => item.id === wantedId) || beaconTemplates[0];
     if (match) chooseTemplate(reviewPlay.id, match.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewPlay?.id, beaconTemplates.length, selectedTemplateByPlay]);
+  }, [reviewPlay?.id, beaconTemplates.length, selectedTemplateByKey]);
 
   // C1: reset the right pane to the top whenever the selected item changes, so
   // switching items never leaves the merchant scrolled past their own work.
   // C2: default the stepper — approved campaigns open on Send, others on Copy.
   useEffect(() => {
     if (rightPaneRef.current) rightPaneRef.current.scrollTop = 0;
-    setWorkspaceStep(reviewPlayId && approvedForSend.includes(reviewPlayId) ? "send" : "copy");
-    // The campaign id often arrives AFTER the play is selected — the row is
-    // created by the first save. Watching only the play meant no delivery
-    // request ran, and the loading guard then blocked creation until the
-    // merchant switched campaigns and back.
-    if (reviewPlayId && campaignIdByPlay[reviewPlayId]) loadDelivery(campaignIdByPlay[reviewPlayId]);
+    setWorkspaceStep(reviewKey && approvedForSend.includes(reviewKey) ? "send" : "copy");
+    // The selected key IS the campaign id: a campaign exists before it can be
+    // opened, so its delivery state can be read straight away.
+    if (reviewKey) loadDelivery(reviewKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reviewPlayId, campaignIdByPlay[reviewPlayId]]);
+  }, [reviewKey]);
 
   // Auto-load the recipient preview when the merchant lands on the Audience step,
   // so the list isn't blank until they hunt for a "Show emails" button. The
@@ -2559,12 +2585,12 @@ export function App() {
   // there directly and showed "Audience not loaded yet".
   const audienceRequestedRef = useRef("");
   useEffect(() => {
-    if ((workspaceStep !== "audience" && workspaceStep !== "send") || !reviewPlayId) return;
-    const draft = finalCampaignById.get(reviewPlayId);
+    if ((workspaceStep !== "audience" && workspaceStep !== "send") || !reviewKey) return;
+    const draft = finalCampaignById.get(reviewKey);
     if (!draft) return;
-    if (audiencePreviewsByCampaign[reviewPlayId]) return; // already loaded
-    if (audienceRequestedRef.current === reviewPlayId) return; // in-flight/attempted
-    audienceRequestedRef.current = reviewPlayId;
+    if (audiencePreviewsByCampaign[reviewKey]) return; // already loaded
+    if (audienceRequestedRef.current === reviewKey) return; // in-flight/attempted
+    audienceRequestedRef.current = reviewKey;
     previewCampaignAudience(draft).catch(() => {
       audienceRequestedRef.current = ""; // allow retry via the button
     });
@@ -2573,7 +2599,7 @@ export function App() {
     // re-running when the draft appears, the final step stayed on "Audience not
     // loaded yet" (2026-09-14).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceStep, reviewPlayId, selectedCampaign?.id]);
+  }, [workspaceStep, reviewKey, selectedCampaign?.id]);
 
   // The sender is read once at page load. If that read failed — a Klaviyo token
   // refresh racing other requests, a slow instance — the final review showed
@@ -2592,43 +2618,46 @@ export function App() {
   // that normally renders it never mounted. Same request, same record shape as
   // the Edit step's preview, so the handoff binds to exactly what is shown here.
   const reviewRenderRequestedRef = useRef("");
+  const latestRenderRequestRef = useRef({});
   useEffect(() => {
     if (workspaceStep !== "send" || !reviewPlay?.id || !selectedDraft) return;
-    const playId = reviewPlay.id;
+    const key = reviewPlay.id;
     const currentSignature = campaignSignature({
-      edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
+      edits: draftEditsByKey[key], destinationUrl: destinationByKey[key],
     });
     if (!reviewNeedsRender({
-      rendered: approvedRender.current[playId],
+      rendered: approvedRender.current[key],
       currentSignature,
       activeTemplateVersion: brandTemplateVersion,
     })) return;
-    const requestKey = `${playId}:${currentSignature}:${brandTemplateVersion ?? ""}`;
+    const requestKey = `${key}:${currentSignature}:${brandTemplateVersion ?? ""}`;
     if (reviewRenderRequestedRef.current === requestKey) return;
     reviewRenderRequestedRef.current = requestKey;
+    latestRenderRequestRef.current[key] = requestKey;
 
-    let cancelled = false;
     api.previewCampaignHtml({ ...selectedDraft, brandContext })
       .then((result) => {
-        if (cancelled) return;
+        // Pinned to the campaign that asked: stored there even if the merchant
+        // has switched campaigns, and dropped only if that SAME campaign has
+        // since asked for a newer render.
+        if (latestRenderRequestRef.current[key] !== requestKey) return;
         const record = {
           signature: draftSignature(selectedDraft),
           campaignSignature: currentSignature,
-          campaignKey: `${playId}:${selectedTemplate?.id || ""}`,
+          campaignKey: `${key}:${selectedTemplate?.id || ""}`,
           templateVersion: result.templateVersion ?? null,
           fingerprint: result.renderFingerprint ?? null,
           effectiveDestinationUrl: result.effectiveDestinationUrl ?? null,
           html: result.html || "",
         };
-        approvedRender.current[playId] = record;
-        setReviewPreviewHtmlByPlay((prev) => ({ ...prev, [playId]: record.html }));
+        approvedRender.current[key] = record;
+        setReviewPreviewHtmlByKey((prev) => ({ ...prev, [key]: record.html }));
       })
       .catch(() => {
         // Left unrendered: the gate keeps refusing with its own message, and
         // the next visit to this step tries again.
-        if (!cancelled) reviewRenderRequestedRef.current = "";
+        if (reviewRenderRequestedRef.current === requestKey) reviewRenderRequestedRef.current = "";
       });
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceStep, reviewPlay?.id, selectedDraft, brandTemplateVersion]);
 
@@ -2913,8 +2942,17 @@ export function App() {
     setAtulEngineResult(null);
     appliedBriefingRef.current = null;
     hydratedRunRef.current = null;
-    setCampaignPackages([]);
-    setSelectedTemplateByPlay({});
+    campaignRowsRef.current = {};
+    knownRevisionRef.current = {};
+    openedKeysRef.current = new Set();
+    setCampaignRowsByKey({});
+    setRailKeys([]);
+    setReviewKey("");
+    setSelectedTemplateByKey({});
+    setDraftEditsByKey({});
+    setAgentCopyByKey({});
+    setDestinationByKey({});
+    setApprovedForSend([]);
     if (!next) {
       setError("Enter a Shopify store domain before connecting.");
       return;
@@ -3008,49 +3046,52 @@ export function App() {
 
   // Approve toggles a play into (or out of) Campaigns. Stays on the briefing —
   // the merchant can approve several, then review copy in Campaigns via the toast link.
-  function greenlightEnginePlay(play) {
+  //
+  // The campaign record is created (or found) FIRST and the workspace entry is
+  // keyed by its id. Nothing is editable until that identity exists, so there is
+  // never a draft keyed by a play waiting to be attached to "some" campaign.
+  async function greenlightEnginePlay(play) {
     const playId = play.play_id || play.id;
-    const alreadyApproved = campaignPackages.some((item) => item.id === playId);
+    const runId = currentRunIdRef.current;
+    const existingKey = briefingKeyByPlay[playId];
 
-    if (alreadyApproved) {
-      setCampaignPackages((prev) => prev.filter((item) => item.id !== playId));
+    if (existingKey) {
       // Dismissed, not deleted — the row records that the merchant considered
       // this play and pulled it back out.
-      saveCampaignState(playId, { status: "dismissed" });
-      showToast({ message: "Removed from Campaigns." });
+      const result = await saveCampaignState(existingKey, { status: "dismissed" });
+      if (result?.ok) showToast({ message: "Removed from Campaigns." });
       return;
     }
 
-    setCampaignPackages((prev) => [
-      ...prev,
-      {
-        id: playId,
-        playTitle: play.play_name || playId,
-        status: "building",
-        builtAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-        customers: play.audience_size || 0,
-        segment: play.audience_archetype || "—",
-        subject: "Placeholder subject from engine play",
-        previewText: "Waiting for real engine copy.",
-        bodyH2: play.play_name || play.play_id,
-        bodyP1: play.mechanism,
-        bodyP2: "Replace this package with Atul engine output when available.",
-        cta: "Review package",
-        sendTime: "Manual review",
-        suppression: STANDARD_SUPPRESSIONS_NOTE,
-      },
-    ]);
-    saveCampaignState(playId, { status: "draft", displayName: play.play_name || playId });
-    showToast({
-      message: "Added to Campaigns",
-      actionLabel: "Review →",
-      onAction: () => { setReviewPlayId(playId); setActivePage("campaigns"); setToast(null); },
-    });
+    if (!runId) return;
+    const pair = `${runId}:${playId}`;
+    if (creatingRef.current.has(pair)) return;
+    creatingRef.current.add(pair);
+    try {
+      const result = await ensureCampaign({ runId, playId, fields: { status: "draft", displayName: play.play_name || playId } });
+      if (!result?.ok) {
+        if (result?.reason === "failed") showToast({ message: "Couldn't add this to Campaigns. Try again.", error: true });
+        return;
+      }
+      const key = campaignKey(result.campaign);
+      setRailKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+      showToast({
+        message: "Added to Campaigns",
+        actionLabel: "Review →",
+        onAction: () => { setReviewKey(key); setActivePage("campaigns"); setToast(null); },
+      });
+    } finally {
+      creatingRef.current.delete(pair);
+    }
   }
 
-  function authorizeCampaignPackage(campaignId) {
-    setCampaignPackages((prev) => prev.map((item) => item.id === campaignId ? { ...item, status: "authorized" } : item));
-    setAuthorizedPackageIds((prev) => prev.includes(campaignId) ? prev : [...prev, campaignId]);
+  // From a briefing card to this run's campaign for that play.
+  function openBriefingCampaign(play) {
+    const key = briefingKeyByPlay[play.play_id || play.id];
+    if (!key) return;
+    setRailKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    setReviewKey(key);
+    setActivePage("campaigns");
   }
 
   async function createCampaignTemplateInKlaviyo(campaignDraft) {
@@ -3063,23 +3104,31 @@ export function App() {
     // The gate is what actually decides, because a flush can legitimately report
     // "nothing pending" while the last save FAILED — the settled request has
     // already left every pending map by then.
-    await flushPendingEdits(campaignDraft.id);
+    // Everything below is pinned to this campaign, read once: switching to
+    // another campaign mid-handoff cannot redirect it.
+    const key = campaignDraft.id;
+    await flushPendingEdits(key);
 
-    const playId = campaignDraft.id;
+    const rendered = approvedRender.current[key] || null;
     const currentSignature = campaignSignature({
-      edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
+      edits: draftEditsByKey[key], destinationUrl: destinationByKey[key],
     });
     // Focus the field that is actually blocking, so a keyboard user is not left
     // hunting for it after a refused action.
     const verdict = canHandoff({
-      status: saveStatusRef.current[playId],
+      status: saveStatusRef.current[key],
       currentSignature,
-      savedSignature: savedSignatureRef.current[playId],
-      savedRevision: latestRevision.current[playId],
-      hasCampaignRow: Boolean(campaignIdByPlay[playId]),
+      savedSignature: savedSignatureRef.current[key],
+      savedRevision: latestRevision.current[key],
+      hasCampaignRow: Boolean(campaignRowsRef.current[key]),
       // The rendering the merchant actually looked at. The server refuses a
       // handoff without it, and it should never be attempted without one.
-      approvedRenderSignature: approvedRender.current[playId]?.campaignSignature ?? null,
+      approvedRenderSignature: rendered?.campaignSignature ?? null,
+      // Approval binds to this campaign's rendering and the design it used.
+      campaignKey: key,
+      approvedRenderCampaignKey: rendered?.campaignKey ? String(rendered.campaignKey).split(":")[0] : null,
+      approvedRenderTemplateVersion: rendered?.templateVersion ?? null,
+      activeTemplateVersion: brandTemplateVersion,
     });
     if (!verdict.ok) {
       showToast({ message: verdict.message, error: true });
@@ -3087,18 +3136,18 @@ export function App() {
     }
     const expectedRevision = verdict.revision;
 
-    setPublishingCampaignId(campaignDraft.id);
+    setPublishingCampaignId(key);
     try {
       const result = await api.createSendPackage({
         ...campaignDraft,
         // Identify the campaign so the server resolves the audience from its
         // ORIGIN run rather than whatever the latest run happens to be.
-        campaignId: campaignIdByPlay[campaignDraft.id],
+        campaignId: key,
         // Bind the send to the email that was actually reviewed. If the shell
         // was re-approved or the copy moved since, the server refuses rather
         // than sending something nobody looked at.
-        expectedTemplateVersion: approvedRender.current[campaignDraft.id]?.templateVersion ?? null,
-        expectedRenderFingerprint: approvedRender.current[campaignDraft.id]?.fingerprint ?? null,
+        expectedTemplateVersion: rendered?.templateVersion ?? null,
+        expectedRenderFingerprint: rendered?.fingerprint ?? null,
         // The revision the merchant actually reviewed. The server reserves the
         // campaign against it before touching Klaviyo, so a campaign edited
         // since approval cannot be handed off as though it had been signed off.
@@ -3109,7 +3158,7 @@ export function App() {
       const campaignId = result.klaviyoCampaign?.data?.id;
       setKlaviyoAssetsByCampaign((prev) => ({
         ...prev,
-        [campaignDraft.id]: {
+        [key]: {
           templateId,
           listId,
           campaignId,
@@ -3122,17 +3171,16 @@ export function App() {
           createdAt: new Date().toISOString(),
         },
       }));
-      setAuthorizedPackageIds((prev) => prev.includes(campaignDraft.id) ? prev : [...prev, campaignDraft.id]);
-      if (campaignId) saveCampaignState(campaignDraft.id, { klaviyoCampaignId: campaignId });
+      if (campaignId) saveCampaignState(key, { klaviyoCampaignId: campaignId });
       // Re-read the DURABLE state. Without this the screen kept showing "Create
       // draft" after a successful creation, and the next click made a second one.
-      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      await loadDelivery(key);
       showToast({ message: "Draft created in Klaviyo" });
       return result;
     } catch (err) {
       // The server has already recorded whether this failed safely or ended
       // uncertain. Read that, and let the panel say what may be done next.
-      await loadDelivery(campaignIdByPlay[campaignDraft.id]);
+      await loadDelivery(key);
       // NO blind retry. The old toast offered one unconditionally, including
       // after an outcome we could not confirm — where a retry can create a
       // second campaign that cannot be taken back.
@@ -3150,9 +3198,9 @@ export function App() {
 
   // The merchant's holdout choice. Persisted on the campaign, then the preview
   // is re-run so the counts on screen are the ones the send will actually use.
-  async function changeHoldout(playId, pct) {
-    await saveCampaignState(playId, { holdoutPct: pct });
-    const draft = finalCampaignById.get(playId) || campaignPackages.find((c) => c.id === playId);
+  async function changeHoldout(key, pct) {
+    await saveCampaignState(key, { holdoutPct: pct });
+    const draft = finalCampaignById.get(key);
     if (draft) await previewCampaignAudience(draft).catch(() => {});
   }
 
@@ -3178,57 +3226,15 @@ export function App() {
 
   // Reopen a campaign from an earlier run for editing.
   //
-  // The workspace is keyed by play, and an old campaign's play is usually absent
-  // from the current slate — so the campaign record itself supplies the play.
-  // Its saved template, edits and copy are restored, and its ORIGIN run and
-  // revision are registered so later saves write back to the same row rather
-  // than opening a second campaign for the same play.
+  // It joins the rail as its own entry, keyed by its campaign id, beside any
+  // campaign the current briefing has for the same play. Its content comes from
+  // its own record and its saves go to its own run and revision.
   function openHistoricalCampaign(campaign) {
-    const playId = campaign.playId;
-
-    // Two runs can carry the same play id. Merging them into the play-keyed maps
-    // would show one campaign's state on the other's row, so this stops and says
-    // so rather than quietly corrupting the current draft.
-    if (campaignIdByPlay[playId] && campaignIdByPlay[playId] !== campaign.id) {
-      showToast({
-        message: "This play also has a campaign in the current briefing. Finish or dismiss that one first.",
-        error: true,
-      });
-      return;
-    }
-
-    setCampaignIdByPlay((prev) => ({ ...prev, [playId]: campaign.id }));
-    setRevisionByPlay((prev) => ({ ...prev, [playId]: campaign.revision }));
-    setRunIdByPlay((prev) => ({ ...prev, [playId]: campaign.runId }));
-    latestRevision.current[playId] = campaign.revision;
-    savedSignatureRef.current[playId] = campaignSignature({
-      edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
-    });
-    saveStatusRef.current[playId] = "saved";
-    if (campaign.templateId) setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: campaign.templateId }));
-    setDraftEditsByPlay((prev) => ({ ...prev, [playId]: campaign.draftEdits || {} }));
-    if (campaign.copy?.copy) setAgentCopyByPlay((prev) => ({ ...prev, [playId]: campaign.copy.copy }));
-
-    // Put it in the workspace rail. Built from the campaign row, because the
-    // engine play it came from may no longer be in any slate.
-    setCampaignPackages((prev) => (
-      prev.some((item) => item.id === playId) ? prev : [...prev, {
-        id: playId,
-        playTitle: campaign.displayName || playId,
-        status: campaign.status === "sent" ? "sent" : "building",
-        customers: campaign.audienceSize || 0,
-        segment: "—",
-        subject: campaign.approvedCopy?.subject || "",
-        previewText: "",
-        bodyH2: campaign.displayName || playId,
-        bodyP1: "",
-        cta: "Review package",
-        sendTime: "Manual review",
-        suppression: STANDARD_SUPPRESSIONS_NOTE,
-        fromEarlierRun: true,
-      }]
-    ));
-    setReviewPlayId(playId);
+    const key = registerCampaignRow(campaign);
+    if (!key) return;
+    openedKeysRef.current.add(key);
+    setRailKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    setReviewKey(key);
     setActivePage("campaigns");
     if (campaign.frozen) {
       showToast({ message: "This campaign was already sent — its content is read-only." });
@@ -3241,25 +3247,25 @@ export function App() {
   // Retry has to resend EVERYTHING a save persists. Resending only the copy
   // could report "Saved" while a failed destination stayed unpersisted — and the
   // handoff would go on refusing, with the UI insisting the campaign was saved.
-  function retrySave(playId) {
-    return saveCampaignState(playId, {
-      draftEdits: draftEditsByPlay[playId] || {},
-      destinationUrl: destinationByPlay[playId] ?? null,
+  function retrySave(key) {
+    return saveCampaignState(key, {
+      draftEdits: draftEditsByKey[key] || {},
+      destinationUrl: destinationByKey[key] ?? null,
     });
   }
 
-  function changeDestination(playId, value) {
-    setDestinationByPlay((prev) => ({ ...prev, [playId]: value }));
-    scheduleCampaignSave(playId, { destinationUrl: value });
+  function changeDestination(key, value) {
+    setDestinationByKey((prev) => ({ ...prev, [key]: value }));
+    scheduleCampaignSave(key, { destinationUrl: value });
   }
 
-  function chooseTemplate(playId, templateId) {
-    if (selectedTemplateByPlay[playId] === templateId) return;
+  function chooseTemplate(key, templateId) {
+    if (selectedTemplateByKey[key] === templateId) return;
 
     // Switching starting copy discards whatever the merchant has typed. Doing
     // that silently is at odds with the whole point of durable drafts, so it is
     // confirmed first — but only when there is actually something to lose.
-    const edits = draftEditsByPlay[playId] || {};
+    const edits = draftEditsByKey[key] || {};
     const hasEdits = Object.values(edits).some((value) => value !== undefined && value !== "");
     // The spec's wording, and it is only accurate because the implementation
     // really does preserve both: chooseTemplate touches copy alone.
@@ -3268,36 +3274,37 @@ export function App() {
       "Your copy edits will be replaced. Your email design and button destination will stay the same."
     )) return;
 
-    setSelectedTemplateByPlay((prev) => ({ ...prev, [playId]: templateId }));
-    setDraftEditsByPlay((prev) => ({ ...prev, [playId]: {} }));
+    setSelectedTemplateByKey((prev) => ({ ...prev, [key]: templateId }));
+    setDraftEditsByKey((prev) => ({ ...prev, [key]: {} }));
     // Switching template resets the edits, so persist both together.
-    saveCampaignState(playId, { templateId, draftEdits: {} });
+    saveCampaignState(key, { templateId, draftEdits: {} });
   }
 
   // Explicit sign-off: move a reviewed campaign to "Ready to send" — once the
   // server has accepted it. Marking it ready first and saving in the background
   // left a refused approval (a conflict) showing as "Ready to send" while the
   // row stayed a draft, and the only sign was a toast that disappeared.
-  async function approveForSend(playId) {
-    const result = await saveCampaignState(playId, { status: "approved" });
+  async function approveForSend(key) {
+    const result = await saveCampaignState(key, { status: "approved" });
     if (!result?.ok) return; // saveCampaignState already said why; stay on this step
-    setApprovedForSend((prev) => (prev.includes(playId) ? prev : [...prev, playId]));
-    setWorkspaceStep("send");
+    setApprovedForSend((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    // Only move the screen if the merchant is still looking at this campaign.
+    if (reviewKeyRef.current === key) setWorkspaceStep("send");
   }
 
   // Send it back to review (edits or a mistaken approval). Same rule: the screen
   // follows what was stored.
-  async function unapproveForSend(playId) {
-    const result = await saveCampaignState(playId, { status: "draft" });
+  async function unapproveForSend(key) {
+    const result = await saveCampaignState(key, { status: "draft" });
     if (!result?.ok) return;
-    setApprovedForSend((prev) => prev.filter((id) => id !== playId));
-    setWorkspaceStep("copy");
+    setApprovedForSend((prev) => prev.filter((id) => id !== key));
+    if (reviewKeyRef.current === key) setWorkspaceStep("copy");
   }
 
-  function updateDraftField(playId, field, value) {
-    setDraftEditsByPlay((prev) => {
-      const next = { ...prev, [playId]: { ...(prev[playId] || {}), [field]: value } };
-      scheduleDraftEditsSave(playId, next[playId]);
+  function updateDraftField(key, field, value) {
+    setDraftEditsByKey((prev) => {
+      const next = { ...prev, [key]: { ...(prev[key] || {}), [field]: value } };
+      scheduleDraftEditsSave(key, next[key]);
       return next;
     });
   }
@@ -3306,15 +3313,15 @@ export function App() {
   // the base (agent copy, else static). Deleting the edit — rather than writing
   // the suggested value as a new edit — keeps the field in the un-Edited state so
   // its badge clears and a later rewrite can regenerate it (adopt #1/#2).
-  function restoreDraftField(playId, play, field) {
-    setDraftEditsByPlay((prev) => {
-      const current = prev[playId];
+  function restoreDraftField(key, play, field) {
+    setDraftEditsByKey((prev) => {
+      const current = prev[key];
       if (!current || !(field in current)) return prev;
       const next = { ...current };
       delete next[field];
       // Whole object, not a delta — a delta cannot express a deleted key.
-      scheduleDraftEditsSave(playId, next);
-      return { ...prev, [playId]: next };
+      scheduleDraftEditsSave(key, next);
+      return { ...prev, [key]: next };
     });
   }
 
@@ -3335,7 +3342,7 @@ export function App() {
 
   // Campaigns needing merchant action: approved in Briefing but not yet sent
   // (in review + ready to send). Was double-counting reviewPendingCount twice.
-  const campaignsBadgeCount = approvedPlays.length - sentCampaigns.length;
+  const campaignsBadgeCount = workspacePlays.length - sentCampaigns.length;
 
   const nav = [
     ["briefing", "Briefing"],
@@ -3563,7 +3570,7 @@ export function App() {
                           key={play.play_id}
                           play={play}
                           selected={selectedBriefingRow?.play.play_id === play.play_id}
-                          approved={approvedPlayIdSet.has(play.play_id || play.id)}
+                          approved={Boolean(briefingKeyByPlay[play.play_id || play.id])}
                           onSelect={setSelectedBriefingPlayId}
                         />
                       ))}
@@ -3584,7 +3591,7 @@ export function App() {
                             key={play.play_id}
                             play={play}
                             selected={selectedBriefingRow?.play.play_id === play.play_id}
-                            approved={approvedPlayIdSet.has(play.play_id || play.id)}
+                            approved={Boolean(briefingKeyByPlay[play.play_id || play.id])}
                             onSelect={setSelectedBriefingPlayId}
                           />
                         ))}
@@ -3643,8 +3650,8 @@ export function App() {
                   play={selectedBriefingRow?.play}
                   onSendToReview={greenlightEnginePlay}
                   onViewEvidence={setSelectedEvidence}
-                  onOpenInCampaigns={(play) => { setReviewPlayId(play.play_id || play.id); setActivePage("campaigns"); }}
-                  approved={selectedBriefingRow ? approvedPlayIdSet.has(selectedBriefingRow.play.play_id || selectedBriefingRow.play.id) : false}
+                  onOpenInCampaigns={openBriefingCampaign}
+                  approved={selectedBriefingRow ? Boolean(briefingKeyByPlay[selectedBriefingRow.play.play_id || selectedBriefingRow.play.id]) : false}
                   showAdvanced={showAdvanced}
                   narrationStatus={atulEngineResult?.presentedRun?.narration_status || null}
                 />
@@ -3677,7 +3684,7 @@ export function App() {
             </details>
           ) : null}
           {activePage === "campaigns" && (
-            approvedPlays.length ? (
+            workspacePlays.length ? (
               <div className="workspace">
                 {/* C1: left rail — every approved play in one grouped list. */}
                 <aside className="workspace-rail">
@@ -3688,12 +3695,16 @@ export function App() {
                         <button
                           key={play.id}
                           className={`rail-row ${reviewPlay?.id === play.id ? "selected" : ""}`}
-                          onClick={() => setReviewPlayId(play.id)}
+                          onClick={() => setReviewKey(play.id)}
                         >
                           <span className={`rail-icon ${g}`}><Icon name={iconForPlay(play)} size={16} /></span>
                           <span className="rail-row-body">
-                            <strong>{play.play_name || play.play_id}</strong>
-                            <small>{formatAudience(play.audience_size)} customers</small>
+                            <strong>{play.play_name || titleizeId(play.play_id)}</strong>
+                            <small>
+                              {formatAudience(play.audience_size)} customers
+                              {/* Two entries can share a play; say which is which. */}
+                              {play.fromEarlierRun ? " · Earlier analysis" : ""}
+                            </small>
                           </span>
                         </button>
                       ))}
@@ -3704,7 +3715,7 @@ export function App() {
                 {/* C2: right pane — single stepper workspace for the selected play. */}
                 <section className="workspace-pane" ref={rightPaneRef}>
                   {reviewPlay ? (() => {
-                    const hasTemplate = Boolean(selectedTemplateByPlay[reviewPlay.id]);
+                    const hasTemplate = Boolean(selectedTemplateByKey[reviewPlay.id]);
                     const isApproved = approvedForSend.includes(reviewPlay.id);
                     const isSent = selectedCampaignGroup === "sent";
                     // Send unlocks only after explicit approval — this is the gate
@@ -3722,15 +3733,15 @@ export function App() {
                     // The name actually sent to the provider, for the
                     // find-by-name fallback. Falls back to the display name only
                     // when no handoff has happened.
-                    const storedName = campaignRowByPlay[reviewPlay.id]?.providerCampaignName
-                      || campaignRowByPlay[reviewPlay.id]?.displayName
+                    const storedName = campaignRowsByKey[reviewPlay.id]?.providerCampaignName
+                      || campaignRowsByKey[reviewPlay.id]?.displayName
                       || selectedCampaign?.playTitle;
                     const publishing = selectedCampaign && publishingCampaignId === selectedCampaign.id;
                     const created = Boolean(selectedCampaign?.klaviyoTemplateId);
                     return (
                       <div className="workspace-card">
                         <div className="workspace-head">
-                          <h3>{reviewPlay.play_name || reviewPlay.play_id}</h3>
+                          <h3>{reviewPlay.play_name || titleizeId(reviewPlay.play_id)}</h3>
                           {reviewPlay.play_one_liner ? <p className="workspace-oneliner">{reviewPlay.play_one_liner}</p> : null}
                           <span className="workspace-audience">{formatAudience(reviewPlay.audience_size)} customers matched</span>
                         </div>
@@ -3771,28 +3782,32 @@ export function App() {
                                 onRefreshBrandContext={loadBrandContext}
                                 onRefreshTemplates={loadKlaviyoTemplates}
                                 klaviyoFailed={klaviyoTemplatesFailed}
-                                agentCopy={agentCopyByPlay[reviewPlay.id] || null}
-                                copyStatus={copyStatusByPlay[reviewPlay.id] || null}
-                                draftEdits={draftEditsByPlay[reviewPlay.id] || {}}
-                                saveState={saveStateByPlay[reviewPlay.id]}
+                                agentCopy={agentCopyByKey[reviewPlay.id] || null}
+                                copyStatus={copyStatusByKey[reviewPlay.id] || null}
+                                draftEdits={draftEditsByKey[reviewPlay.id] || {}}
+                                saveState={saveStateByKey[reviewPlay.id]}
                                 activeBrandTemplateVersion={brandTemplateVersion}
                                 brandDesign={brandDesign}
-                                destinationUrl={destinationByPlay[reviewPlay.id]}
+                                destinationUrl={destinationByKey[reviewPlay.id]}
                                 onChangeDestination={(value) => changeDestination(reviewPlay.id, value)}
                                 onPreviewRendered={(info) => {
-                                  approvedRender.current[reviewPlay.id] = info;
+                                  // Stored on the campaign the render was
+                                  // REQUESTED for (its key leads the record's
+                                  // campaignKey), not whichever is open now.
+                                  const key = String(info.campaignKey || "").split(":")[0] || reviewPlay.id;
+                                  approvedRender.current[key] = info;
                                   // No-op when unchanged. A new object identity
                                   // here is enough to re-render the parent and
                                   // restart the cycle.
-                                  setReviewPreviewHtmlByPlay((prev) => (
-                                    prev[reviewPlay.id] === (info.html || "")
+                                  setReviewPreviewHtmlByKey((prev) => (
+                                    prev[key] === (info.html || "")
                                       ? prev
-                                      : { ...prev, [reviewPlay.id]: info.html || "" }
+                                      : { ...prev, [key]: info.html || "" }
                                   ));
                                 }}
                                 campaignSignature={campaignSignature({
-                                  edits: draftEditsByPlay[reviewPlay.id],
-                                  destinationUrl: destinationByPlay[reviewPlay.id],
+                                  edits: draftEditsByKey[reviewPlay.id],
+                                  destinationUrl: destinationByKey[reviewPlay.id],
                                 })}
                                 onRetrySave={() => retrySave(reviewPlay.id)}
                                 onRewrite={(steer) => fetchCopyForPlay(reviewPlay, selectedTemplate, { regenerate: true, steer })}
@@ -3935,9 +3950,9 @@ export function App() {
                             });
                             const sender = summarizeSender(senderIdentity);
                             const rendered = approvedRender.current[reviewPlay.id] || null;
-                            const storedRow = campaignRowByPlay[reviewPlay.id] || null;
+                            const storedRow = campaignRowsByKey[reviewPlay.id] || null;
                             const frozenHtml = storedRow?.renderedHtml || null;
-                            const previewHtmlForReview = reviewPreviewHtmlByPlay[reviewPlay.id] || null;
+                            const previewHtmlForReview = reviewPreviewHtmlByKey[reviewPlay.id] || null;
                             return (
                               <FinalReviewPanel
                                 campaign={selectedCampaign}
@@ -3946,7 +3961,7 @@ export function App() {
                                 design={brandDesign?.configured
                                   ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
                                   : "not set up yet"}
-                                effectiveDestination={rendered?.effectiveDestinationUrl || destinationByPlay[reviewPlay.id]}
+                                effectiveDestination={rendered?.effectiveDestinationUrl || destinationByKey[reviewPlay.id]}
                                 previewHtml={previewHtmlForReview}
                                 frozenHtml={frozenHtml}
                                 frozenAt={storedRow?.frozenAt
@@ -3982,7 +3997,7 @@ export function App() {
                             // Everything below follows the Ticket D contract, via
                             // one presenter. Local status is not consulted: it is
                             // not evidence that anything happened at Klaviyo.
-                            const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                            const campaignRowId = reviewPlay.id;
                             // undefined = not loaded yet, null = load failed.
                             // Neither is "nothing has happened yet"; treating
                             // them as such showed "Create draft" for a campaign
@@ -4029,7 +4044,7 @@ export function App() {
                         </div>
 
                         {workspaceStep === "send" ? (() => {
-                          const campaignRowId = campaignIdByPlay[reviewPlay.id];
+                          const campaignRowId = reviewPlay.id;
                           const delivery = campaignRowId
                             ? deliveryByCampaignId[campaignRowId]
                             : { state: "not_started" };
@@ -4078,7 +4093,7 @@ export function App() {
               onGoToCampaigns={() => setActivePage("campaigns")}
               playTitleFor={(playId) =>
                 workflowPlays.find((p) => (p.play_id || p.id) === playId)?.play_name
-                || finalCampaigns.find((c) => c.id === playId)?.playTitle
+                || Object.values(campaignRowsByKey).find((c) => c.playId === playId)?.displayName
                 || titleizeId(playId)}
             />
           )}

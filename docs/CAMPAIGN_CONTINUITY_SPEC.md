@@ -47,8 +47,36 @@ Example: a merchant approved a 234-person winback campaign; the new briefing rec
 
 1. **Hydration and open-editor preservation** — reconcile when the authoritative run changes; reject stale responses; never replace an open editor or its pending saves. *(PR: fix/hydration-open-editor)*
    Acceptance: same-tab re-run, cached-briefing reload and a delayed older response all preserve campaign identity and edits.
-2. **Campaign-keyed editing, save, preview and handoff state** — moved together for the active editor (no new state framework). Test: two campaigns sharing a play id; editing one never changes, approves or hands off the other.
-3. **Existing-campaign links and explicit replacement drafts** (rule 2).
+2. **Campaign-keyed editing, save, preview and handoff state** *(PR: fix/campaign-keyed-workspace)*: copy, pending saves, revision, approved render, handoff package and approval all move together, so copy can never belong to one campaign while approval belongs to another. No new screens or state framework.
+   - *Stable identity before editing.* Create or resolve the campaign record before initializing editable state. Never fall back to a play id when the campaign id is missing.
+   - *Async work stays pinned.* Saves, debounce callbacks, preview responses and handoff requests capture their campaign id when they start. Switching editors never redirects an outstanding operation.
+   - *Approval stays version-bound.* The campaign id alone is not enough: approval must still match the saved revision, rendered preview and template version.
+   - *Historical campaigns stay accessible.* Limiting the briefing's Approved badge to the displayed run must not hide or reset approvals on older campaigns.
+   - Step 1's stale-response protections stay. A wrong Approved badge can come from stale hydration (step 1) or from state shared by play id (step 2).
+
+   Tests:
+   - Two campaigns share a play id; editing one never changes, approves or hands off the other.
+   - A save or preview starts for campaign A, the editor switches to B, then A's request resolves.
+   - A's save fails or conflicts; B's save state and handoff eligibility are unaffected.
+   - The handoff uses the selected campaign's origin run and audience.
+   - A reload after a re-run shows the correct badge and draft state.
+3. **Existing-campaign links and explicit replacement drafts** (rule 2). Step 2 fixes identity internally; step 3 makes continuity visible.
+
+   | Existing campaign for this play | Briefing card shows |
+   |---|---|
+   | Draft or approved, not handed off | "You already have a draft" → **Continue draft** |
+   | Created in Klaviyo | Its delivery status → **Open in Klaviyo**, when a provider link exists |
+   | Sent | "Sent Sep 10 · Measuring" → **View results** |
+   | None | The normal create-draft action |
+
+   An existing campaign from an older analysis never makes the new recommendation "Approved". For an older editable draft, **Review latest recommendation**:
+   1. Show the existing draft's analysis date next to the latest recommendation.
+   2. The merchant explicitly chooses **Create updated draft**.
+   3. Create a new campaign tied to the latest run, copying saved text, intentional blanks and destination.
+   4. Require a fresh preview, audience review and approval.
+   5. Only after creation succeeds, mark the old draft superseded and link the two.
+
+   Nothing is copied, superseded or re-approved just because an analysis runs again. Handed-off and sent campaigns stay unchanged. A draft whose play leaves the briefing stays in Campaigns with "Not included in the latest analysis."
 4. **Membership-change summaries and audience-age warnings** (rules 1 and 3); "currently measuring" shown separately from changes caused by the re-run.
 5. **Later:** analysis provenance and reuse — record engine version, effective configuration and the actual date anchor first; unknown provenance means no reuse; failed runs stay retryable ("No changes to analyse; showing your latest briefing").
 

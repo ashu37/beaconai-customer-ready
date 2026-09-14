@@ -1,20 +1,18 @@
 // Keeping the campaign workspace consistent with the briefing on screen.
 //
-// Campaign rows were read once per page load, against whichever run happened to
-// be showing first. A reload painted the cached previous briefing, bound its
-// campaigns, and never re-read them when the server's newer run arrived — so a
-// new briefing showed "Approved" for another run's campaign (2026-09-14). And a
-// same-tab re-run kept the old run's bindings for good.
+// Two identities meet here. A play id names a KIND of recommendation and repeats
+// across analyses; a campaign id names one piece of the merchant's work. The
+// workspace used to key drafts by play, so two campaigns for the same play (an
+// older draft and a newer analysis's) shared one slot: copy, saves, previews and
+// approval could land on the wrong one (2026-09-14). Everything the merchant
+// edits is keyed by campaign id now; the play id is used only to find a play's
+// campaign from the briefing.
 //
-// Two rules live here, both pure so they can be tested without the app:
+// Pure, so the rules can be tested without the app:
 //   1. Which briefing may replace the one on screen (shouldApplyBriefing).
-//   2. How a fresh read of campaign rows is merged into the play-keyed workspace
-//      without disturbing a campaign the merchant is working on (mergeByPlay).
-//
-// The workspace is still keyed by play here. Moving it to campaign ids is the
-// next step; until then, "protected" plays — an open editor, or edits waiting to
-// save — keep every binding they have, so their saves keep going to their own
-// campaign row.
+//   2. How a fresh read of campaign rows is merged into the workspace without
+//      disturbing a campaign the merchant is working on (mergeByKey).
+//   3. Which campaigns the briefing and the Campaigns rail show.
 
 const NARRATION_RANK = { complete: 2, failed: 2, pending: 1 };
 
@@ -53,47 +51,92 @@ export function shouldApplyBriefing(current, incoming) {
   return incoming.analysedAtMs >= current.analysedAtMs;
 }
 
-// The play-keyed maps a campaign read produces for the run on screen. Rows from
-// other runs are listed separately: two runs can share a play id, and merging
-// them by play would show one campaign's state on the other's row.
-export function runMapsFromCampaigns(campaigns = [], runId) {
-  const thisRun = campaigns.filter((c) => c.runId === runId);
-  const live = thisRun.filter((c) => c.status !== "dismissed");
-  const byPlay = (rows, pick) => Object.fromEntries(rows.map((c) => [c.playId, pick(c)]));
+export const campaignKey = (row) => (row?.id == null ? null : String(row.id));
+
+// The workspace maps a campaign read produces, keyed by campaign id, for EVERY
+// run. Keying by campaign is what lets rows from different runs share a play id.
+export function workspaceMapsFromCampaigns(campaigns = []) {
+  const rows = campaigns.filter((c) => c && c.id != null);
+  const byKey = (list, pick) => Object.fromEntries(list.map((c) => [campaignKey(c), pick(c)]));
   return {
-    thisRunPlayIds: thisRun.map((c) => c.playId),
-    livePlayIds: live.map((c) => c.playId),
-    historicalCampaigns: campaigns.filter((c) => c.runId !== runId && c.status !== "dismissed"),
-    campaignIdByPlay: byPlay(thisRun, (c) => c.id),
-    revisionByPlay: byPlay(thisRun, (c) => c.revision),
-    runIdByPlay: byPlay(thisRun, (c) => c.runId),
-    campaignRowByPlay: byPlay(thisRun, (c) => c),
-    destinationByPlay: byPlay(thisRun.filter((c) => c.destinationUrl), (c) => c.destinationUrl),
-    selectedTemplateByPlay: byPlay(live.filter((c) => c.templateId), (c) => c.templateId),
-    draftEditsByPlay: byPlay(live.filter((c) => c.draftEdits), (c) => c.draftEdits),
-    agentCopyByPlay: byPlay(live.filter((c) => c.copy?.copy), (c) => c.copy.copy),
-    approvedPlayIds: live.filter((c) => c.status === "approved" || c.status === "sent").map((c) => c.playId),
-    authorizedPlayIds: live.filter((c) => c.klaviyoCampaignId).map((c) => c.playId),
+    rowsByKey: byKey(rows, (c) => c),
+    selectedTemplateByKey: byKey(rows.filter((c) => c.templateId), (c) => c.templateId),
+    draftEditsByKey: byKey(rows.filter((c) => c.draftEdits), (c) => c.draftEdits),
+    agentCopyByKey: byKey(rows.filter((c) => c.copy?.copy), (c) => c.copy.copy),
+    destinationByKey: byKey(rows.filter((c) => c.destinationUrl), (c) => c.destinationUrl),
+    // Every run's approvals. Only the BRIEFING limits itself to the run on
+    // screen; an older campaign's approval is still that campaign's.
+    approvedKeys: rows.filter((c) => c.status === "approved" || c.status === "sent").map(campaignKey),
   };
 }
 
-// A protected play keeps exactly what it has — including having nothing, so a
-// fresh read cannot attach another run's row to it. Every other play takes the
-// server's answer for the run on screen, and loses entries the server no longer
-// has for that run: that is what clears another run's "Approved".
-export function mergeByPlay(prev = {}, fromServer = {}, protectedPlayIds = new Set()) {
+// A fresh read replaces what the workspace holds, except:
+//   - a PROTECTED campaign (open editor, edits waiting or on the wire) keeps
+//     exactly what it has, including having nothing;
+//   - a campaign the read does not know about keeps its entry. Campaigns are
+//     never deleted, so an unknown key was created after the read left.
+export function mergeByKey(prev = {}, fromServer = {}, { protectedKeys = new Set(), knownKeys = new Set() } = {}) {
   const next = {};
-  for (const [playId, value] of Object.entries(fromServer)) {
-    if (!protectedPlayIds.has(playId)) next[playId] = value;
+  for (const [key, value] of Object.entries(fromServer)) {
+    if (!protectedKeys.has(key)) next[key] = value;
   }
-  for (const playId of protectedPlayIds) {
-    if (Object.prototype.hasOwnProperty.call(prev, playId)) next[playId] = prev[playId];
+  for (const [key, value] of Object.entries(prev)) {
+    if (protectedKeys.has(key) || !knownKeys.has(key)) next[key] = value;
   }
   return next;
 }
 
-export function mergePlayIdList(prev = [], fromServer = [], protectedPlayIds = new Set()) {
-  const kept = prev.filter((playId) => protectedPlayIds.has(playId));
-  const added = fromServer.filter((playId) => !protectedPlayIds.has(playId));
+export function mergeKeyList(prev = [], fromServer = [], { protectedKeys = new Set(), knownKeys = new Set() } = {}) {
+  const kept = prev.filter((key) => protectedKeys.has(key) || !knownKeys.has(key));
+  const added = fromServer.filter((key) => !protectedKeys.has(key));
   return Array.from(new Set([...kept, ...added]));
+}
+
+const isLive = (row) => row && row.status !== "dismissed";
+
+// The briefing's link from a play to the merchant's campaign for it — on the
+// run on screen only. A campaign from an older analysis never makes the new
+// recommendation read as already in Campaigns.
+export function briefingCampaignKeyByPlay(rowsByKey = {}, runId) {
+  const out = {};
+  for (const row of Object.values(rowsByKey)) {
+    if (runId && row.runId === runId && isLive(row)) out[row.playId] = campaignKey(row);
+  }
+  return out;
+}
+
+// Campaigns in the rail: the run on screen's live campaigns, plus whatever the
+// merchant is still holding open (an older draft they reopened or are editing).
+export function railCampaignKeys({ rowsByKey = {}, runId, keep = [] }) {
+  const current = Object.values(rowsByKey).filter((row) => row.runId === runId && isLive(row)).map(campaignKey);
+  return Array.from(new Set([...current, ...keep]));
+}
+
+// Campaigns on other runs, for the "Earlier campaigns" list.
+export function earlierCampaigns(rowsByKey = {}, runId) {
+  return Object.values(rowsByKey).filter((row) => row.runId !== runId && isLive(row));
+}
+
+// The play a workspace entry shows. The campaign supplies identity — its id is
+// the workspace key, its run and play go with every request — and the briefing
+// supplies the play's content only when the campaign belongs to the run on
+// screen. An older campaign is shown from its own record, never from a newer
+// analysis's version of the same play.
+export function workspacePlay(row, briefingPlays = [], runId) {
+  if (!row) return null;
+  const fromBriefing = row.runId === runId
+    ? briefingPlays.find((play) => (play.play_id || play.id) === row.playId)
+    : null;
+  const base = fromBriefing || {
+    play_name: row.displayName || null,
+    audience_size: row.audienceSize ?? null,
+    source: "campaign",
+  };
+  return {
+    ...base,
+    id: campaignKey(row),
+    play_id: row.playId,
+    run_id: row.runId,
+    fromEarlierRun: row.runId !== runId,
+  };
 }

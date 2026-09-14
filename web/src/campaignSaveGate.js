@@ -16,6 +16,7 @@ export const HANDOFF_BLOCKED = {
   never_saved: "This campaign hasn't finished saving. Try again in a moment.",
   no_approved_preview: "Wait for the preview to load, so you can see what would be sent before sending it.",
   preview_moved_on: "This preview is out of date — refresh it and check the email before sending.",
+  design_moved_on: "Your email design changed since this preview. Check the updated preview before sending.",
 };
 
 // A stable string for a draft, so "what is on screen" can be compared with
@@ -48,6 +49,15 @@ export function campaignSignature({ edits, destinationUrl } = {}) {
  * @param {string|null} args.approvedRenderSignature  the draft the ON-SCREEN
  *   preview was rendered from, or null if no preview has succeeded. Handoff
  *   binds to a specific rendering, so there has to BE one.
+ * @param {string|null} args.campaignKey  the campaign being handed off, and
+ * @param {string|null} args.approvedRenderCampaignKey  the campaign that
+ *   rendering was made for. A preview of another campaign — even one with
+ *   identical copy — is not a review of this one.
+ * @param {number|null} args.approvedRenderTemplateVersion  the design version
+ *   the preview used, and
+ * @param {number|null} args.activeTemplateVersion  the design active now.
+ *   Approval binds to revision, rendering AND design; the campaign id alone
+ *   is not enough.
  * @returns {{ok: true, revision: number|undefined} | {ok: false, reason: string, message: string}}
  */
 export function canHandoff({
@@ -58,6 +68,10 @@ export function canHandoff({
   hasCampaignRow = true,
   approvedRenderSignature = null,
   requireApprovedPreview = true,
+  campaignKey = null,
+  approvedRenderCampaignKey = null,
+  approvedRenderTemplateVersion = null,
+  activeTemplateVersion = null,
 }) {
   if (status === "failed") {
     return { ok: false, reason: "save_failed", message: HANDOFF_BLOCKED.save_failed };
@@ -87,8 +101,15 @@ export function canHandoff({
     if (approvedRenderSignature === null || approvedRenderSignature === undefined) {
       return { ok: false, reason: "no_approved_preview", message: HANDOFF_BLOCKED.no_approved_preview };
     }
+    if (campaignKey != null && approvedRenderCampaignKey != null && approvedRenderCampaignKey !== campaignKey) {
+      return { ok: false, reason: "no_approved_preview", message: HANDOFF_BLOCKED.no_approved_preview };
+    }
     if (approvedRenderSignature !== currentSignature) {
       return { ok: false, reason: "preview_moved_on", message: HANDOFF_BLOCKED.preview_moved_on };
+    }
+    if (activeTemplateVersion != null && approvedRenderTemplateVersion != null
+      && Number(approvedRenderTemplateVersion) !== Number(activeTemplateVersion)) {
+      return { ok: false, reason: "design_moved_on", message: HANDOFF_BLOCKED.design_moved_on };
     }
   }
 
