@@ -6,6 +6,7 @@ import { NARRATION_POLL_MS, isNarrationPending, thesisPlaceholder, waitForAnalys
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
+import { briefingOrder, mergeByPlay, mergePlayIdList, runMapsFromCampaigns, shouldApplyBriefing } from "./campaignReconciliation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import { useStoreSync } from "./useStoreSync";
@@ -552,55 +553,6 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
 // P-B: Send is a confirmation, not a workspace. Statement + three summary rows
 // (each with an Edit link back to its step) + a truthful what-happens-next line.
 // The primary action lives in the sticky action bar (P-A3), not here.
-function CampaignSendPanel({ campaign, onEditStep }) {
-  const selected = campaign;
-  if (!selected) {
-    return <div className="empty-panel">No campaign package is ready yet.</div>;
-  }
-
-  return (
-    <div className="send-confirm">
-      <p className="send-statement">
-        Send “{selected.subject}” to {formatAudience(selected.customers)} matched customers through your Klaviyo account.
-      </p>
-
-      <div className="send-summary">
-        <div className="send-summary-row">
-          <div className="send-summary-body">
-            <span className="send-summary-label">Copy</span>
-            <span className="send-summary-value">{selected.subject}</span>
-            <span className="send-summary-meta">{selected.templateName || "Starting copy"}</span>
-          </div>
-          <button type="button" className="link-btn" onClick={() => onEditStep("copy")}>Edit</button>
-        </div>
-
-        <div className="send-summary-row">
-          <div className="send-summary-body">
-            <span className="send-summary-label">Audience</span>
-            <span className="send-summary-value">{selected.segment}</span>
-            <span className="send-summary-meta">Suppressed: recent purchasers, unsubscribes, suppressed profiles</span>
-          </div>
-          <button type="button" className="link-btn" onClick={() => onEditStep("audience")}>Edit</button>
-        </div>
-
-        <div className="send-summary-row">
-          <div className="send-summary-body">
-            <span className="send-summary-label">Delivery</span>
-            <span className="send-summary-value">Created as a draft in Klaviyo for your final approval</span>
-          </div>
-        </div>
-      </div>
-
-      {selected.klaviyoTemplateId ? (
-        <div className="success-box" title={`Template ${selected.klaviyoTemplateId}${selected.klaviyoCampaignId ? ` · Campaign ${selected.klaviyoCampaignId}` : ""}${selected.klaviyoSendJobId ? ` · Send job ${selected.klaviyoSendJobId}` : ""}`}>
-          Created in Klaviyo — “{selected.templateName || "your campaign"}” is waiting as a draft.
-          {selected.klaviyoAudience ? ` List matched ${formatAudience(selected.klaviyoAudience.count)} recipients.` : ""}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 // CA-4: the "Suggested" value for a field = what the AGENT wrote (agentCopy),
 // falling back to the static template_prompt when no agent copy exists. This is
 // the anchor for the Edited badge (#2: a field with a badge = merchant changed it
@@ -1985,7 +1937,12 @@ export function App() {
   const [sparseInterstitialDismissed, setSparseInterstitialDismissed] = useState(false);
   const [restoredApprovedPlayIds, setRestoredApprovedPlayIds] = useState([]);
   const firstRunStartedRef = useRef(false);
-  const pipelineHydratedRef = useRef(false);
+  // Which run the campaign workspace was last reconciled against, and a counter
+  // that lets a slow campaign read notice it has been overtaken.
+  const hydratedRunRef = useRef(null);
+  const hydrationSeqRef = useRef(0);
+  // The briefing on screen, for ordering a later one against it.
+  const appliedBriefingRef = useRef(null);
   // playId -> campaigns.id, so a mutation can patch the row it already has.
   const [campaignIdByPlay, setCampaignIdByPlay] = useState({});
   const [resultsData, setResultsData] = useState(null);
@@ -1994,6 +1951,13 @@ export function App() {
 
   const counts = sync?.synced || {};
   const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
+  // Read inside async callbacks, which otherwise see the render they started in.
+  const currentRunIdRef = useRef(currentRunId);
+  currentRunIdRef.current = currentRunId;
+  const activePageRef = useRef(activePage);
+  activePageRef.current = activePage;
+  const reviewPlayIdRef = useRef(reviewPlayId);
+  reviewPlayIdRef.current = reviewPlayId;
   // O3 fix: persist first-run completion per shop so a page refresh does not
   // re-trigger a full Shopify sync (which surfaced a false "sync hit a problem").
   const firstRunDoneKey = shopDomain ? `beaconai:${shopDomain}:first-run-complete` : null;
@@ -2250,78 +2214,88 @@ export function App() {
     window.history.replaceState({}, "", url.toString());
   }, [activePage, openResultId]);
 
-  // Rehydrate pipeline state from the database once the run is known.
+  // Reconcile the campaign workspace with the run on screen — every time that run
+  // changes, not once per page load.
   //
-  // This used to read a localStorage blob keyed on the run id, which meant every
-  // new engine run discarded every approval, copy edit and send state — and none
-  // of it existed outside the one browser that made it. Campaign rows outlive the
-  // run, so the same work is here on any device.
+  // It ran once, behind a ref, against whichever run was painted first. A reload
+  // painted the cached previous briefing, bound that run's campaigns, and never
+  // re-read them when the server's newer run replaced it: the new briefing showed
+  // "Approved" for another run's campaign. A same-tab re-run kept the old
+  // bindings the same way (2026-09-14).
+  //
+  // Campaign rows come from EVERY run, so earlier work stays reachable. Rows for
+  // the run on screen drive the workspace; the rest are listed as history.
+  //
+  // A play the merchant is working on is left exactly as it is: the open editor,
+  // and any play with an edit waiting to save or on the wire. Its campaign id,
+  // revision, run and content stay bound, so a refreshed briefing can appear
+  // while the editor — and every pending save — stays attached to its original
+  // campaign.
   useEffect(() => {
-    if (!shopDomain || !currentRunId || pipelineHydratedRef.current) return;
-    pipelineHydratedRef.current = true;
+    if (!shopDomain || !currentRunId || hydratedRunRef.current === currentRunId) return;
+    hydratedRunRef.current = currentRunId;
+    const seq = ++hydrationSeqRef.current;
+    const requestedRunId = currentRunId;
 
-    let cancelled = false;
     (async () => {
       try {
-        // EVERY campaign, across every run — not just the current one. Scoping
-        // this to currentRunId meant a campaign from a previous run existed in
-        // the database but had no way into the merchant's workflow: the moment a
-        // new engine run landed, last month's drafts and sends vanished from the
-        // UI. The rows always survived; the route to them did not.
         const { campaigns = [] } = await api.listCampaigns();
-        if (cancelled) return;
+        // Overtaken by a newer run while this read was in flight: its answer is
+        // for a briefing no longer on screen.
+        if (seq !== hydrationSeqRef.current || currentRunIdRef.current !== requestedRunId) return;
 
-        // The current slate's campaigns drive the workspace, which is keyed by
-        // play. Everything older is listed separately rather than merged in:
-        // two runs can carry the same play_id, and collapsing them by play would
-        // silently show one campaign's state on another's row.
-        const thisRun = campaigns.filter((c) => c.runId === currentRunId);
-        const earlier = campaigns.filter((c) => c.runId !== currentRunId && c.status !== "dismissed");
-        setHistoricalCampaigns(earlier);
+        const protectedPlayIds = new Set([
+          ...Object.keys(editSaveTimers.current),
+          ...Object.keys(pendingEdits.current),
+          ...Object.keys(inFlightSaves.current),
+          ...(activePageRef.current === "campaigns" && reviewPlayIdRef.current ? [reviewPlayIdRef.current] : []),
+        ]);
+        const maps = runMapsFromCampaigns(campaigns, requestedRunId);
+        const merge = (fromServer) => (prev) => mergeByPlay(prev, fromServer, protectedPlayIds);
 
-        // `dismissed` is a play the merchant pulled back out. The row stays (it
-        // records that they considered it) but it is not in the pipeline.
-        const live = thisRun.filter((c) => c.status !== "dismissed");
+        setHistoricalCampaigns(maps.historicalCampaigns);
+        setCampaignIdByPlay(merge(maps.campaignIdByPlay));
+        setRevisionByPlay(merge(maps.revisionByPlay));
+        setRunIdByPlay(merge(maps.runIdByPlay));
+        // The stored rows carry the frozen handoff snapshot; the workspace's own
+        // campaign objects are built from the slate and know nothing of a send.
+        setCampaignRowByPlay(merge(maps.campaignRowByPlay));
+        setDestinationByPlay(merge(maps.destinationByPlay));
+        setSelectedTemplateByPlay(merge(maps.selectedTemplateByPlay));
+        setDraftEditsByPlay(merge(maps.draftEditsByPlay));
+        setAgentCopyByPlay(merge(maps.agentCopyByPlay));
+        setSaveStateByPlay(merge({}));
+        // A render or audience preview belongs to the campaign it was made for.
+        setReviewPreviewHtmlByPlay(merge({}));
+        setAudiencePreviewsByCampaign(merge({}));
+        setApprovedForSend((prev) => mergePlayIdList(prev, maps.approvedPlayIds, protectedPlayIds));
+        setAuthorizedPackageIds((prev) => mergePlayIdList(prev, maps.authorizedPlayIds, protectedPlayIds));
 
-        setCampaignIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.id])));
-        setRevisionByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.revision])));
-        setRunIdByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c.runId])));
-        // The stored rows, which carry the frozen handoff snapshot. The
-        // workspace's own campaign objects are built from today's slate and
-        // have no record of what was actually sent.
-        setCampaignRowByPlay(Object.fromEntries(thisRun.map((c) => [c.playId, c])));
-        setDestinationByPlay(Object.fromEntries(
-          thisRun.filter((c) => c.destinationUrl).map((c) => [c.playId, c.destinationUrl])
-        ));
-        for (const c of thisRun) {
-          latestRevision.current[c.playId] = c.revision;
-          savedSignatureRef.current[c.playId] = campaignSignature({
-            edits: c.draftEdits, destinationUrl: c.destinationUrl,
+        // Refs read by the save and handoff paths, reconciled the same way.
+        for (const store of [latestRevision.current, savedSignatureRef.current, saveStatusRef.current, approvedRender.current]) {
+          for (const playId of Object.keys(store)) {
+            if (!protectedPlayIds.has(playId)) delete store[playId];
+          }
+        }
+        for (const row of campaigns.filter((c) => c.runId === requestedRunId && !protectedPlayIds.has(c.playId))) {
+          latestRevision.current[row.playId] = row.revision;
+          savedSignatureRef.current[row.playId] = campaignSignature({
+            edits: row.draftEdits, destinationUrl: row.destinationUrl,
           });
-          saveStatusRef.current[c.playId] = "saved";
+          saveStatusRef.current[row.playId] = "saved";
         }
-        setRestoredApprovedPlayIds(live.map((c) => c.playId));
-        setApprovedForSend(live.filter((c) => c.status === "approved" || c.status === "sent").map((c) => c.playId));
-        setAuthorizedPackageIds(live.filter((c) => c.klaviyoCampaignId).map((c) => c.playId));
 
-        const templates = {};
-        const edits = {};
-        const agentCopy = {};
-        for (const c of live) {
-          if (c.templateId) templates[c.playId] = c.templateId;
-          if (c.draftEdits) edits[c.playId] = c.draftEdits;
-          if (c.copy?.copy) agentCopy[c.playId] = c.copy.copy;
-        }
-        setSelectedTemplateByPlay(templates);
-        setDraftEditsByPlay(edits);
-        setAgentCopyByPlay(agentCopy);
+        // The pipeline rail: keep what the merchant is working on, drop entries
+        // belonging to another run, and restore this run's live campaigns.
+        const live = new Set(maps.livePlayIds);
+        setCampaignPackages((prev) => prev.filter((item) => protectedPlayIds.has(item.id) || live.has(item.id)));
+        setRestoredApprovedPlayIds(maps.livePlayIds.filter((playId) => !protectedPlayIds.has(playId)));
       } catch (_) {
-        // A hydration failure must not block the briefing; the merchant can
-        // re-approve, and the next mutation re-establishes the row.
+        // A read failure must not block the briefing. Let the next run change —
+        // or the next load of this one — try again.
+        if (seq === hydrationSeqRef.current) hydratedRunRef.current = null;
       }
     })();
-
-    return () => { cancelled = true; };
   }, [shopDomain, currentRunId]);
 
   // O4: once workflow plays are loaded, rebuild campaign packages for restored approved ids.
@@ -2779,10 +2753,24 @@ export function App() {
     return storeSync.run(syncStatus?.latest?.syncRunId);
   }
 
+  // Put a briefing on screen — if it may replace what is there. A cached copy never
+  // overwrites a server answer, and a slow response for an older run never
+  // overwrites a newer one (see campaignReconciliation.js). Returns whether it was
+  // applied.
+  function showBriefing(presentedRun, { authoritative }) {
+    const incoming = briefingOrder(presentedRun, { authoritative });
+    if (!shouldApplyBriefing(appliedBriefingRef.current, incoming)) return false;
+    appliedBriefingRef.current = incoming;
+    setAtulEngineResult({ presentedRun });
+    return true;
+  }
+
   // Shared result-handling path for both a fresh engine run and O1 rehydration.
-  function applyEngineResult(result) {
-    setAtulEngineResult(result);
-    if (!initialCampaignParam.current) setActivePage("briefing");
+  // `navigate`: a run that finishes while the merchant is on another page updates
+  // the briefing without pulling them away from what they are doing.
+  function applyEngineResult(result, { navigate = true } = {}) {
+    if (!showBriefing(result?.presentedRun, { authoritative: true })) return;
+    if (navigate && !initialCampaignParam.current) setActivePage("briefing");
     // Cache the presented run (incl. embedded narration) so a BROWSER refresh
     // repaints the briefing instantly from localStorage — independent of the
     // server /latest round-trip (which can miss on store_id mismatch or an
@@ -2801,7 +2789,7 @@ export function App() {
     setRefreshingBriefing(true);
     try {
       const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => startAndAwaitAnalysis(useFixture));
-      applyEngineResult(result);
+      applyEngineResult(result, { navigate: activePageRef.current === "briefing" });
       await loadSyncStatus();
       return result;
     } finally {
@@ -2842,7 +2830,7 @@ export function App() {
       try {
         const latest = await api.getLatestEngineRun();
         if (cancelled || !latest?.found) return;
-        setAtulEngineResult({ presentedRun: latest.presentedRun });
+        showBriefing(latest.presentedRun, { authoritative: true });
         if (latest.presentedRun?.recommendations?.length && briefingCacheKey) {
           try {
             localStorage.setItem(briefingCacheKey, JSON.stringify({ presentedRun: latest.presentedRun }));
@@ -2874,8 +2862,7 @@ export function App() {
       const cachedRaw = briefingCacheKey && localStorage.getItem(briefingCacheKey);
       if (cachedRaw) {
         const cached = JSON.parse(cachedRaw);
-        if (cached?.presentedRun?.recommendations?.length) {
-          setAtulEngineResult({ presentedRun: cached.presentedRun });
+        if (cached?.presentedRun?.recommendations?.length && showBriefing(cached.presentedRun, { authoritative: false })) {
           if (!initialCampaignParam.current) setActivePage("briefing");
           setLatestRunFound(true);
           hadCache = true;
@@ -2924,6 +2911,8 @@ export function App() {
     setSync(null);
     setEngineInput(null);
     setAtulEngineResult(null);
+    appliedBriefingRef.current = null;
+    hydratedRunRef.current = null;
     setCampaignPackages([]);
     setSelectedTemplateByPlay({});
     if (!next) {
