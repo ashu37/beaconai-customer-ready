@@ -111,6 +111,7 @@ suite("every data route refuses an anonymous caller", async () => {
     `/engine/input/${shop}`,
     `/stats/series/${shop}`,
     `/engine/atul/latest/${shop}`,
+    `/engine/atul/jobs/latest/${shop}`,
     `/campaigns/${shop}`,
     `/results/${shop}`,
     "/campaigns/1/delivery",
@@ -199,6 +200,7 @@ suite("no route spends another shop's stored credentials", async () => {
     `/engine/input/${theirs}`,
     `/stats/series/${theirs}`,
     `/engine/atul/latest/${theirs}`,
+    `/engine/atul/jobs/latest/${theirs}`,
     `/campaigns/${theirs}`,
     `/results/${theirs}`,
   ];

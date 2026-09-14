@@ -46,7 +46,7 @@ async function startApi() {
       // so existing tests keep meaning what they meant.
       const inferred = decodeURIComponent(
         path.match(/[?&]shopDomain=([^&]+)/)?.[1]
-        || path.match(/\/(?:campaigns|results|sync\/status|engine\/input|stats\/series|engine\/atul\/latest)\/([^/?]+)/)?.[1]
+        || path.match(/\/(?:campaigns|results|sync\/status|engine\/input|stats\/series|engine\/atul\/jobs\/latest|engine\/atul\/latest)\/([^/?]+)/)?.[1]
         || ""
       ) || null;
       const response = await fetch(`${base}${path}`, { headers: authHeaders(session, inferred) });

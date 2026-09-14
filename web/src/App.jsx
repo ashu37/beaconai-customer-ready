@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature, reviewNeedsRender } from "./campaignSaveGate";
+import { ANALYSIS_GIVE_UP_MS, ANALYSIS_POLL_MS, NARRATION_POLL_MS, analysisOutcome, isNarrationPending, thesisPlaceholder } from "./analysisJob";
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
@@ -328,7 +329,7 @@ function EvidenceChips({ play, omitRevenue = false }) {
   );
 }
 
-function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false }) {
+function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false, narrationStatus = null }) {
   const [activeTab, setActiveTab] = useState("thesis");
 
   if (!play) {
@@ -409,6 +410,14 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
               <div className="detail-copy-block">
                 <div className="section-kicker">Play thesis</div>
                 <p>{narration.play_thesis}</p>
+              </div>
+            ) : thesisPlaceholder(narrationStatus) ? (
+              // The run is in; its explanations land about a minute later. Saying
+              // so beats a briefing that silently has no prose.
+              <div className="detail-copy-block">
+                <div className="section-kicker">Play thesis</div>
+                <p className="muted" role="status">{thesisPlaceholder(narrationStatus)}</p>
+                <EvidenceChips play={play} omitRevenue={Boolean(revenue)} />
               </div>
             ) : (
               <div className="detail-copy-block">
@@ -2775,7 +2784,7 @@ export function App() {
   async function runAtulEngine(useFixture = false) {
     setRefreshingBriefing(true);
     try {
-      const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => api.runAtulEngine(useFixture));
+      const result = await runStep(useFixture ? "Sample briefing refresh" : "Briefing refresh", () => startAndAwaitAnalysis(useFixture));
       applyEngineResult(result);
       await loadSyncStatus();
       return result;
@@ -2783,6 +2792,65 @@ export function App() {
       setRefreshingBriefing(false);
     }
   }
+
+  // An analysis runs in the background on the server. Start it (or join the one
+  // already running for this store), wait for the job to settle, then read the
+  // finished briefing the same way a page load does.
+  async function startAndAwaitAnalysis(useFixture) {
+    let startedJobId = null;
+    try {
+      const started = await api.runAtulEngine(useFixture);
+      startedJobId = started?.job?.id ?? null;
+    } catch (err) {
+      // Another tab or click already started one. Wait for that instead of
+      // reporting an error or starting a second run.
+      if (err.code !== "analysis_in_progress") throw err;
+    }
+
+    const giveUpAt = Date.now() + ANALYSIS_GIVE_UP_MS;
+    for (;;) {
+      const { job } = await api.getLatestAnalysisJob();
+      const outcome = analysisOutcome(job, startedJobId);
+      if (outcome.state === "failed") throw new Error(outcome.message);
+      if (outcome.state === "complete") break;
+      if (Date.now() > giveUpAt) {
+        throw new Error("The analysis is taking longer than usual. It will keep running; reload this page in a few minutes.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, ANALYSIS_POLL_MS));
+    }
+
+    const latest = await api.getLatestEngineRun();
+    if (!latest?.found) throw new Error("The analysis finished, but its briefing couldn't be loaded. Reload the page.");
+    return { presentedRun: latest.presentedRun };
+  }
+
+  // While a run's explanations are still being written, check back until they
+  // land, then swap them in place. Deliberately not applyEngineResult: that
+  // navigates to the briefing, and this can finish while the merchant is on
+  // another page.
+  useEffect(() => {
+    const presentedRun = atulEngineResult?.presentedRun;
+    if (!isNarrationPending(presentedRun)) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const latest = await api.getLatestEngineRun();
+        if (cancelled || !latest?.found) return;
+        setAtulEngineResult({ presentedRun: latest.presentedRun });
+        if (latest.presentedRun?.recommendations?.length && briefingCacheKey) {
+          try {
+            localStorage.setItem(briefingCacheKey, JSON.stringify({ presentedRun: latest.presentedRun }));
+          } catch (_) { /* best-effort */ }
+        }
+      } catch (_) {
+        // A missed check is not an error the merchant needs; the next render
+        // with a pending run schedules another.
+        if (!cancelled) setAtulEngineResult((prev) => (prev ? { ...prev } : prev));
+      }
+    }, NARRATION_POLL_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atulEngineResult]);
 
   // O1: read-only rehydration of the latest run on mount. Never triggers an engine run.
   // Stale-while-revalidate: paint the cached briefing immediately (survives refresh
@@ -3583,6 +3651,7 @@ export function App() {
                   onOpenInCampaigns={(play) => { setReviewPlayId(play.play_id || play.id); setActivePage("campaigns"); }}
                   approved={selectedBriefingRow ? approvedPlayIdSet.has(selectedBriefingRow.play.play_id || selectedBriefingRow.play.id) : false}
                   showAdvanced={showAdvanced}
+                  narrationStatus={atulEngineResult?.presentedRun?.narration_status || null}
                 />
                 </>)}
               </div>

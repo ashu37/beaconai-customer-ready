@@ -2,6 +2,7 @@ const { spawn } = require("child_process");
 const fs = require("fs/promises");
 const os = require("os");
 const path = require("path");
+const { config } = require("../config");
 const { pool, query } = require("../db");
 const { buildEngineInputSnapshot, snapshotToCsv } = require("./engineInputSnapshot");
 
@@ -28,11 +29,22 @@ function defaultPythonPath(engineDir) {
   return path.join(engineDir, ".venv", "bin", "python");
 }
 
-function runProcess(command, args, options) {
+// `timeoutMs` is a hard deadline: the child is killed and the promise rejects
+// with code "ETIMEDOUT". Without one, a stuck engine or a slow model call held
+// its request, and the store's single analysis slot, indefinitely.
+function runProcess(command, args, options = {}) {
+  const { timeoutMs, label = "Atul engine", ...spawnOptions } = options;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, options);
+    const child = spawn(command, args, spawnOptions);
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+      }, timeoutMs)
+      : null;
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -40,11 +52,23 @@ function runProcess(command, args, options) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        const error = new Error(`${label} did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped.`);
+        error.code = "ETIMEDOUT";
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
       if (code === 0) resolve({ stdout, stderr });
       else {
-        const error = new Error(`Atul engine exited with code ${code}`);
+        const error = new Error(`${label} exited with code ${code}`);
         error.code = code;
         error.stdout = stdout;
         error.stderr = stderr;
@@ -177,8 +201,8 @@ async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, ma
     await client.query(
       `INSERT INTO clean.engine_run_snapshots
          (run_id, shop_domain, store_id, schema_version, engine_run, manifest,
-          sync_run_id, input_provenance)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          sync_run_id, input_provenance, narration_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
        ON CONFLICT (run_id) DO NOTHING`,
       [
         runId,
@@ -255,7 +279,7 @@ async function runAtulEngine(input, options = {}) {
     await runProcess(
       pythonPath,
       ["-m", "src.main", "--orders", ordersCsv, "--brand", brand, "--out", outDir],
-      { cwd: engineDir, env }
+      { cwd: engineDir, env, timeoutMs: options.timeoutMs ?? config.engineTimeoutMs, label: "The analysis" }
     );
 
     // The engine's canonical output lives under engine/data/<store_id>/runs/,
@@ -300,6 +324,22 @@ async function runAtulEngine(input, options = {}) {
 // Reads Postgres, not the filesystem — the engine's output directory does not
 // survive a container restart, and it was keyed on a store id derived from the
 // brand, which does not always match the shop domain we look up by.
+// What the briefing may say about a run's prose.
+//   complete — narration is stored.
+//   pending  — the narration pass is still inside its deadline.
+//   failed   — it failed, or was left 'pending' by a process that died: a pending
+//              row older than the narration deadline (plus the engine's own) will
+//              never be written, and saying "still writing" forever is a lie.
+//   null     — a run from before narration status existed.
+function narrationStatusOf(row, now = Date.now()) {
+  if (row.narration) return "complete";
+  const status = row.narration_status || null;
+  if (status !== "pending") return status;
+  const createdAt = row.created_at ? new Date(row.created_at).getTime() : now;
+  const staleAfterMs = config.narrationTimeoutMs + 60 * 1000;
+  return now - createdAt > staleAfterMs ? "failed" : "pending";
+}
+
 function rowToRun(row) {
   return {
     runId: row.run_id,
@@ -307,6 +347,7 @@ function rowToRun(row) {
     engineRun: row.engine_run,
     manifest: row.manifest,
     narration: row.narration,
+    narrationStatus: narrationStatusOf(row),
     syncRunId: row.sync_run_id,
     inputProvenance: row.input_provenance || (row.sync_run_id == null ? "legacy_unverified" : "verified"),
     // When the analysis ran — distinct from when the store was last synced.
@@ -317,7 +358,7 @@ function rowToRun(row) {
 
 // The shop's currency rides along: the engine's dollar figures are in the
 // store's own currency, and the presenter no longer assumes USD.
-const RUN_SELECT = `SELECT r.run_id, r.store_id, r.engine_run, r.manifest, r.narration, r.sync_run_id,
+const RUN_SELECT = `SELECT r.run_id, r.store_id, r.engine_run, r.manifest, r.narration, r.narration_status, r.sync_run_id,
                            r.input_provenance, r.created_at, s.currency
                       FROM clean.engine_run_snapshots r
                       LEFT JOIN clean.shop s ON s.shop_domain = r.shop_domain`;
@@ -339,10 +380,21 @@ async function readRunById({ shopDomain, runId } = {}) {
   return rows.length ? rowToRun(rows[0]) : null;
 }
 
+async function markNarration(runId, status) {
+  await query(
+    `UPDATE clean.engine_run_snapshots SET narration_status = $2 WHERE run_id = $1 AND narration IS NULL`,
+    [runId, status]
+  ).catch(() => {});
+}
+
 async function narrateAtulRun(result, options = {}) {
   const manifestPath = result?.artifacts?.manifestPath;
   const runId = result?.runId || result?.engineRun?.run_id || result?.manifest?.run_id;
-  if (!manifestPath || !runId) return null;
+  if (!manifestPath || !runId) {
+    // Nothing to narrate from. Say so, rather than leaving the run 'pending'.
+    if (runId) await markNarration(runId, "failed");
+    return null;
+  }
 
   const engineDir = path.resolve(options.engineDir || process.env.BEACONAI_ENGINE_DIR || defaultEngineDir());
   const pythonPath = process.env.BEACONAI_ENGINE_PYTHON || defaultPythonPath(engineDir);
@@ -361,8 +413,17 @@ with contextlib.redirect_stdout(buf):
 print(json.dumps(payload))
 `;
 
-  const output = await runProcess(pythonPath, ["-c", code], { cwd: engineDir, env: process.env });
-  const narration = JSON.parse(output.stdout);
+  let narration;
+  try {
+    const output = await runProcess(pythonPath, ["-c", code], {
+      cwd: engineDir, env: process.env,
+      timeoutMs: options.timeoutMs ?? config.narrationTimeoutMs, label: "Writing the explanations",
+    });
+    narration = JSON.parse(output.stdout);
+  } catch (error) {
+    await markNarration(runId, "failed");
+    throw error;
+  }
 
   // Narration is a pure function of the run's typed atoms, so it is immutable
   // per run. Store it on the run's own row and serve that copy on every
@@ -370,9 +431,11 @@ print(json.dumps(payload))
   // run (new run_id → new row) re-narrates.
   if (narration && !narration.error) {
     await query(
-      `UPDATE clean.engine_run_snapshots SET narration = $2 WHERE run_id = $1`,
+      `UPDATE clean.engine_run_snapshots SET narration = $2, narration_status = 'complete' WHERE run_id = $1`,
       [runId, JSON.stringify(narration)]
     );
+  } else {
+    await markNarration(runId, "failed");
   }
 
   return narration;
@@ -380,6 +443,8 @@ print(json.dumps(payload))
 
 module.exports = {
   narrateAtulRun,
+  narrationStatusOf,
+  runProcess,
   readLatestRun,
   readRunById,
   runAtulEngine,
