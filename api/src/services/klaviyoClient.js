@@ -2,6 +2,16 @@ const axios = require("axios");
 const { config } = require("../config");
 const { query } = require("../db");
 
+// Klaviyo takes two kinds of credential and a different scheme for each. A
+// private API key (always "pk_...") goes as `Klaviyo-API-Key`; an OAuth access
+// token goes as `Bearer`. Sending an OAuth token under the private-key scheme is
+// refused with 401 "Missing or invalid private key" — which is how every
+// OAuth-connected store failed until this distinguished them.
+function authorizationFor(credential) {
+  const value = String(credential);
+  return value.startsWith("pk_") ? `Klaviyo-API-Key ${value}` : `Bearer ${value}`;
+}
+
 function createKlaviyoClient(privateKey) {
   if (!privateKey) {
     throw new Error("Klaviyo private key is required");
@@ -11,7 +21,7 @@ function createKlaviyoClient(privateKey) {
     baseURL: config.klaviyo.apiBaseUrl,
     timeout: 30000,
     headers: {
-      Authorization: `Klaviyo-API-Key ${privateKey}`,
+      Authorization: authorizationFor(privateKey),
       accept: "application/json",
       "content-type": "application/json",
       revision: config.klaviyo.revision,
@@ -532,6 +542,7 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 
 module.exports = {
   PROVIDER_STAGES,
+  authorizationFor,
   // Exported so the handoff route can RECORD the exact name it is about to send.
   // Re-deriving it later from a stored campaign row produced a different string,
   // and reconciliation then searched for a campaign that never existed.
