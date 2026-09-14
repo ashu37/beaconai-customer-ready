@@ -19,12 +19,13 @@ const SHOP = "pkce-shop.myshopify.com";
 // Klaviyo's token endpoint, close enough to answer the two requests this flow
 // makes and to record exactly what was sent. What the exchange carries is the
 // whole point of PKCE, so a test that replaced this function could not see it.
-async function startFakeTokenEndpoint({ status = 200, body = null } = {}) {
+async function startFakeTokenEndpoint({ status = 200, body = null, delayMs = 0 } = {}) {
   const requests = [];
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => { raw += chunk; });
-    req.on("end", () => {
+    req.on("end", async () => {
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
       requests.push({
         path: req.url,
         authorization: req.headers.authorization,
@@ -161,6 +162,34 @@ suite("a refresh renews the token and sends no verifier", async () => {
       `Basic ${Buffer.from("test-client-id:test-client-secret").toString("base64")}`
     );
     assert.equal(token, "access-2", "the caller gets the renewed token");
+  } finally {
+    await fake.close();
+  }
+});
+
+suite("simultaneous requests with an expired token share one refresh", async () => {
+  await db.resetDatabase();
+  // Klaviyo rotates refresh tokens: a second refresh with the old one is refused.
+  // A slow token endpoint, so all three requests see the expired token before
+  // the first refresh lands — the race a page load actually produces.
+  const fake = await startFakeTokenEndpoint({ delayMs: 400 });
+  try {
+    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null });
+    await handleKlaviyoCallback({ state: stateFrom(url), code: "auth-code" });
+    await query(
+      `UPDATE clean.connections SET klaviyo_expires_at = NOW() - INTERVAL '1 minute' WHERE shop_domain = $1`,
+      [SHOP]
+    );
+
+    // A page load: sender, templates and lists all at once.
+    const tokens = await Promise.all([
+      resolveStoredKlaviyoToken(SHOP),
+      resolveStoredKlaviyoToken(SHOP),
+      resolveStoredKlaviyoToken(SHOP),
+    ]);
+    const refreshes = fake.requests.filter((r) => r.form.grant_type === "refresh_token");
+    assert.equal(refreshes.length, 1, "one refresh, not one per request");
+    assert.deepEqual(tokens, ["access-2", "access-2", "access-2"], "every caller gets the renewed token");
   } finally {
     await fake.close();
   }

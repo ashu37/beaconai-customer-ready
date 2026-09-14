@@ -47,7 +47,20 @@ async function request(path, options = {}) {
   });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      // Not our API's JSON — typically the hosting proxy's HTML error page while
+      // the instance is busy or waking. Say that, rather than surfacing a parser
+      // error ("Unexpected token '<'") the merchant cannot act on.
+      const error = new Error(`The server didn't respond properly (status ${response.status}). Try again in a moment.`);
+      error.status = response.status;
+      error.transient = true;
+      throw error;
+    }
+  }
 
   if (!response.ok || data?.ok === false) {
     const detail = data?.error || data || response.statusText;

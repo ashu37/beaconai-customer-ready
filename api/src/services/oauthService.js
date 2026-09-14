@@ -328,6 +328,52 @@ async function resolveStoredShopifyToken(shopDomain) {
   return ownsGlobalCredentials(shopDomain) ? config.shopify.accessToken : null;
 }
 
+// One refresh per store at a time. A page load fires several Klaviyo-backed
+// requests together; with an expired token each used to refresh on its own, all
+// presenting the same refresh token. Klaviyo rotates refresh tokens, so every
+// refresh after the first could be refused and those requests failed ("Check in
+// Klaviyo", "Couldn't reach Klaviyo") until a later call picked up the stored
+// winner. Concurrent callers now share the one refresh in flight. In-process only:
+// the pilot runs a single instance.
+const klaviyoRefreshInFlight = new Map();
+
+async function refreshKlaviyoToken(shopDomain, refreshToken) {
+  const form = new URLSearchParams();
+  // No verifier here: PKCE binds one authorization code to one browser
+  // exchange. A refresh is this server talking to Klaviyo with its own
+  // client credentials, and Klaviyo's refresh request takes only the grant
+  // type and the refresh token.
+  form.set("grant_type", "refresh_token");
+  form.set("refresh_token", refreshToken);
+  const basic = Buffer.from(`${config.klaviyo.clientId}:${config.klaviyo.clientSecret}`).toString("base64");
+  const response = await axios.post(config.klaviyo.tokenUrl, form.toString(), {
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+      revision: config.klaviyo.revision,
+    },
+    timeout: 30000,
+  });
+  const nextAccessToken = response.data.access_token;
+  if (!nextAccessToken) return null;
+  const expiresIn = Number(response.data.expires_in || 3600);
+  await query(
+    `UPDATE clean.connections
+     SET klaviyo_access_token = $2,
+       klaviyo_refresh_token = COALESCE($3, klaviyo_refresh_token),
+       klaviyo_expires_at = NOW() + ($4 || ' seconds')::INTERVAL,
+       updated_at = NOW()
+     WHERE shop_domain = $1`,
+    [
+      shopDomain,
+      encryptToken(nextAccessToken),
+      response.data.refresh_token ? encryptToken(response.data.refresh_token) : null,
+      Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600,
+    ],
+  );
+  return nextAccessToken;
+}
+
 async function resolveStoredKlaviyoToken(shopDomain) {
   const row = await getConnection(shopDomain);
   if (row?.klaviyo_access_token) {
@@ -335,40 +381,14 @@ async function resolveStoredKlaviyoToken(shopDomain) {
     const refreshToken = decryptToken(row.klaviyo_refresh_token);
     const shouldRefresh = refreshToken && expiresAt && expiresAt < Date.now() + 120000;
     if (shouldRefresh) {
-      const form = new URLSearchParams();
-      // No verifier here: PKCE binds one authorization code to one browser
-      // exchange. A refresh is this server talking to Klaviyo with its own
-      // client credentials, and Klaviyo's refresh request takes only the grant
-      // type and the refresh token.
-      form.set("grant_type", "refresh_token");
-      form.set("refresh_token", refreshToken);
-      const basic = Buffer.from(`${config.klaviyo.clientId}:${config.klaviyo.clientSecret}`).toString("base64");
-      const response = await axios.post(config.klaviyo.tokenUrl, form.toString(), {
-        headers: {
-          Authorization: `Basic ${basic}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-          revision: config.klaviyo.revision,
-        },
-      });
-      const nextAccessToken = response.data.access_token;
-      if (nextAccessToken) {
-        const expiresIn = Number(response.data.expires_in || 3600);
-        await query(
-          `UPDATE clean.connections
-           SET klaviyo_access_token = $2,
-             klaviyo_refresh_token = COALESCE($3, klaviyo_refresh_token),
-             klaviyo_expires_at = NOW() + ($4 || ' seconds')::INTERVAL,
-             updated_at = NOW()
-           WHERE shop_domain = $1`,
-          [
-            shopDomain,
-            encryptToken(nextAccessToken),
-            response.data.refresh_token ? encryptToken(response.data.refresh_token) : null,
-            Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600,
-          ],
-        );
-        return nextAccessToken;
+      let pending = klaviyoRefreshInFlight.get(shopDomain);
+      if (!pending) {
+        pending = refreshKlaviyoToken(shopDomain, refreshToken)
+          .finally(() => klaviyoRefreshInFlight.delete(shopDomain));
+        klaviyoRefreshInFlight.set(shopDomain, pending);
       }
+      const nextAccessToken = await pending;
+      if (nextAccessToken) return nextAccessToken;
     }
     return decryptToken(row.klaviyo_access_token);
   }
