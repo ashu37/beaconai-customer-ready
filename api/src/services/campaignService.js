@@ -599,15 +599,21 @@ class ReplacementRefused extends Error {
   }
 }
 
+// Whether anything was ever handed off from this row: reserved, frozen, created
+// in the provider, or past a proven pre-creation failure. Status alone does not
+// say — a campaign can be dismissed after it was handed off.
+function neverHandedOff(row) {
+  return !row.frozen_at
+    && !row.handoff_reserved_at
+    && !row.klaviyo_campaign_id
+    && ["not_started", "failed"].includes(row.delivery_state || "not_started");
+}
+
 // A campaign that has left BeaconAI's hands — reserved, frozen, created in the
 // provider or sent — is never replaced: a briefing refresh must not rewrite the
 // record of something that exists outside this app.
 function isEditableForReplacement(row) {
-  return !row.frozen_at
-    && !row.handoff_reserved_at
-    && !row.klaviyo_campaign_id
-    && ["not_started", "failed"].includes(row.delivery_state || "not_started")
-    && ["draft", "approved", "failed"].includes(row.status);
+  return neverHandedOff(row) && ["draft", "approved", "failed"].includes(row.status);
 }
 
 // Create an updated draft on a newer run from an older draft, explicitly and
@@ -666,9 +672,18 @@ async function createReplacementDraft({ shopDomain, campaignId, runId, expectedR
         "The latest analysis already has a campaign for this play.",
         rowToCampaign(onNewRun)
       );
+    } else if (onNewRun && !neverHandedOff(onNewRun)) {
+      // Dismissed does not mean untouched. A dismissed campaign that was
+      // reserved, frozen or created in the provider keeps its record; reusing it
+      // would overwrite what was handed off. Checked on the row locked above.
+      throw new ReplacementRefused(
+        "campaign_exists",
+        "The latest analysis already has a campaign for this play that was handed off, so it can't be reused.",
+        rowToCampaign(onNewRun)
+      );
     } else if (onNewRun) {
-      // A dismissed row for this play on the new run holds the unique slot.
-      // Nothing was handed off from it (dismissed), so it takes the content.
+      // A dismissed row for this play on the new run holds the unique slot, and
+      // (checked above) nothing was ever handed off from it, so it takes the content.
       ({ rows: [replacement] } = await client.query(
         `UPDATE clean.campaigns
             SET status = 'draft', template_id = $2, copy = $3, draft_edits = $4, destination_url = $5,

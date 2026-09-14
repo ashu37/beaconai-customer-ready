@@ -107,6 +107,9 @@ test("a campaign's stage: editable draft, handed off to Klaviyo, or sent", () =>
   assert.equal(campaignStage({ status: "approved", frozen: true }), "in_klaviyo");
   assert.equal(campaignStage({ status: "approved", deliveryState: "uncertain" }), "in_klaviyo", "an unconfirmed creation is never treated as editable");
   assert.equal(campaignStage({ status: "approved", deliveryState: "sent", providerSentAt: "2026-09-10T12:00:00Z" }), "sent");
+  // A scheduled campaign carries its scheduled time in providerSentAt. It has not been sent.
+  assert.equal(campaignStage({ status: "approved", frozen: true, deliveryState: "scheduled", providerSentAt: "2026-09-20T12:00:00Z" }), "in_klaviyo");
+  assert.equal(campaignStage({ status: "approved", frozen: true, deliveryState: "awaiting_send", providerSentAt: "2026-09-10T12:00:00Z" }), "in_klaviyo");
 });
 
 test("the briefing card's existing campaign: this run's first, then the most actionable earlier one", () => {

@@ -182,3 +182,39 @@ suite("another shop cannot replace this shop's campaign", async () => {
   assert.equal(response.status, 404);
   assert.equal((await getCampaign(old.id)).supersededById, null);
 });
+
+// A dismissed campaign on the new analysis can still have been handed off first.
+// Dismissed says nothing about that; reusing its slot would overwrite the record
+// of what went to the provider.
+suite("a dismissed campaign that was handed off is never reused as the replacement", async () => {
+  const lockedStates = [
+    ["frozen", `frozen_at = NOW()`],
+    ["reserved", `handoff_reserved_at = NOW()`],
+    ["created in the provider", `klaviyo_campaign_id = 'K9', delivery_state = 'created'`],
+    ["scheduled", `delivery_state = 'scheduled'`],
+  ];
+  for (const [label, setClause] of lockedStates) {
+    await db.resetDatabase();
+    await seedRun("run-old");
+    await seedRun("run-new");
+    const old = await olderDraft();
+    const target = await upsertCampaign({
+      shopDomain: SHOP, runId: "run-new", playId: PLAY, status: "draft",
+      draftEdits: { subject: "What was handed off" },
+    });
+    await query(`UPDATE clean.campaigns SET status = 'dismissed', ${setClause} WHERE id = $1`, [target.id]);
+    const before = await getCampaign(target.id);
+
+    const response = await api.post(`/campaigns/${old.id}/replacement`, {
+      shopDomain: SHOP, runId: "run-new", expectedRevision: old.revision,
+    });
+    assert.equal(response.status, 409, `${label}: ${JSON.stringify(response.body)}`);
+    assert.equal(response.body.code, "campaign_exists", label);
+
+    const after = await getCampaign(target.id);
+    assert.deepEqual(after.draftEdits, { subject: "What was handed off" }, `${label}: its content is untouched`);
+    assert.equal(after.revision, before.revision, `${label}: not written at all`);
+    assert.equal(after.supersedesId, null, label);
+    assert.equal((await getCampaign(old.id)).supersededById, null, `${label}: the source draft is not superseded`);
+  }
+});

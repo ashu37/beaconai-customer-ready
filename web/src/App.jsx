@@ -607,7 +607,8 @@ function RecommendationDetail({
             </div>
           ) : existing?.kind === "sent" ? (
             // Warn, don't block: a new campaign is allowed, but only explicitly,
-            // with the earlier send in view (rule 4).
+            // with the earlier send in view (rule 4). Reached only for a
+            // delivery state of `sent`, so the timestamp here is a send time.
             <div className="existing-campaign" role="group" aria-label="Your sent campaign">
               <p className="approve-note">
                 <strong>

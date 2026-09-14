@@ -99,9 +99,14 @@ export const isSuperseded = (row) => Boolean(row?.supersededById);
 //   draft      — still in BeaconAI (draft or approved), editable
 //   in_klaviyo — handed off: reserved, frozen or created in the provider
 //   sent       — the provider confirmed the send
+//
+// Sent is decided by the durable delivery state ALONE. providerSentAt is not
+// evidence: a scheduled campaign carries its scheduled time there, and reading
+// it as a send showed "Sent · Measuring" and offered a duplicate campaign for
+// one that had not gone out.
 export function campaignStage(row) {
   if (!row) return null;
-  if (row.deliveryState === "sent" || row.providerSentAt) return "sent";
+  if (row.deliveryState === "sent") return "sent";
   const delivery = row.deliveryState || "not_started";
   if (row.klaviyoCampaignId || row.frozen || row.frozenAt || row.handoffReservedAt
     || row.status === "sent" || !["not_started", "failed"].includes(delivery)) return "in_klaviyo";

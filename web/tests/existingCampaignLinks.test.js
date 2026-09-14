@@ -239,6 +239,21 @@ test("a campaign in Klaviyo shows its status and link, with no way to duplicate 
   assert.equal(railRows().length, 0, "a handed-off campaign is listed under Earlier campaigns, not reopened as work");
 });
 
+test("a scheduled campaign with a scheduled time is shown as in Klaviyo, never as sent", async () => {
+  // Klaviyo reports the SCHEDULED time where a sent campaign has its send time.
+  const scheduledFor = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+  rows = [olderWinbackDraft({ status: "approved", frozen: true, klaviyoCampaignId: "K1", deliveryState: "scheduled", providerSentAt: scheduledFor })];
+  delivery = { 1: { state: "scheduled", providerCampaignUrl: "https://www.klaviyo.com/campaign/K1/edit", providerSentAt: scheduledFor } };
+  await mount();
+  await settle(300);
+
+  assert.doesNotMatch(detail(), /Sent|Measuring/, "not presented as sent");
+  assert.match(detail(), /Scheduled in Klaviyo · from your Sep 10 analysis/);
+  assert.ok(!button((t) => t === "Start a new campaign"), "no duplicate offered for a campaign that has not gone out");
+  assert.ok(!button((t) => t === "View results"));
+  assert.ok([...document.querySelectorAll(".recommendation-detail a")].some((a) => /Open in Klaviyo/.test(a.textContent)));
+});
+
 test("a sent campaign shows when it went out, links to results, and allows only an explicit new campaign", async () => {
   const sentAt = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
   rows = [olderWinbackDraft({ status: "approved", frozen: true, klaviyoCampaignId: "K1", deliveryState: "sent", providerSentAt: sentAt })];
