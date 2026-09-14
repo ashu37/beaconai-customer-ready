@@ -152,3 +152,25 @@ test("the final review renders the email when a reload left it unrendered", asyn
     "the design was re-approved since"
   );
 });
+
+test("approval binds to the campaign and design it was previewed with, not just matching copy", () => {
+  const sig = campaignSignature({ edits: { subject: "Same words" }, destinationUrl: "https://a.test/" });
+  const base = { status: "saved", currentSignature: sig, savedSignature: sig, savedRevision: 3, approvedRenderSignature: sig };
+
+  // Campaign 4's preview has identical copy to campaign 1's — it still isn't a review of campaign 1.
+  const otherCampaign = gate.canHandoff({ ...base, campaignKey: "1", approvedRenderCampaignKey: "4" });
+  assert.equal(otherCampaign.ok, false);
+  assert.equal(otherCampaign.reason, "no_approved_preview");
+
+  const designMoved = gate.canHandoff({
+    ...base, campaignKey: "1", approvedRenderCampaignKey: "1", approvedRenderTemplateVersion: 2, activeTemplateVersion: 3,
+  });
+  assert.equal(designMoved.ok, false);
+  assert.equal(designMoved.reason, "design_moved_on");
+
+  const ok = gate.canHandoff({
+    ...base, campaignKey: "1", approvedRenderCampaignKey: "1", approvedRenderTemplateVersion: 3, activeTemplateVersion: 3,
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.revision, 3);
+});

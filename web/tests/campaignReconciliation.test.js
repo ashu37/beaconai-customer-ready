@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  briefingOrder, mergeByPlay, mergePlayIdList, runMapsFromCampaigns, shouldApplyBriefing,
+  briefingCampaignKeyByPlay, briefingOrder, earlierCampaigns, mergeByKey, mergeKeyList,
+  railCampaignKeys, shouldApplyBriefing, workspaceMapsFromCampaigns, workspacePlay,
 } from "../src/campaignReconciliation.js";
 
 const run = (runId, generatedAt, narration) => ({ run_id: runId, generated_at: generatedAt, narration_status: narration });
@@ -31,34 +32,62 @@ test("the same run updates in place, but never back to a pending narration", () 
 });
 
 const rows = [
-  { id: 1, runId: "run-a", playId: "winback", status: "approved", revision: 4, templateId: "tpl", draftEdits: { subject: "Old run" }, klaviyoCampaignId: null },
+  { id: 1, runId: "run-a", playId: "winback", status: "approved", revision: 4, templateId: "tpl", draftEdits: { subject: "Old run" }, displayName: "Winback", audienceSize: 234 },
   { id: 2, runId: "run-b", playId: "discount", status: "draft", revision: 1, templateId: "tpl-d", draftEdits: null },
   { id: 3, runId: "run-b", playId: "journey", status: "dismissed", revision: 2 },
+  { id: 4, runId: "run-b", playId: "winback", status: "draft", revision: 1, draftEdits: { subject: "New run" } },
 ];
 
-test("a campaign read binds only the run on screen; other runs are history", () => {
-  const maps = runMapsFromCampaigns(rows, "run-b");
-  assert.deepEqual(maps.campaignIdByPlay, { discount: 2, journey: 3 });
-  assert.deepEqual(maps.livePlayIds, ["discount"], "dismissed is not in the pipeline");
-  assert.deepEqual(maps.approvedPlayIds, [], "run-a's approval does not belong to run-b");
-  assert.deepEqual(maps.historicalCampaigns.map((c) => c.id), [1]);
+test("campaigns are keyed by campaign id, so two runs' campaigns for one play stay apart", () => {
+  const maps = workspaceMapsFromCampaigns(rows);
+  assert.deepEqual(maps.draftEditsByKey, { 1: { subject: "Old run" }, 4: { subject: "New run" } });
+  assert.deepEqual(maps.approvedKeys, ["1"], "run-a's approval stays on run-a's campaign");
 });
 
-test("a new briefing clears another run's bindings but keeps a protected play exactly as it is", () => {
-  const prev = { winback: 1, discount: 99 };
-  const fromServer = runMapsFromCampaigns(rows, "run-b").campaignIdByPlay;
+test("the briefing links a play only to the run on screen's live campaign", () => {
+  const { rowsByKey } = workspaceMapsFromCampaigns(rows);
+  assert.deepEqual(briefingCampaignKeyByPlay(rowsByKey, "run-b"), { discount: "2", winback: "4" });
+  assert.deepEqual(briefingCampaignKeyByPlay(rowsByKey, "run-c"), {}, "an older campaign never marks a newer recommendation");
+  assert.deepEqual(earlierCampaigns(rowsByKey, "run-b").map((c) => c.id), [1], "older work stays listed");
+});
 
-  // Nobody is editing: winback's run-a binding goes, discount takes run-b's row.
-  assert.deepEqual(mergeByPlay(prev, fromServer, new Set()), { discount: 2, journey: 3 });
+test("the rail lists this run's live campaigns plus what the merchant holds open", () => {
+  const { rowsByKey } = workspaceMapsFromCampaigns(rows);
+  assert.deepEqual(railCampaignKeys({ rowsByKey, runId: "run-b" }), ["2", "4"]);
+  assert.deepEqual(railCampaignKeys({ rowsByKey, runId: "run-b", keep: ["1"] }), ["2", "4", "1"], "both winback campaigns, side by side");
+});
 
-  // The merchant has winback open with edits waiting: it stays on campaign 1.
-  assert.deepEqual(mergeByPlay(prev, fromServer, new Set(["winback"])), { winback: 1, discount: 2, journey: 3 });
+test("a fresh read replaces unprotected campaigns and leaves protected or newer ones alone", () => {
+  const knownKeys = new Set(["1", "2"]);
+  const prev = { 1: { subject: "typing" }, 2: { subject: "stale" }, 9: { subject: "created after the read" } };
+  const fromServer = { 1: { subject: "server" }, 2: { subject: "server" } };
 
-  // A protected play with no binding stays unbound — never handed another run's row.
-  assert.deepEqual(mergeByPlay({}, { winback: 7 }, new Set(["winback"])), {});
+  assert.deepEqual(mergeByKey(prev, fromServer, { knownKeys }), { 1: { subject: "server" }, 2: { subject: "server" }, 9: { subject: "created after the read" } });
+  assert.deepEqual(
+    mergeByKey(prev, fromServer, { protectedKeys: new Set(["1"]), knownKeys }),
+    { 1: { subject: "typing" }, 2: { subject: "server" }, 9: { subject: "created after the read" } },
+  );
+  // A protected campaign with nothing stays with nothing.
+  assert.deepEqual(mergeByKey({}, { 1: "x" }, { protectedKeys: new Set(["1"]), knownKeys }), {});
 });
 
 test("approval lists follow the same rule", () => {
-  assert.deepEqual(mergePlayIdList(["winback", "discount"], ["journey"], new Set()), ["journey"]);
-  assert.deepEqual(mergePlayIdList(["winback", "discount"], ["journey"], new Set(["winback"])), ["winback", "journey"]);
+  const knownKeys = new Set(["1", "2", "3"]);
+  assert.deepEqual(mergeKeyList(["1", "2"], ["3"], { knownKeys }), ["3"]);
+  assert.deepEqual(mergeKeyList(["1", "2"], ["3"], { protectedKeys: new Set(["1"]), knownKeys }), ["1", "3"]);
+});
+
+test("a workspace entry takes its identity from the campaign and content only from its own run", () => {
+  const briefing = [{ id: "winback", play_id: "winback", play_name: "Bring back lapsed customers", audience_size: 238 }];
+  const current = workspacePlay(rows[3], briefing, "run-b");
+  assert.equal(current.id, "4");
+  assert.equal(current.run_id, "run-b");
+  assert.equal(current.audience_size, 238);
+  assert.equal(current.fromEarlierRun, false);
+
+  const older = workspacePlay(rows[0], briefing, "run-b");
+  assert.equal(older.id, "1");
+  assert.equal(older.run_id, "run-a");
+  assert.equal(older.audience_size, 234, "its own audience, not the newer analysis's");
+  assert.equal(older.fromEarlierRun, true);
 });

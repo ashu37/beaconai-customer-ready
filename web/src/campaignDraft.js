@@ -33,9 +33,14 @@ export function buildCampaignFromSelection(play, template, edits = {}, agentCopy
   // template_prompt > neutral placeholder. Merchant edits always layer on top.
   const agentFields = agentCopyToDraftFields(agentCopy);
   const draft = {
-    // Key by play id (1:1 with its selected template). A composite id broke every
-    // downstream lookup (grouping, audience preview, klaviyo assets) that keys by play.id.
+    // The workspace key: the campaign id when the play comes from a campaign
+    // (workspacePlay), so two campaigns for the same play never share a draft.
     id: play.id,
+    // What the server resolves the audience from. Sent explicitly: without the
+    // run, the audience preview used the LATEST analysis's audience for an
+    // older campaign.
+    play_id: play.play_id || play.id,
+    run_id: play.run_id || null,
     playTitle: play.play_name || play.play_id,
     templateName: template.name,
     templateSource: template.source,
@@ -60,7 +65,7 @@ export function buildCampaignFromSelection(play, template, edits = {}, agentCopy
   };
   return {
     ...draft, ...edits,
-    id: draft.id, playTitle: draft.playTitle, templateName: draft.templateName,
+    id: draft.id, play_id: draft.play_id, run_id: draft.run_id, playTitle: draft.playTitle, templateName: draft.templateName,
     templateSource: draft.templateSource, status: draft.status,
     destinationUrl: draft.destinationUrl,
   };
