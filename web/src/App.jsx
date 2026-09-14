@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature, reviewNeedsRender } from "./campaignSaveGate";
-import { ANALYSIS_GIVE_UP_MS, ANALYSIS_POLL_MS, NARRATION_POLL_MS, analysisOutcome, isNarrationPending, thesisPlaceholder } from "./analysisJob";
+import { NARRATION_POLL_MS, isNarrationPending, thesisPlaceholder, waitForAnalysis, withRetries } from "./analysisJob";
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
@@ -2594,8 +2594,24 @@ export function App() {
     previewCampaignAudience(draft).catch(() => {
       audienceRequestedRef.current = ""; // allow retry via the button
     });
+    // `selectedCampaign?.id`: after a reload the step is restored before the
+    // campaign's draft exists, so the first pass finds nothing to load. Without
+    // re-running when the draft appears, the final step stayed on "Audience not
+    // loaded yet" (2026-09-14).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceStep, reviewPlayId]);
+  }, [workspaceStep, reviewPlayId, selectedCampaign?.id]);
+
+  // The sender is read once at page load. If that read failed — a Klaviyo token
+  // refresh racing other requests, a slow instance — the final review showed
+  // "Check in Klaviyo" for a sender that exists. Read it again on the step that
+  // shows it.
+  const senderRetriedRef = useRef(false);
+  useEffect(() => {
+    if (workspaceStep !== "send" || senderIdentity || senderRetriedRef.current) return;
+    senderRetriedRef.current = true;
+    loadSenderIdentity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceStep, senderIdentity]);
 
   // The final step renders the email itself when nothing on screen is a render
   // of the email as it stands — the case after a reload, where the Edit step
@@ -2807,19 +2823,9 @@ export function App() {
       if (err.code !== "analysis_in_progress") throw err;
     }
 
-    const giveUpAt = Date.now() + ANALYSIS_GIVE_UP_MS;
-    for (;;) {
-      const { job } = await api.getLatestAnalysisJob();
-      const outcome = analysisOutcome(job, startedJobId);
-      if (outcome.state === "failed") throw new Error(outcome.message);
-      if (outcome.state === "complete") break;
-      if (Date.now() > giveUpAt) {
-        throw new Error("The analysis is taking longer than usual. It will keep running; reload this page in a few minutes.");
-      }
-      await new Promise((resolve) => setTimeout(resolve, ANALYSIS_POLL_MS));
-    }
+    await waitForAnalysis({ getJob: () => api.getLatestAnalysisJob(), startedJobId });
 
-    const latest = await api.getLatestEngineRun();
+    const latest = await withRetries(() => api.getLatestEngineRun());
     if (!latest?.found) throw new Error("The analysis finished, but its briefing couldn't be loaded. Reload the page.");
     return { presentedRun: latest.presentedRun };
   }

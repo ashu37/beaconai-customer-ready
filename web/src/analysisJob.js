@@ -35,3 +35,49 @@ export function thesisPlaceholder(narrationStatus) {
     ? "Writing the explanation for this play. It usually takes about a minute."
     : null;
 }
+
+// Waits for the store's analysis job to settle. A failed poll is not a failed
+// analysis: on the small hosting instance the proxy can answer with an HTML
+// error page while the engine has the CPU, and one such response used to end
+// the wait with "Unexpected token '<'" although the run finished fine
+// (2026-09-14). Polling failures are ridden out until the give-up deadline;
+// only a job the server reports as failed ends the wait early.
+export async function waitForAnalysis({
+  getJob,
+  startedJobId = null,
+  pollMs = ANALYSIS_POLL_MS,
+  giveUpMs = ANALYSIS_GIVE_UP_MS,
+  now = () => Date.now(),
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
+  const giveUpAt = now() + giveUpMs;
+  for (;;) {
+    let outcome = { state: "running" };
+    try {
+      const response = await getJob();
+      outcome = analysisOutcome(response?.job, startedJobId);
+    } catch (_) {
+      // Transient: keep waiting.
+    }
+    if (outcome.state === "failed") throw new Error(outcome.message);
+    if (outcome.state === "complete") return outcome;
+    if (now() > giveUpAt) {
+      throw new Error("The analysis is taking longer than usual. It will keep running; reload this page in a few minutes.");
+    }
+    await sleep(pollMs);
+  }
+}
+
+// A read that may meet the same transient failure, retried a few times.
+export async function withRetries(fn, { attempts = 4, delayMs = 3000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  let lastError;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (i < attempts - 1) await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
