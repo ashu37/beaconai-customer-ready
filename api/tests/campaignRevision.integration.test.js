@@ -352,6 +352,47 @@ suite("regenerated copy does not rewrite a sent campaign", async () => {
   assert.deepEqual(after.copy, { subject: "Original" });
 });
 
+suite("caching generated copy does not move the revision a merchant's save quotes", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const { cacheCopyOnCampaign } = require("../src/services/campaignService");
+  const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, templateId: "tpl-a" });
+
+  // The editor generates copy after the row exists — this is every fresh campaign.
+  const cached = await cacheCopyOnCampaign({
+    shopDomain: SHOP, runId: "run-1", playId: PLAY, templateId: "tpl-a",
+    copy: { copy: { subject: "Generated" } },
+  });
+  assert.equal(cached, true);
+  const afterCache = await getCampaign(created.id);
+  assert.equal(afterCache.revision, created.revision, "a cache write is not an edit");
+  assert.deepEqual(afterCache.copy, { copy: { subject: "Generated" } });
+
+  // So the approval the browser sends with the revision it already holds lands.
+  const approved = await updateCampaign(created.id, { status: "approved", expectedRevision: created.revision });
+  assert.equal(approved.status, "approved");
+});
+
+suite("caching generated copy never overrides the merchant's template choice", async () => {
+  await db.resetDatabase();
+  await seedRun("run-1");
+  const { cacheCopyOnCampaign } = require("../src/services/campaignService");
+
+  // No template yet: the cache may fill it.
+  const blank = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
+  await cacheCopyOnCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, templateId: "tpl-a", copy: { copy: { subject: "A" } } });
+  assert.equal((await getCampaign(blank.id)).templateId, "tpl-a");
+
+  // The merchant switches to tpl-b. Copy that arrives late for tpl-a is not theirs.
+  const switched = await updateCampaign(blank.id, { templateId: "tpl-b", expectedRevision: (await getCampaign(blank.id)).revision });
+  const stale = await cacheCopyOnCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY, templateId: "tpl-a", copy: { copy: { subject: "late A" } } });
+  assert.equal(stale, false, "late copy for another template is not cached");
+  const after = await getCampaign(blank.id);
+  assert.equal(after.templateId, "tpl-b");
+  assert.deepEqual(after.copy, { copy: { subject: "A" } });
+  assert.equal(after.revision, switched.revision);
+});
+
 suite("a second handoff of the same campaign is refused", async () => {
   await db.resetDatabase();
   await seedRun("run-1");

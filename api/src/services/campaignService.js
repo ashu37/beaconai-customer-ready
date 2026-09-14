@@ -483,15 +483,26 @@ async function releaseHandoffReservation(id) {
 // and generating copy must not smuggle a play in there as a side effect. When no
 // row exists the copy simply isn't cached — the same fail-soft behavior as
 // before it was cached at all.
+//
+// A cache write is not an edit, so it does NOT move `revision`. The revision is
+// what a merchant's save quotes to prove it has seen the latest row; bumping it
+// here, without the browser ever learning the new number, made the first
+// approval on every fresh campaign fail as "changed elsewhere" (found on the
+// deployed app, 2026-09-14). What the merchant approved stays bound by the
+// render fingerprint at handoff, which refuses if the email bytes moved.
+//
+// Nor does it override the merchant's template choice: it fills a template only
+// where none is set, and caches nothing for a row that has since switched to a
+// different template — that copy belongs to the other template.
 async function cacheCopyOnCampaign({ shopDomain, runId, playId, templateId, copy }) {
   const { rowCount } = await query(
     `UPDATE clean.campaigns
-        SET copy = $5, template_id = COALESCE($4, template_id),
-            revision = revision + 1, updated_at = NOW()
+        SET copy = $5, template_id = COALESCE(template_id, $4), updated_at = NOW()
       WHERE shop_domain = $1 AND run_id = $2 AND play_id = $3
         -- A frozen campaign describes an email that has already gone out.
         -- Regenerating copy must not rewrite it; the cache miss is harmless.
-        AND frozen_at IS NULL`,
+        AND frozen_at IS NULL
+        AND (template_id IS NULL OR $4::text IS NULL OR template_id = $4::text)`,
     [shopDomain, runId, playId, templateId || null, JSON.stringify(copy)]
   );
   return rowCount > 0;
