@@ -87,6 +87,8 @@ export const api = {
   // whether a new analysis is allowed to run.
   syncStatus: () => request(`/sync/status/${encodeURIComponent(shopDomain)}`, { signal: globalThis.AbortSignal.timeout(10000) }),
   runAtulEngine: (useFixture = false) => request("/engine/atul/run", { method: "POST", body: JSON.stringify({ shopDomain, useFixture }) }),
+  // Starting an analysis returns a job at once; this is what the page polls.
+  getLatestAnalysisJob: () => request(`/engine/atul/jobs/latest/${encodeURIComponent(shopDomain)}`),
   getLatestEngineRun: () => request(`/engine/atul/latest/${encodeURIComponent(shopDomain)}`),
   getKlaviyoTemplates: () => request(`/klaviyo/templates?shopDomain=${encodeURIComponent(shopDomain)}`),
   // Campaign state. Replaces the run-scoped localStorage blob: approvals, copy

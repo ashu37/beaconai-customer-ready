@@ -42,6 +42,26 @@ async function initSchema() {
   // secret at rest, even though these rows expire in 15 minutes.
   await query(`ALTER TABLE clean.oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;`);
 
+  // One analysis per store at a time, enforced by the database rather than by
+  // process memory: the partial unique index admits a single 'running' row per
+  // shop, so a double click, a second tab or a second instance cannot start an
+  // overlapping run. Overlapping runs on one small instance slowed each other
+  // down and one lost its narration (2026-09-11).
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.analysis_jobs (
+      id SERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'complete', 'failed')),
+      use_fixture BOOLEAN NOT NULL DEFAULT FALSE,
+      run_id TEXT,
+      error TEXT,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ
+    );
+  `);
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS analysis_jobs_one_running
+    ON clean.analysis_jobs (shop_domain) WHERE status = 'running';`);
+
   await query(`
     CREATE TABLE IF NOT EXISTS raw.shopify_events (
       id SERIAL PRIMARY KEY,
@@ -195,6 +215,10 @@ async function initSchema() {
     CREATE INDEX IF NOT EXISTS engine_run_snapshots_latest
       ON clean.engine_run_snapshots (shop_domain, created_at DESC);
   `);
+
+  // Narration lands after the run row exists. 'pending' lets the briefing say
+  // the explanation is still being written instead of showing none at all.
+  await query(`ALTER TABLE clean.engine_run_snapshots ADD COLUMN IF NOT EXISTS narration_status TEXT;`);
 
   // Membership is stored whole, as the engine materialized it. An array rather
   // than a row per customer: a 100k audience is ~1.2MB here vs ~100k rows, and

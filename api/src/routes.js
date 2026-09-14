@@ -9,6 +9,7 @@ const {
   getWeeklySeries,
 } = require("./services/shopifyRepository");
 const { narrateAtulRun, readLatestRun, readRunById, runAtulEngine } = require("./services/atulEngineService");
+const { AnalysisInProgress, getLatestAnalysisJob, startAnalysisJob } = require("./services/analysisJobService");
 const { presentEngineRun } = require("./services/engineRunPresenter");
 
 // What the presenter needs from the stored run row: when the analysis ran, and
@@ -788,6 +789,8 @@ router.post("/engine/atul/run", async (req, res) => {
     // The gate lives here, not on a disabled button. A fixture run is exempt
     // because it reads none of the merchant's data — it is labelled `fixture`
     // on the run row so it can never be mistaken for their briefing.
+    // Checked BEFORE a job is recorded, so "sync first" comes back at once
+    // rather than as a failed background job.
     let snapshot = null;
     let syncRunId = null;
     if (!useFixture) {
@@ -803,44 +806,52 @@ router.post("/engine/atul/run", async (req, res) => {
       syncRunId = active.syncRunId;
     }
 
-    // getEngineInput still supplies brand/product context; the ORDERS the
-    // engine reads come from `snapshot`.
-    const input = await getEngineInput(shopDomain);
-    const result = await runAtulEngine(input, { shopDomain, useFixture, snapshot, syncRunId });
-    let narration = null;
-    try {
-      narration = await narrateAtulRun(result);
-    } catch (narrationError) {
-      narration = {
-        error: narrationError.message,
-      };
-    }
-    const presentedRun = presentEngineRun(result.engineRun, result.manifest, narration, {
-      analysedAt: new Date().toISOString(),
-      currency: input?.shop?.currency || null,
+    // Runs in the background: engine, then narration, each under a deadline.
+    // The page polls GET /engine/atul/jobs/latest and then reads the finished
+    // run from /engine/atul/latest. Narration failing does not fail the job —
+    // the run is still valid, and its status says the prose is unavailable.
+    const job = await startAnalysisJob({
+      shopDomain,
+      useFixture,
+      execute: async () => {
+        // getEngineInput still supplies brand/product context; the ORDERS the
+        // engine reads come from `snapshot`.
+        const input = await getEngineInput(shopDomain);
+        const result = await runAtulEngine(input, { shopDomain, useFixture, snapshot, syncRunId });
+        try {
+          await narrateAtulRun(result);
+        } catch (narrationError) {
+          console.error(`[analysis] narration for run ${result.runId} failed:`, narrationError.message);
+        }
+        return result.runId;
+      },
     });
 
-    res.json({
-      ok: true,
-      shopDomain,
-      engineRun: result.engineRun,
-      presentedRun,
-      narration,
-      manifest: result.manifest,
-      syncRunId: result.syncRunId,
-      inputProvenance: result.inputProvenance,
-    });
+    res.status(202).json({ ok: true, accepted: true, shopDomain, job });
   } catch (error) {
     if (error instanceof SyncNotReadyError) {
       res.status(409).json({ ok: false, error: error.message, readiness: error.readiness });
       return;
     }
-    res.status(500).json({
-      ok: false,
-      error: error.message,
-      stdout: error.stdout,
-      stderr: error.stderr,
-    });
+    if (error instanceof AnalysisInProgress) {
+      // Not a failure: the page joins the run already under way.
+      res.status(409).json({ ok: false, code: "analysis_in_progress", error: error.message, job: error.job });
+      return;
+    }
+    // Engine output stays in the server log, not the response.
+    console.error("[analysis] could not start:", error.message);
+    res.status(500).json({ ok: false, error: "The analysis couldn't be started. Try again." });
+  }
+});
+
+// The store's most recent analysis job, for the page to poll.
+router.get("/engine/atul/jobs/latest/:shopDomain", async (req, res) => {
+  try {
+    const shopDomain = authorizedShop(req, res, req.params.shopDomain);
+    if (!shopDomain) return;
+    res.json({ ok: true, job: await getLatestAnalysisJob(shopDomain) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
@@ -858,6 +869,9 @@ router.get("/engine/atul/latest/:shopDomain", async (req, res) => {
     // on refresh — same run → same prose. null when a run predates persistence,
     // in which case the presenter renders data chips (no templated prose).
     const presentedRun = presentEngineRun(latest.engineRun, latest.manifest, latest.narration || null, presenterOptions(latest));
+    // 'pending' while the explanations are still being written, so the page can
+    // say so and check back instead of showing a briefing with no prose.
+    presentedRun.narration_status = latest.narrationStatus;
     res.json({
       ok: true,
       found: true,

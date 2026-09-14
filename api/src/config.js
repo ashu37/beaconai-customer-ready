@@ -30,6 +30,12 @@ const config = {
       ? { minCustomersPerArm, minPurchasersPerArm, criticalValue }
       : null;
   })(),
+  // Deadlines for the two Python subprocesses behind an analysis. Neither had
+  // one: a stuck engine or a slow model call held the request, and the store's
+  // analysis slot, indefinitely. Measured on Render free (2026-09-14): engine
+  // ~152 s, narration ~60 s, so these leave wide headroom.
+  engineTimeoutMs: Number(process.env.BEACONAI_ENGINE_TIMEOUT_MS) || 10 * 60 * 1000,
+  narrationTimeoutMs: Number(process.env.BEACONAI_NARRATION_TIMEOUT_MS) || 5 * 60 * 1000,
   tokenEncryptionSecret: process.env.TOKEN_ENCRYPTION_SECRET || process.env.SESSION_SECRET || "beaconai-local-dev-secret",
   shopify: {
     shopDomain: process.env.SHOPIFY_SHOP_DOMAIN,
