@@ -343,3 +343,54 @@ suite("an unconnected shop does not inherit the deployment's credentials", async
     config.shopify.shopDomain = previousShop;
   }
 });
+
+suite("health tells the public whether the service is up, and only the founder where it points", async () => {
+  const publicHealth = await api.get("/health", { session: null });
+  assert.equal(publicHealth.status, 200);
+  const db = publicHealth.body.startup.database;
+  assert.equal(typeof db.ready, "boolean");
+  assert.equal(db.target, undefined, "no database host or user for anonymous callers");
+  assert.equal(db.error, undefined);
+
+  process.env.BEACONAI_ADMIN_TOKEN = "test-token";
+  try {
+    const response = await fetch(`${api.base}/health`, { headers: { "x-beaconai-admin-token": "test-token" } });
+    const body = await response.json();
+    assert.ok(body.startup.database.target, "the founder still gets the target for diagnosis");
+
+    const wrong = await fetch(`${api.base}/health`, { headers: { "x-beaconai-admin-token": "nope" } });
+    assert.equal((await wrong.json()).startup.database.target, undefined);
+  } finally {
+    delete process.env.BEACONAI_ADMIN_TOKEN;
+  }
+
+  const ready = await api.get("/ready", { session: null });
+  assert.equal(ready.body.startup.database.target, undefined);
+  assert.equal(typeof ready.body.database.live, "boolean");
+});
+
+suite("abandoned OAuth attempts are swept when new ones start", async () => {
+  await db.resetDatabase();
+  await query(
+    `INSERT INTO clean.oauth_states (state, provider, shop_domain, expires_at) VALUES
+       ('long-expired', 'klaviyo', 'acme.myshopify.com', NOW() - INTERVAL '2 hours'),
+       ('just-expired', 'klaviyo', 'acme.myshopify.com', NOW() - INTERVAL '5 minutes'),
+       ('still-valid', 'klaviyo', 'acme.myshopify.com', NOW() + INTERVAL '10 minutes')`
+  );
+  const { config } = require("../src/config");
+  const previous = { id: config.shopify.clientId, secret: config.shopify.clientSecret };
+  config.shopify.clientId = "test-client";
+  config.shopify.clientSecret = "test-secret";
+  try {
+    const { buildShopifyStartUrl } = require("../src/services/oauthService");
+    await buildShopifyStartUrl({ shop: "acme.myshopify.com", returnTo: null });
+  } finally {
+    config.shopify.clientId = previous.id;
+    config.shopify.clientSecret = previous.secret;
+  }
+  const { rows } = await query(`SELECT state FROM clean.oauth_states ORDER BY state`);
+  const states = rows.map((r) => r.state);
+  assert.ok(!states.includes("long-expired"), "swept an hour past expiry");
+  assert.ok(states.includes("just-expired"), "recently expired rows are left for the grace period");
+  assert.ok(states.includes("still-valid"));
+});

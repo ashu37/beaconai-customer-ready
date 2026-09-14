@@ -77,6 +77,10 @@ function createPkcePair() {
 }
 
 async function createOauthState({ provider, shopDomain, returnTo, pkce = false }) {
+  // Abandoned attempts expire but were never deleted, so the table only grew,
+  // each row holding an encrypted verifier. Swept here, an hour past expiry, on
+  // the path that creates them.
+  await query(`DELETE FROM clean.oauth_states WHERE expires_at < NOW() - INTERVAL '1 hour'`).catch(() => {});
   const state = crypto.randomBytes(24).toString("hex");
   const { codeVerifier, codeChallenge } = pkce ? createPkcePair() : {};
   await query(
