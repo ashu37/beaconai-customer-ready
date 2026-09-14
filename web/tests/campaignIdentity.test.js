@@ -132,8 +132,10 @@ async function openCampaigns() {
   await settle(200);
 }
 
+// An older campaign: an unfinished draft is already in the rail (step 3); a
+// handed-off one is opened from Earlier campaigns.
 async function openEarlier(name = /Bring back lapsed customers|Winback/) {
-  const link = [...document.querySelectorAll(".earlier-campaigns-list button")].find((b) => name.test(b.textContent));
+  const link = earlierRail() || [...document.querySelectorAll(".earlier-campaigns-list button")].find((b) => name.test(b.textContent));
   await click(link, 300);
   await settle(200);
 }
@@ -162,11 +164,10 @@ test("two campaigns for one play: editing and approving one never touches the ot
   rows = twoWinbackCampaigns();
   await mount();
   await openCampaigns();
-  assert.equal(railRows().length, 1, "only this analysis's campaign is in the rail by default");
+  assert.equal(railRows().length, 2, "the older unfinished draft stays in the rail beside this analysis's campaign");
   assert.equal(subject()?.value, "Current draft");
 
   await openEarlier(/Winback \(Sep 10\)/);
-  assert.equal(railRows().length, 2, "the older draft joins the rail beside it");
   assert.ok(earlierRail(), "and is labelled as coming from an earlier analysis");
   assert.equal(subject()?.value, "Older draft", "its own copy, not the current campaign's");
 
@@ -340,9 +341,8 @@ test("a reload after a re-run shows the right badges, and older approvals are ke
   assert.match(briefingRow(/discount/i)?.textContent || "", /Approved/, "this analysis's campaign is linked");
 
   await openCampaigns();
-  assert.equal(railRows().length, 1);
+  assert.equal(railRows().length, 2, "this analysis's campaign and the older approved one, not yet handed off");
   assert.equal(subject()?.value, "Discount draft");
-  assert.match(document.querySelector(".earlier-campaigns")?.textContent || "", /Winback \(Sep 10\)/, "the older campaign is still reachable");
 
   await openEarlier(/Winback \(Sep 10\)/);
   const readyGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Ready to send/.test(g.textContent));

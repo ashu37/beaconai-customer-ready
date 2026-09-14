@@ -415,6 +415,14 @@ async function initSchema() {
   // editing them would rewrite the record of an email that has already left.
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ;`);
 
+  // Campaign continuity (docs/CAMPAIGN_CONTINUITY_SPEC.md, step 3). An updated
+  // draft made from an older one links both ways. The old draft is marked only
+  // in the same transaction that created its replacement, so a failed creation
+  // never leaves a draft superseded by nothing.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS supersedes_id INTEGER REFERENCES clean.campaigns(id);`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS superseded_by_id INTEGER REFERENCES clean.campaigns(id);`);
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;`);
+
   // Which arm each customer landed in. Written at send time and never after —
   // without this row the campaign cannot be measured later, because there is no
   // other record of who was held back.

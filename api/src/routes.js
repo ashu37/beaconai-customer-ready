@@ -115,6 +115,8 @@ const {
   CampaignHandoffInProgress,
   CampaignRevisionConflict,
   CampaignRevisionRequired,
+  ReplacementRefused,
+  createReplacementDraft,
   releaseHandoffReservation,
   reserveCampaignForHandoff,
   upsertCampaign,
@@ -965,6 +967,18 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       res.status(404).json({ ok: false, error: `No campaign ${req.body.campaignId}` });
       return;
     }
+    // A draft the merchant replaced with an updated one is kept for the record,
+    // but handing it off as well would put two campaigns for one decision into
+    // Klaviyo.
+    if (existingCampaign?.supersededById) {
+      res.status(409).json({
+        ok: false,
+        code: "superseded",
+        error: "This draft was replaced by an updated draft. Open the updated draft to continue.",
+        replacementId: existingCampaign.supersededById,
+      });
+      return;
+    }
     const runId = existingCampaign?.runId
       || campaign.run_id || req.body.runId
       || (await readLatestRun({ shopDomain }))?.runId || null;
@@ -1337,6 +1351,33 @@ router.get("/campaigns/:shopDomain", async (req, res) => {
     res.json({ ok: true, campaigns });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// An updated draft on the latest analysis, made from an older draft the merchant
+// explicitly chose to update. Atomic and idempotent; see createReplacementDraft.
+router.post("/campaigns/:id/replacement", async (req, res) => {
+  try {
+    const shopDomain = authorizedShop(req, res, req.body.shopDomain);
+    if (!shopDomain) return;
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "campaign id must be numeric" });
+      return;
+    }
+    const result = await createReplacementDraft({
+      shopDomain, campaignId: id, runId: req.body.runId, expectedRevision: req.body.expectedRevision,
+    });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    if (error instanceof ReplacementRefused) {
+      // Not found for another shop's id too, so ids cannot be probed.
+      const status = error.code === "not_found" ? 404 : 409;
+      res.status(status).json({ ok: false, code: error.code, error: error.message, campaign: error.campaign });
+      return;
+    }
+    if (campaignConflictResponse(res, error)) return;
+    res.status(400).json({ ok: false, error: error.message });
   }
 });
 

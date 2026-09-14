@@ -77,6 +77,9 @@ async function request(path, options = {}) {
       error.campaign = data.campaign;
       error.fields = data.fields;
     }
+    // A refusal can name the campaign it is about (e.g. the latest analysis
+    // already has one for this play) without being a revision conflict.
+    if (data?.campaign && !error.campaign) error.campaign = data.campaign;
     throw error;
   }
 
@@ -107,6 +110,11 @@ export const api = {
   // Campaign state. Replaces the run-scoped localStorage blob: approvals, copy
   // edits and send state now survive an engine run, a new browser and a new device.
   listCampaigns: (runId) => request(`/campaigns/${encodeURIComponent(shopDomain)}${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`),
+  // An updated draft on `runId` made from an older draft. Atomic on the server.
+  createReplacementDraft: (campaignId, { runId, expectedRevision }) =>
+    request(`/campaigns/${encodeURIComponent(campaignId)}/replacement`, {
+      method: "POST", body: JSON.stringify({ shopDomain, runId, expectedRevision }),
+    }),
   saveCampaign: (campaign) => request("/campaigns", { method: "POST", body: JSON.stringify({ shopDomain, ...campaign }) }),
   patchCampaign: (id, patch) => request(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   previewCampaignAudience: (campaign) => request("/campaigns/audience/preview", { method: "POST", body: JSON.stringify({ shopDomain, campaign }) }),

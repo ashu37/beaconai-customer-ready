@@ -203,6 +203,14 @@ button.status-chip:not([onclick]) { cursor: default; }
 .recommendation-approve-block { border-top: 1px solid var(--rule); padding-top: 16px; }
 .approve-note { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0 0 8px; }
 .approve-note.measurement { color: var(--muted-2); }
+/* Step 3: the merchant's existing campaign for this play, and the explicit
+   comparison before an updated draft is created. */
+.existing-campaign .approve-note strong { color: var(--ink, inherit); }
+.existing-campaign .recommendation-detail-footer { justify-content: flex-start; border-top: 0; padding-top: 4px; }
+.review-latest { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface-2); display: grid; gap: 10px; justify-items: start; }
+.review-latest-rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; width: 100%; }
+.review-latest-rows span { display: block; color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.review-latest-rows strong { font-size: 13px; }
 
 /* Approved state — green pill on the row + green toggle button */
 .approved-pill { display: inline-flex; align-items: center; gap: 4px; color: #1f7a4d; background: #e7f5ee; border: 1px solid #b7e0cb; border-radius: 20px; padding: 1px 8px; font-size: 11px; font-weight: 700; }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  briefingCampaignKeyByPlay, briefingOrder, earlierCampaigns, mergeByKey, mergeKeyList,
+  briefingCampaignKeyByPlay, briefingOrder, campaignStage, earlierCampaigns, existingCampaignForPlay, mergeByKey, mergeKeyList,
   railCampaignKeys, shouldApplyBriefing, workspaceMapsFromCampaigns, workspacePlay,
 } from "../src/campaignReconciliation.js";
 
@@ -51,10 +51,19 @@ test("the briefing links a play only to the run on screen's live campaign", () =
   assert.deepEqual(earlierCampaigns(rowsByKey, "run-b").map((c) => c.id), [1], "older work stays listed");
 });
 
-test("the rail lists this run's live campaigns plus what the merchant holds open", () => {
-  const { rowsByKey } = workspaceMapsFromCampaigns(rows);
-  assert.deepEqual(railCampaignKeys({ rowsByKey, runId: "run-b" }), ["2", "4"]);
-  assert.deepEqual(railCampaignKeys({ rowsByKey, runId: "run-b", keep: ["1"] }), ["2", "4", "1"], "both winback campaigns, side by side");
+test("the rail lists this run's live campaigns, earlier unfinished drafts, and what the merchant holds open", () => {
+  const withHandedOff = [
+    ...rows,
+    { id: 5, runId: "run-a", playId: "journey", status: "approved", revision: 2, frozen: true, deliveryState: "created", klaviyoCampaignId: "K" },
+    { id: 6, runId: "run-a", playId: "discount", status: "draft", revision: 3, supersededById: 2 },
+  ];
+  const { rowsByKey } = workspaceMapsFromCampaigns(withHandedOff);
+  assert.deepEqual(
+    [...railCampaignKeys({ rowsByKey, runId: "run-b" })].sort(),
+    ["1", "2", "4"],
+    "run-a's approved-but-not-handed-off winback stays; handed-off and replaced ones do not",
+  );
+  assert.ok(railCampaignKeys({ rowsByKey, runId: "run-b", keep: ["5"] }).includes("5"), "a campaign the merchant opened stays");
 });
 
 test("a fresh read replaces unprotected campaigns and leaves protected or newer ones alone", () => {
@@ -90,4 +99,36 @@ test("a workspace entry takes its identity from the campaign and content only fr
   assert.equal(older.run_id, "run-a");
   assert.equal(older.audience_size, 234, "its own audience, not the newer analysis's");
   assert.equal(older.fromEarlierRun, true);
+});
+
+test("a campaign's stage: editable draft, handed off to Klaviyo, or sent", () => {
+  assert.equal(campaignStage({ status: "approved", deliveryState: "not_started" }), "draft", "approved but not handed off is still a draft");
+  assert.equal(campaignStage({ status: "draft", deliveryState: "failed" }), "draft", "a creation that provably failed can be retried");
+  assert.equal(campaignStage({ status: "approved", frozen: true }), "in_klaviyo");
+  assert.equal(campaignStage({ status: "approved", deliveryState: "uncertain" }), "in_klaviyo", "an unconfirmed creation is never treated as editable");
+  assert.equal(campaignStage({ status: "approved", deliveryState: "sent", providerSentAt: "2026-09-10T12:00:00Z" }), "sent");
+});
+
+test("the briefing card's existing campaign: this run's first, then the most actionable earlier one", () => {
+  const at = (day) => `2026-09-${day}T12:00:00Z`;
+  const list = [
+    { id: 10, runId: "r1", playId: "winback", status: "approved", deliveryState: "sent", providerSentAt: at(1), createdAt: at(1) },
+    { id: 11, runId: "r2", playId: "winback", status: "draft", createdAt: at(5) },
+    { id: 12, runId: "r3", playId: "winback", status: "approved", frozen: true, deliveryState: "created", createdAt: at(8) },
+    { id: 13, runId: "r3", playId: "discount", status: "draft", supersededById: 14, createdAt: at(8) },
+    { id: 15, runId: "r3", playId: "journey", status: "dismissed", createdAt: at(8) },
+  ];
+  const { rowsByKey } = workspaceMapsFromCampaigns(list);
+
+  assert.deepEqual(
+    (({ kind, key }) => ({ kind, key }))(existingCampaignForPlay(rowsByKey, "winback", "r9")),
+    { kind: "draft", key: "11" },
+    "an unfinished draft outranks a newer handed-off campaign and an older send",
+  );
+  assert.equal(existingCampaignForPlay(rowsByKey, "winback", "r2").kind, "current", "the run on screen's own campaign comes first");
+  assert.equal(existingCampaignForPlay(rowsByKey, "discount", "r9"), null, "a replaced draft is not existing work");
+  assert.equal(existingCampaignForPlay(rowsByKey, "journey", "r9"), null, "nor is a dismissed one");
+
+  const { rowsByKey: sentOnly } = workspaceMapsFromCampaigns([list[0], list[2]]);
+  assert.equal(existingCampaignForPlay(sentOnly, "winback", "r9").kind, "in_klaviyo");
 });
