@@ -279,18 +279,59 @@ async function resolveKlaviyoKey(shopDomain, { privateKey } = {}) {
   return privateKey || await resolveStoredKlaviyoToken(shopDomain);
 }
 
+// The founder token, compared in constant time, for the few public endpoints
+// that show operators more than they show everyone else.
+function isFounderRequest(req) {
+  const expected = process.env.BEACONAI_ADMIN_TOKEN;
+  const provided = req.get("x-beaconai-admin-token");
+  if (!expected || !provided) return false;
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Health and readiness are public, so their bodies are too. The database target
+// (host, user, database name) and raw connection errors used to go to anyone who
+// asked; they now go only to a request carrying the founder token, which is who
+// they were for — "is this instance pointed at the database I think it is".
+function startupForResponse(req) {
+  const database = getStartupState().database;
+  if (isFounderRequest(req)) return { database };
+  return { database: { status: database.status, ready: database.ready, checkedAt: database.checkedAt } };
+}
+
 router.get("/health", (req, res) => {
   // Liveness — always 200 while the process is up. See server.js: this path is
   // render.yaml's healthCheckPath, so a 503 here would block deploys during a
   // database outage. Database state is in the body; /api/ready is the readiness
   // probe that actually fails.
-  res.json({ ok: true, service: "beaconai-api", startup: getStartupState() });
+  res.json({ ok: true, service: "beaconai-api", startup: startupForResponse(req) });
 });
 
-router.get("/ready", (req, res) => {
-  const startup = getStartupState();
-  const ready = startup.database.ready;
-  res.status(ready ? 200 : 503).json({ ok: ready, service: "beaconai-api", startup });
+router.get("/ready", async (req, res) => {
+  // Startup state alone stayed green through a later database outage. Ready now
+  // also means the database answers right now, within a bound.
+  const startedReady = getStartupState().database.ready;
+  let live = false;
+  let liveError = null;
+  if (startedReady) {
+    try {
+      await Promise.race([
+        query("SELECT 1"),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("database check timed out")), 3000)),
+      ]);
+      live = true;
+    } catch (error) {
+      liveError = error.message;
+    }
+  }
+  const ready = startedReady && live;
+  res.status(ready ? 200 : 503).json({
+    ok: ready,
+    service: "beaconai-api",
+    startup: startupForResponse(req),
+    database: { live, ...(isFounderRequest(req) && liveError ? { error: liveError } : {}) },
+  });
 });
 
 router.post("/connections/shopify/test", async (req, res) => {
