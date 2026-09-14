@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const axios = require("axios");
 
 const { config } = require("../src/config");
-const { createCampaignSendPackage } = require("../src/services/klaviyoClient");
+const { authorizationFor, createCampaignSendPackage, getKlaviyoSender } = require("../src/services/klaviyoClient");
 const { startFakeKlaviyo } = require("./helpers/fakeKlaviyo");
 
 // A marker no default or fallback rendering could produce, so finding it in the
@@ -147,6 +147,26 @@ test("a failure once requests have gone out never claims nothing was created", a
     assert.equal(error.provenNothingCreated, false);
     // A template, a list and an import already exist at the provider.
     assert.deepEqual(fake.writes(), ["POST /templates", "POST /lists", "POST /profile-bulk-import-jobs", "POST /campaigns"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+// An OAuth-connected store holds an access token, not a private key. Klaviyo
+// refuses one sent under the private-key scheme (401 "Missing or invalid private
+// key", seen in production 2026-09-14), so the scheme has to follow the credential.
+test("a private key and an OAuth access token are sent under their own schemes", async () => {
+  assert.equal(authorizationFor("pk_live_abc"), "Klaviyo-API-Key pk_live_abc");
+  assert.equal(authorizationFor("eyJhbGciOiJSUzI1NiJ9.payload.sig"), "Bearer eyJhbGciOiJSUzI1NiJ9.payload.sig");
+
+  const fake = await startFakeKlaviyo();
+  try {
+    await getKlaviyoSender("oauth-access-token-123");
+    assert.equal(fake.requests[0].headers.authorization, "Bearer oauth-access-token-123");
+
+    await createCampaignSendPackage("oauth-access-token-123", CAMPAIGN, AUDIENCE, { html: APPROVED_HTML });
+    const schemes = new Set(fake.requests.map((r) => r.headers.authorization));
+    assert.deepEqual([...schemes], ["Bearer oauth-access-token-123"], "every request in the handoff uses Bearer");
   } finally {
     await fake.close();
   }
