@@ -148,6 +148,11 @@ function rowToCampaign(row) {
     providerSentAt: row.provider_sent_at,
     // Ticket D's durable state. Measurement starts only at `sent`.
     deliveryState: row.delivery_state || "not_started",
+    supersedesId: row.supersedes_id ?? null,
+    supersededById: row.superseded_by_id ?? null,
+    supersededAt: row.superseded_at ?? null,
+    // When the campaign's own analysis ran. Only listCampaigns joins it in.
+    runAnalysedAt: row.run_analysed_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -327,10 +332,12 @@ async function freezeCampaignAtHandoff(id, {
 // table: a campaign from three runs ago is still here.
 async function listCampaigns(shopDomain, { runId = null, limit = 200 } = {}) {
   const { rows } = await query(
-    `SELECT * FROM clean.campaigns
-      WHERE shop_domain = $1
-        AND ($2::text IS NULL OR run_id = $2)
-      ORDER BY created_at DESC
+    `SELECT c.*, r.created_at AS run_analysed_at
+       FROM clean.campaigns c
+       LEFT JOIN clean.engine_run_snapshots r ON r.run_id = c.run_id
+      WHERE c.shop_domain = $1
+        AND ($2::text IS NULL OR c.run_id = $2)
+      ORDER BY c.created_at DESC
       LIMIT $3`,
     [shopDomain, runId, limit]
   );
@@ -581,7 +588,141 @@ async function recordRecipients(campaignId, { treated = [], holdout = [], exclud
   }
 }
 
+// Why an updated draft cannot be made from this campaign. `campaign` is the
+// existing campaign on the new run when that is the reason.
+class ReplacementRefused extends Error {
+  constructor(code, message, campaign = null) {
+    super(message);
+    this.name = "ReplacementRefused";
+    this.code = code;
+    this.campaign = campaign;
+  }
+}
+
+// Whether anything was ever handed off from this row: reserved, frozen, created
+// in the provider, or past a proven pre-creation failure. Status alone does not
+// say — a campaign can be dismissed after it was handed off.
+function neverHandedOff(row) {
+  return !row.frozen_at
+    && !row.handoff_reserved_at
+    && !row.klaviyo_campaign_id
+    && ["not_started", "failed"].includes(row.delivery_state || "not_started");
+}
+
+// A campaign that has left BeaconAI's hands — reserved, frozen, created in the
+// provider or sent — is never replaced: a briefing refresh must not rewrite the
+// record of something that exists outside this app.
+function isEditableForReplacement(row) {
+  return neverHandedOff(row) && ["draft", "approved", "failed"].includes(row.status);
+}
+
+// Create an updated draft on a newer run from an older draft, explicitly and
+// atomically (spec rule 2):
+//   - the merchant's saved content is copied: template, generated copy, edits
+//     (including intentional blanks) and destination — so nothing they wrote is
+//     regenerated away;
+//   - the replacement starts as an unapproved draft: preview, audience and
+//     approval are all reviewed again;
+//   - the old draft is marked superseded in the SAME transaction, after the
+//     replacement row exists, and the two are linked.
+// Idempotent: asking again for an already-replaced draft returns the replacement
+// it already has, which is what makes a double click harmless.
+async function createReplacementDraft({ shopDomain, campaignId, runId, expectedRevision }) {
+  if (!shopDomain) throw new Error("shopDomain is required");
+  if (!runId) throw new Error("runId is required");
+  const expected = normalizeRevision(expectedRevision);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: [old] } = await client.query(
+      `SELECT * FROM clean.campaigns WHERE id = $1 AND shop_domain = $2 FOR UPDATE`,
+      [campaignId, shopDomain]
+    );
+    if (!old) throw new ReplacementRefused("not_found", `No campaign ${campaignId}`);
+
+    if (old.superseded_by_id) {
+      const { rows: [existing] } = await client.query(`SELECT * FROM clean.campaigns WHERE id = $1`, [old.superseded_by_id]);
+      await client.query("COMMIT");
+      return { campaign: rowToCampaign(existing), previous: rowToCampaign(old), alreadyReplaced: true };
+    }
+    if (old.run_id === runId) {
+      throw new ReplacementRefused("same_run", "This draft already belongs to that analysis.");
+    }
+    if (!isEditableForReplacement(old)) {
+      throw new ReplacementRefused("not_editable", "This campaign has already been handed off, so it stays as it is.");
+    }
+    if (expected === null) throw new CampaignRevisionRequired(rowToCampaign(old));
+    if (old.revision !== expected) throw new CampaignRevisionConflict(rowToCampaign(old), expected);
+
+    const { rows: runRows } = await client.query(
+      `SELECT 1 FROM clean.engine_run_snapshots WHERE run_id = $1 AND shop_domain = $2`,
+      [runId, shopDomain]
+    );
+    if (!runRows.length) throw new ReplacementRefused("unknown_run", "That analysis isn't available for this store.");
+
+    const { rows: [onNewRun] } = await client.query(
+      `SELECT * FROM clean.campaigns WHERE shop_domain = $1 AND run_id = $2 AND play_id = $3 FOR UPDATE`,
+      [shopDomain, runId, old.play_id]
+    );
+    const content = [old.template_id, old.copy, old.draft_edits, old.destination_url, old.display_name, old.id];
+    let replacement;
+    if (onNewRun && onNewRun.status !== "dismissed") {
+      throw new ReplacementRefused(
+        "campaign_exists",
+        "The latest analysis already has a campaign for this play.",
+        rowToCampaign(onNewRun)
+      );
+    } else if (onNewRun && !neverHandedOff(onNewRun)) {
+      // Dismissed does not mean untouched. A dismissed campaign that was
+      // reserved, frozen or created in the provider keeps its record; reusing it
+      // would overwrite what was handed off. Checked on the row locked above.
+      throw new ReplacementRefused(
+        "campaign_exists",
+        "The latest analysis already has a campaign for this play that was handed off, so it can't be reused.",
+        rowToCampaign(onNewRun)
+      );
+    } else if (onNewRun) {
+      // A dismissed row for this play on the new run holds the unique slot, and
+      // (checked above) nothing was ever handed off from it, so it takes the content.
+      ({ rows: [replacement] } = await client.query(
+        `UPDATE clean.campaigns
+            SET status = 'draft', template_id = $2, copy = $3, draft_edits = $4, destination_url = $5,
+                display_name = COALESCE($6, display_name), supersedes_id = $7, approved_at = NULL,
+                revision = revision + 1, updated_at = NOW()
+          WHERE id = $1
+          RETURNING *`,
+        [onNewRun.id, ...content]
+      ));
+    } else {
+      ({ rows: [replacement] } = await client.query(
+        `INSERT INTO clean.campaigns
+           (shop_domain, run_id, play_id, status, template_id, copy, draft_edits, destination_url, display_name, supersedes_id)
+         VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $9)
+         RETURNING *`,
+        [shopDomain, runId, old.play_id, ...content]
+      ));
+    }
+
+    const { rows: [previous] } = await client.query(
+      `UPDATE clean.campaigns
+          SET superseded_by_id = $2, superseded_at = NOW(), revision = revision + 1, updated_at = NOW()
+        WHERE id = $1
+        RETURNING *`,
+      [old.id, replacement.id]
+    );
+    await client.query("COMMIT");
+    return { campaign: rowToCampaign(replacement), previous: rowToCampaign(previous), alreadyReplaced: false };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
+  ReplacementRefused,
+  createReplacementDraft,
   RecipientsFrozen,
   CampaignFrozen,
   CampaignRevisionConflict,

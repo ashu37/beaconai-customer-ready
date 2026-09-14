@@ -60,7 +60,14 @@ Example: a merchant approved a 234-person winback campaign; the new briefing rec
    - A's save fails or conflicts; B's save state and handoff eligibility are unaffected.
    - The handoff uses the selected campaign's origin run and audience.
    - A reload after a re-run shows the correct badge and draft state.
-3. **Existing-campaign links and explicit replacement drafts** (rule 2). Step 2 fixes identity internally; step 3 makes continuity visible.
+3. **Existing-campaign links and explicit replacement drafts** (rule 2) *(PR: feat/existing-campaign-links)*. Step 2 fixes identity internally; step 3 makes continuity visible.
+
+   Implementation notes:
+   - An unfinished draft from an earlier analysis (draft or approved, not handed off, not replaced) stays in the Campaigns rail. Handed-off, sent and replaced campaigns are listed under Earlier campaigns.
+   - When a play has several earlier campaigns, the card shows the most actionable: an unfinished draft, then one in Klaviyo, then the latest send.
+   - A sent campaign's card also offers **Start a new campaign**, with a note that it can reach customers who received the earlier send (rule 4). A campaign in Klaviyo offers no new campaign until it is sent.
+   - The replacement copies the template, generated copy, edits (including blanks) and destination, but not the holdout. Audience review shows the holdout again.
+   - A replaced draft stays readable, but it cannot be handed off: the server refuses with `superseded`.
 
    | Existing campaign for this play | Briefing card shows |
    |---|---|

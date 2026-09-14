@@ -7,7 +7,7 @@ import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSe
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
 import {
-  briefingCampaignKeyByPlay, briefingOrder, campaignKey, earlierCampaigns, mergeByKey, mergeKeyList,
+  briefingCampaignKeyByPlay, briefingOrder, campaignKey, earlierCampaigns, existingCampaignForPlay, mergeByKey, mergeKeyList,
   railCampaignKeys, shouldApplyBriefing, workspaceMapsFromCampaigns, workspacePlay,
 } from "./campaignReconciliation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
@@ -319,8 +319,25 @@ function EvidenceChips({ play, omitRevenue = false }) {
   );
 }
 
-function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false, narrationStatus = null }) {
+// "Sep 10" for a date the merchant already knows the year of.
+function shortDate(iso) {
+  const date = iso ? new Date(iso) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Measurement runs for 30 days after a send (Results).
+const MEASUREMENT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+function RecommendationDetail({
+  play, onSendToReview, onViewEvidence, onOpenInCampaigns, approved = false, showAdvanced = false, narrationStatus = null,
+  existing = null, latestAnalysedAt = null, onContinueDraft, onCreateUpdatedDraft, onViewResults, creatingUpdatedDraft = false,
+}) {
   const [activeTab, setActiveTab] = useState("thesis");
+  // The "Review latest recommendation" comparison, closed for each new play.
+  const [comparing, setComparing] = useState(false);
+  const playKey = play?.play_id || play?.id || null;
+  useEffect(() => { setComparing(false); }, [playKey]);
 
   if (!play) {
     return <div className="recommendation-detail empty-panel">Select a recommendation to review the details.</div>;
@@ -517,20 +534,99 @@ function RecommendationDetail({ play, onSendToReview, onViewEvidence, onOpenInCa
           <p className="approve-note">
             {approved
               ? "Approved — it's in your campaign pipeline. Review the copy and pick a template in Campaigns."
-              : "Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email."}
+              : existing
+                ? "This recommendation comes from your latest analysis."
+                : "Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email."}
           </p>
           <p className="approve-note measurement">We'll track what these customers do for 30 days after send and report it in Results.</p>
-          <div className="recommendation-detail-footer">
-            {approved ? (
-              // P-C3: approved plays show a state chip that jumps to Campaigns,
-              // not a second Approve control.
+          {approved ? (
+            <div className="recommendation-detail-footer">
+              {/* P-C3: approved plays show a state chip that jumps to Campaigns,
+                  not a second Approve control. */}
               <button type="button" className="in-campaigns-chip" onClick={() => onOpenInCampaigns(play)}>
                 <Icon name="check" size={14} /> In campaigns <Icon name="arrowRight" size={14} />
               </button>
-            ) : (
+            </div>
+          ) : existing?.kind === "draft" ? (
+            // Earlier work on this play. It is linked, never treated as an
+            // approval of THIS recommendation, and nothing is copied until the
+            // merchant asks for an updated draft (spec step 3).
+            <div className="existing-campaign" role="group" aria-label="Your existing draft">
+              <p className="approve-note">
+                <strong>You already have a draft for this play</strong>
+                {shortDate(existing.row.runAnalysedAt) ? ` from your ${shortDate(existing.row.runAnalysedAt)} analysis` : " from an earlier analysis"}.
+                {" "}It keeps its own copy and audience.
+              </p>
+              <div className="recommendation-detail-footer">
+                <button type="button" className="btn primary" onClick={() => onContinueDraft(existing.key)}>Continue draft</button>
+                <button type="button" className="btn" aria-expanded={comparing} onClick={() => setComparing((open) => !open)}>
+                  Review latest recommendation
+                </button>
+              </div>
+              {comparing ? (
+                <div className="review-latest">
+                  <div className="review-latest-rows">
+                    <div>
+                      <span>Your draft</span>
+                      <strong>
+                        {shortDate(existing.row.runAnalysedAt) ? `${shortDate(existing.row.runAnalysedAt)} analysis` : "Earlier analysis"}
+                        {existing.row.audienceSize != null ? ` · ${formatAudience(existing.row.audienceSize)} customers` : ""}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Latest recommendation</span>
+                      <strong>
+                        {shortDate(latestAnalysedAt) ? `${shortDate(latestAnalysedAt)} analysis` : "This analysis"}
+                        {play.audience_size != null ? ` · ${formatAudience(play.audience_size)} customers` : ""}
+                      </strong>
+                    </div>
+                  </div>
+                  <p className="approve-note">
+                    An updated draft keeps your saved copy, removed text and button link, and uses this analysis's audience.
+                    You'll check the preview and audience and approve it again. Your current draft is kept and marked as replaced.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={creatingUpdatedDraft}
+                    onClick={() => onCreateUpdatedDraft(existing.row)}
+                  >
+                    {creatingUpdatedDraft ? "Creating…" : "Create updated draft"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : existing?.kind === "in_klaviyo" ? (
+            <div className="existing-campaign" role="group" aria-label="Your campaign in Klaviyo">
+              <p className="approve-note"><strong>{existing.statusLabel || "In Klaviyo"}</strong>{shortDate(existing.row.runAnalysedAt) ? ` · from your ${shortDate(existing.row.runAnalysedAt)} analysis` : ""}</p>
+              {existing.providerUrl ? (
+                <div className="recommendation-detail-footer">
+                  <a className="btn primary" href={existing.providerUrl} target="_blank" rel="noreferrer">Open in Klaviyo (opens in a new tab)</a>
+                </div>
+              ) : null}
+            </div>
+          ) : existing?.kind === "sent" ? (
+            // Warn, don't block: a new campaign is allowed, but only explicitly,
+            // with the earlier send in view (rule 4). Reached only for a
+            // delivery state of `sent`, so the timestamp here is a send time.
+            <div className="existing-campaign" role="group" aria-label="Your sent campaign">
+              <p className="approve-note">
+                <strong>
+                  {shortDate(existing.row.providerSentAt || existing.row.sentAt) ? `Sent ${shortDate(existing.row.providerSentAt || existing.row.sentAt)}` : "Sent"}
+                  {Date.now() - Date.parse(existing.row.providerSentAt || existing.row.sentAt || 0) < MEASUREMENT_WINDOW_MS ? " · Measuring" : ""}
+                </strong>
+              </p>
+              <div className="recommendation-detail-footer">
+                <button type="button" className="btn primary" onClick={() => onViewResults(existing.row)}>View results</button>
+                <button type="button" className="link-btn" onClick={() => onSendToReview(play)}>Start a new campaign</button>
+              </div>
+              <p className="approve-note measurement">A new campaign can reach customers who received the earlier send.</p>
+            </div>
+          ) : (
+            <div className="recommendation-detail-footer">
               <button className="btn primary" onClick={() => onSendToReview(play)}>Approve &amp; pick template</button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1938,6 +2034,8 @@ export function App() {
   const openedKeysRef = useRef(new Set());
   // (run:play) pairs being created, so a double click cannot open two.
   const creatingRef = useRef(new Set());
+  // The earlier draft an updated draft is being created from, for the button.
+  const [replacingKey, setReplacingKey] = useState("");
   const [resultsData, setResultsData] = useState(null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [resultsError, setResultsError] = useState("");
@@ -1967,12 +2065,13 @@ export function App() {
     [campaignRowsByKey, currentRunId]
   );
   // The Campaigns rail: one entry per CAMPAIGN. Two entries can share a play.
+  const latestPlayIds = useMemo(() => new Set(workflowPlays.map((play) => play.play_id || play.id)), [workflowPlays]);
   const workspacePlays = useMemo(
     () => railKeys
       .map((key) => campaignRowsByKey[key])
       .filter((row) => row && row.status !== "dismissed")
-      .map((row) => workspacePlay(row, reviewablePlays, currentRunId)),
-    [railKeys, campaignRowsByKey, reviewablePlays, currentRunId]
+      .map((row) => workspacePlay(row, reviewablePlays, currentRunId, { latestPlayIds: workflowPlays.length ? latestPlayIds : null })),
+    [railKeys, campaignRowsByKey, reviewablePlays, currentRunId, latestPlayIds, workflowPlays.length]
   );
   const reviewPlay = workspacePlays.find((play) => play.id === reviewKey) || workspacePlays[0];
   const beaconTemplates = useMemo(() => klaviyoTemplates.filter((item) => item.source !== "klaviyo"), [klaviyoTemplates]);
@@ -2141,6 +2240,24 @@ export function App() {
   const heldEmptyText = heldLaneEmptyText({ heldCount: consideredRows.length, truncatedCount: heldTruncatedCount });
   const watchingSignals = briefingRun?.watching || [];
   const runDataQualityFlags = briefingRun?.data_quality_flags || [];
+  // The merchant's existing work for the selected card's play, when this
+  // analysis has no campaign of its own for it.
+  const selectedExistingBase = selectedBriefingRow && classifyPlayLane(selectedBriefingRow.play) !== "considered"
+    ? existingCampaignForPlay(campaignRowsByKey, selectedBriefingRow.play.play_id || selectedBriefingRow.play.id, currentRunId)
+    : null;
+  const selectedExistingDelivery = selectedExistingBase ? deliveryByCampaignId[selectedExistingBase.key] : undefined;
+  const selectedExisting = selectedExistingBase && selectedExistingBase.kind !== "current"
+    ? {
+      ...selectedExistingBase,
+      statusLabel: selectedExistingDelivery
+        ? presentDelivery(
+          { ...selectedExistingDelivery, campaignName: selectedExistingBase.row.providerCampaignName || selectedExistingBase.row.displayName },
+          { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+        ).label
+        : null,
+      providerUrl: selectedExistingDelivery?.providerCampaignUrl || null,
+    }
+    : null;
   const briefingStatus = dataStatusItems({
     connected: Boolean(status.shopify),
     syncStatus,
@@ -2176,6 +2293,14 @@ export function App() {
   useEffect(() => {
     document.title = shopDomain ? `BeaconAI — ${shopDomain}` : "BeaconAI";
   }, [shopDomain]);
+
+  // An earlier campaign in Klaviyo: its card shows the provider's status and
+  // link, which come from the delivery record rather than the campaign list.
+  const existingDeliveryKey = selectedExistingBase?.kind === "in_klaviyo" ? selectedExistingBase.key : null;
+  useEffect(() => {
+    if (existingDeliveryKey && deliveryByCampaignId[existingDeliveryKey] === undefined) loadDelivery(existingDeliveryKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingDeliveryKey]);
 
   // Keep the selected campaign valid against the rail.
   useEffect(() => {
@@ -2301,10 +2426,13 @@ export function App() {
   // Record a campaign row the server returned, so it has an identity the
   // workspace can key by BEFORE anything is edited. Content is only filled in
   // where this tab holds none, so a late answer never overwrites typing.
-  const registerCampaignRow = useCallback((row) => {
+  //
+  // `replaceContent` is for a row whose content the SERVER just rewrote (a
+  // dismissed slot reused by an updated draft): this tab's copy of it is stale.
+  const registerCampaignRow = useCallback((row, { replaceContent = false } = {}) => {
     const key = campaignKey(row);
     if (!key) return null;
-    const known = Boolean(campaignRowsRef.current[key]);
+    const known = Boolean(campaignRowsRef.current[key]) && !replaceContent;
     campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...(campaignRowsRef.current[key] || {}), ...row } };
     setCampaignRowsByKey(campaignRowsRef.current);
     knownRevisionRef.current[key] = row.revision;
@@ -2313,8 +2441,20 @@ export function App() {
       savedSignatureRef.current[key] = campaignSignature({ edits: row.draftEdits, destinationUrl: row.destinationUrl });
       saveStatusRef.current[key] = "saved";
       const fill = (setter, value) => {
+        if (replaceContent) {
+          setter((prev) => {
+            const next = { ...prev };
+            if (value) next[key] = value; else delete next[key];
+            return next;
+          });
+          return;
+        }
         if (value) setter((prev) => (key in prev ? prev : { ...prev, [key]: value }));
       };
+      if (replaceContent) {
+        delete approvedRender.current[key];
+        setApprovedForSend((prev) => prev.filter((id) => id !== key));
+      }
       fill(setSelectedTemplateByKey, row.templateId);
       fill(setDraftEditsByKey, row.draftEdits);
       fill(setAgentCopyByKey, row.copy?.copy);
@@ -3089,9 +3229,66 @@ export function App() {
   function openBriefingCampaign(play) {
     const key = briefingKeyByPlay[play.play_id || play.id];
     if (!key) return;
+    openCampaign(key);
+  }
+
+  function openCampaign(key) {
     setRailKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
     setReviewKey(key);
     setActivePage("campaigns");
+  }
+
+  // "Create updated draft": only ever on the merchant's explicit request. The
+  // server copies the SAVED draft, so anything still waiting to save goes first;
+  // the old draft is marked replaced in the same transaction that creates the
+  // new one, and asking twice returns the same replacement.
+  async function createUpdatedDraft(row) {
+    const oldKey = campaignKey(row);
+    const runId = currentRunIdRef.current;
+    if (!oldKey || !runId) return;
+    const guard = `replace:${oldKey}`;
+    if (creatingRef.current.has(guard)) return;
+    creatingRef.current.add(guard);
+    setReplacingKey(oldKey);
+    try {
+      const flushed = await flushPendingEdits(oldKey);
+      if (!flushed.ok) {
+        showToast({ message: "Your draft's latest edit didn't save, so no updated draft was created. Retry the save first.", error: true });
+        return;
+      }
+      let result;
+      try {
+        result = await api.createReplacementDraft(oldKey, { runId, expectedRevision: knownRevisionRef.current[oldKey] });
+      } catch (error) {
+        if (error.code === "campaign_exists" && error.campaign) {
+          openCampaign(registerCampaignRow(error.campaign));
+          showToast({ message: "The latest analysis already has a campaign for this play, so we opened it." });
+          return;
+        }
+        showToast({
+          message: error.conflict
+            ? "This draft changed elsewhere. Reload and try again."
+            : "The updated draft wasn't created. Your draft is unchanged.",
+          error: true,
+        });
+        return;
+      }
+      registerCampaignRow(result.previous);
+      const newKey = registerCampaignRow(result.campaign, { replaceContent: true });
+      openedKeysRef.current.delete(oldKey);
+      setRailKeys((prev) => [...prev.filter((key) => key !== oldKey && key !== newKey), newKey]);
+      setReviewKey(newKey);
+      setActivePage("campaigns");
+      showToast({ message: "Updated draft created. Check the preview and audience, then approve it." });
+    } finally {
+      creatingRef.current.delete(guard);
+      setReplacingKey("");
+    }
+  }
+
+  function viewCampaignResults(row) {
+    setOpenResultId(row.id);
+    setActivePage("results");
   }
 
   async function createCampaignTemplateInKlaviyo(campaignDraft) {
@@ -3652,6 +3849,12 @@ export function App() {
                   onViewEvidence={setSelectedEvidence}
                   onOpenInCampaigns={openBriefingCampaign}
                   approved={selectedBriefingRow ? Boolean(briefingKeyByPlay[selectedBriefingRow.play.play_id || selectedBriefingRow.play.id]) : false}
+                  existing={selectedExisting}
+                  latestAnalysedAt={briefingRun?.generated_at || null}
+                  onContinueDraft={openCampaign}
+                  onCreateUpdatedDraft={createUpdatedDraft}
+                  onViewResults={viewCampaignResults}
+                  creatingUpdatedDraft={Boolean(selectedExisting && replacingKey === selectedExisting.key)}
                   showAdvanced={showAdvanced}
                   narrationStatus={atulEngineResult?.presentedRun?.narration_status || null}
                 />
@@ -3674,6 +3877,7 @@ export function App() {
                       {c.displayName || c.playId}
                     </button>
                     <span className="earlier-campaign-meta">
+                      {c.supersededById ? "replaced by an updated draft · " : ""}
                       {c.status}
                       {c.sentAt ? ` · sent ${new Date(c.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
                       {c.frozen ? " · locked" : ""}
@@ -3704,6 +3908,7 @@ export function App() {
                               {formatAudience(play.audience_size)} customers
                               {/* Two entries can share a play; say which is which. */}
                               {play.fromEarlierRun ? " · Earlier analysis" : ""}
+                              {play.notInLatestAnalysis ? " · Not included in the latest analysis" : ""}
                             </small>
                           </span>
                         </button>
@@ -3743,6 +3948,16 @@ export function App() {
                         <div className="workspace-head">
                           <h3>{reviewPlay.play_name || titleizeId(reviewPlay.play_id)}</h3>
                           {reviewPlay.play_one_liner ? <p className="workspace-oneliner">{reviewPlay.play_one_liner}</p> : null}
+                          {reviewPlay.supersededById ? (
+                            <p className="notice-line" role="status">
+                              This draft was replaced by an updated draft.{" "}
+                              {campaignRowsByKey[String(reviewPlay.supersededById)] ? (
+                                <button type="button" className="link-btn" onClick={() => openCampaign(String(reviewPlay.supersededById))}>Open the updated draft</button>
+                              ) : null}
+                            </p>
+                          ) : reviewPlay.notInLatestAnalysis ? (
+                            <p className="notice-line">Not included in the latest analysis. This draft keeps the audience from its own analysis.</p>
+                          ) : null}
                           <span className="workspace-audience">{formatAudience(reviewPlay.audience_size)} customers matched</span>
                         </div>
 
@@ -3993,7 +4208,10 @@ export function App() {
                             )
                           ) : null}
 
-                          {workspaceStep === "send" ? (() => {
+                          {workspaceStep === "send" && reviewPlay.supersededById ? (
+                            <span className="send-state-label">Replaced by an updated draft</span>
+                          ) : null}
+                          {workspaceStep === "send" && !reviewPlay.supersededById ? (() => {
                             // Everything below follows the Ticket D contract, via
                             // one presenter. Local status is not consulted: it is
                             // not evidence that anything happened at Klaviyo.

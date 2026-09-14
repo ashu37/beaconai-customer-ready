@@ -93,6 +93,43 @@ export function mergeKeyList(prev = [], fromServer = [], { protectedKeys = new S
 }
 
 const isLive = (row) => row && row.status !== "dismissed";
+export const isSuperseded = (row) => Boolean(row?.supersededById);
+
+// Where a campaign is in its life, as the briefing describes it:
+//   draft      — still in BeaconAI (draft or approved), editable
+//   in_klaviyo — handed off: reserved, frozen or created in the provider
+//   sent       — the provider confirmed the send
+//
+// Sent is decided by the durable delivery state ALONE. providerSentAt is not
+// evidence: a scheduled campaign carries its scheduled time there, and reading
+// it as a send showed "Sent · Measuring" and offered a duplicate campaign for
+// one that had not gone out.
+export function campaignStage(row) {
+  if (!row) return null;
+  if (row.deliveryState === "sent") return "sent";
+  const delivery = row.deliveryState || "not_started";
+  if (row.klaviyoCampaignId || row.frozen || row.frozenAt || row.handoffReservedAt
+    || row.status === "sent" || !["not_started", "failed"].includes(delivery)) return "in_klaviyo";
+  return "draft";
+}
+
+const STAGE_ORDER = { draft: 0, in_klaviyo: 1, sent: 2 };
+const newestFirst = (a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0);
+
+// The merchant's existing work for a play, as the briefing card shows it. The
+// run on screen's own campaign comes first ("current"). Otherwise the most
+// actionable earlier campaign: an unfinished draft, then one in Klaviyo, then a
+// sent one. Dismissed and replaced campaigns are not "existing work".
+export function existingCampaignForPlay(rowsByKey = {}, playId, runId) {
+  const rows = Object.values(rowsByKey).filter((row) => row.playId === playId && isLive(row) && !isSuperseded(row));
+  const current = rows.find((row) => runId && row.runId === runId);
+  if (current) return { kind: "current", key: campaignKey(current), row: current };
+  const earlier = rows
+    .filter((row) => row.runId !== runId)
+    .sort((a, b) => (STAGE_ORDER[campaignStage(a)] - STAGE_ORDER[campaignStage(b)]) || newestFirst(a, b));
+  if (!earlier.length) return null;
+  return { kind: campaignStage(earlier[0]), key: campaignKey(earlier[0]), row: earlier[0] };
+}
 
 // The briefing's link from a play to the merchant's campaign for it — on the
 // run on screen only. A campaign from an older analysis never makes the new
@@ -105,11 +142,15 @@ export function briefingCampaignKeyByPlay(rowsByKey = {}, runId) {
   return out;
 }
 
-// Campaigns in the rail: the run on screen's live campaigns, plus whatever the
-// merchant is still holding open (an older draft they reopened or are editing).
+// Campaigns in the rail: the run on screen's live campaigns, every unfinished
+// draft from an earlier analysis (the merchant's work stays where they left it),
+// plus whatever the merchant is holding open. Replaced drafts and handed-off or
+// sent campaigns from earlier analyses are listed under Earlier campaigns.
 export function railCampaignKeys({ rowsByKey = {}, runId, keep = [] }) {
-  const current = Object.values(rowsByKey).filter((row) => row.runId === runId && isLive(row)).map(campaignKey);
-  return Array.from(new Set([...current, ...keep]));
+  const live = Object.values(rowsByKey).filter((row) => isLive(row) && !isSuperseded(row)).sort(newestFirst);
+  const current = live.filter((row) => row.runId === runId).map(campaignKey);
+  const unfinished = live.filter((row) => row.runId !== runId && campaignStage(row) === "draft").map(campaignKey);
+  return Array.from(new Set([...current, ...unfinished, ...keep]));
 }
 
 // Campaigns on other runs, for the "Earlier campaigns" list.
@@ -122,7 +163,7 @@ export function earlierCampaigns(rowsByKey = {}, runId) {
 // supplies the play's content only when the campaign belongs to the run on
 // screen. An older campaign is shown from its own record, never from a newer
 // analysis's version of the same play.
-export function workspacePlay(row, briefingPlays = [], runId) {
+export function workspacePlay(row, briefingPlays = [], runId, { latestPlayIds = null } = {}) {
   if (!row) return null;
   const fromBriefing = row.runId === runId
     ? briefingPlays.find((play) => (play.play_id || play.id) === row.playId)
@@ -138,5 +179,8 @@ export function workspacePlay(row, briefingPlays = [], runId) {
     play_id: row.playId,
     run_id: row.runId,
     fromEarlierRun: row.runId !== runId,
+    // The latest analysis has no recommendation (in any lane) for this play.
+    notInLatestAnalysis: Boolean(latestPlayIds && runId && !latestPlayIds.has(row.playId)),
+    supersededById: row.supersededById ?? null,
   };
 }
