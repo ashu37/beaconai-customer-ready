@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
-import { campaignSignature, canHandoff, draftSignature } from "./campaignSaveGate";
+import { campaignSignature, canHandoff, draftSignature, reviewNeedsRender } from "./campaignSaveGate";
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
@@ -2571,10 +2571,12 @@ export function App() {
   }, [reviewPlayId, campaignIdByPlay[reviewPlayId]]);
 
   // Auto-load the recipient preview when the merchant lands on the Audience step,
-  // so the list isn't blank until they hunt for a "Show emails" button.
+  // so the list isn't blank until they hunt for a "Show emails" button. The
+  // final step needs it too: an approved campaign reopened after a reload opens
+  // there directly and showed "Audience not loaded yet".
   const audienceRequestedRef = useRef("");
   useEffect(() => {
-    if (workspaceStep !== "audience" || !reviewPlayId) return;
+    if ((workspaceStep !== "audience" && workspaceStep !== "send") || !reviewPlayId) return;
     const draft = finalCampaignById.get(reviewPlayId);
     if (!draft) return;
     if (audiencePreviewsByCampaign[reviewPlayId]) return; // already loaded
@@ -2585,6 +2587,51 @@ export function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceStep, reviewPlayId]);
+
+  // The final step renders the email itself when nothing on screen is a render
+  // of the email as it stands — the case after a reload, where the Edit step
+  // that normally renders it never mounted. Same request, same record shape as
+  // the Edit step's preview, so the handoff binds to exactly what is shown here.
+  const reviewRenderRequestedRef = useRef("");
+  useEffect(() => {
+    if (workspaceStep !== "send" || !reviewPlay?.id || !selectedDraft) return;
+    const playId = reviewPlay.id;
+    const currentSignature = campaignSignature({
+      edits: draftEditsByPlay[playId], destinationUrl: destinationByPlay[playId],
+    });
+    if (!reviewNeedsRender({
+      rendered: approvedRender.current[playId],
+      currentSignature,
+      activeTemplateVersion: brandTemplateVersion,
+    })) return;
+    const requestKey = `${playId}:${currentSignature}:${brandTemplateVersion ?? ""}`;
+    if (reviewRenderRequestedRef.current === requestKey) return;
+    reviewRenderRequestedRef.current = requestKey;
+
+    let cancelled = false;
+    api.previewCampaignHtml({ ...selectedDraft, brandContext })
+      .then((result) => {
+        if (cancelled) return;
+        const record = {
+          signature: draftSignature(selectedDraft),
+          campaignSignature: currentSignature,
+          campaignKey: `${playId}:${selectedTemplate?.id || ""}`,
+          templateVersion: result.templateVersion ?? null,
+          fingerprint: result.renderFingerprint ?? null,
+          effectiveDestinationUrl: result.effectiveDestinationUrl ?? null,
+          html: result.html || "",
+        };
+        approvedRender.current[playId] = record;
+        setReviewPreviewHtmlByPlay((prev) => ({ ...prev, [playId]: record.html }));
+      })
+      .catch(() => {
+        // Left unrendered: the gate keeps refusing with its own message, and
+        // the next visit to this step tries again.
+        if (!cancelled) reviewRenderRequestedRef.current = "";
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceStep, reviewPlay?.id, selectedDraft, brandTemplateVersion]);
 
   async function runStep(label, fn) {
     setLoading(true);
@@ -3164,17 +3211,23 @@ export function App() {
     saveCampaignState(playId, { templateId, draftEdits: {} });
   }
 
-  // Explicit sign-off: move a reviewed campaign to "Ready to send".
-  function approveForSend(playId) {
+  // Explicit sign-off: move a reviewed campaign to "Ready to send" — once the
+  // server has accepted it. Marking it ready first and saving in the background
+  // left a refused approval (a conflict) showing as "Ready to send" while the
+  // row stayed a draft, and the only sign was a toast that disappeared.
+  async function approveForSend(playId) {
+    const result = await saveCampaignState(playId, { status: "approved" });
+    if (!result?.ok) return; // saveCampaignState already said why; stay on this step
     setApprovedForSend((prev) => (prev.includes(playId) ? prev : [...prev, playId]));
-    saveCampaignState(playId, { status: "approved" });
     setWorkspaceStep("send");
   }
 
-  // Send it back to review (edits or a mistaken approval).
-  function unapproveForSend(playId) {
+  // Send it back to review (edits or a mistaken approval). Same rule: the screen
+  // follows what was stored.
+  async function unapproveForSend(playId) {
+    const result = await saveCampaignState(playId, { status: "draft" });
+    if (!result?.ok) return;
     setApprovedForSend((prev) => prev.filter((id) => id !== playId));
-    saveCampaignState(playId, { status: "draft" });
     setWorkspaceStep("copy");
   }
 

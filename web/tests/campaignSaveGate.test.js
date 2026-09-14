@@ -130,3 +130,25 @@ test("handoff needs a preview that was actually rendered", () => {
   });
   assert.deepEqual(ok, { ok: true, revision: 2 });
 });
+
+test("the final review renders the email when a reload left it unrendered", async () => {
+  const { reviewNeedsRender } = await import("../src/campaignSaveGate.js");
+  const current = campaignSignature({ edits: { subject: "Hi" }, destinationUrl: null });
+
+  assert.equal(reviewNeedsRender({ rendered: null, currentSignature: current }), true, "nothing rendered after a reload");
+  assert.equal(
+    reviewNeedsRender({ rendered: { campaignSignature: current, templateVersion: 2 }, currentSignature: current, activeTemplateVersion: 2 }),
+    false,
+    "the render on screen is for this email and this design"
+  );
+  assert.equal(
+    reviewNeedsRender({ rendered: { campaignSignature: campaignSignature({ edits: { subject: "Old" } }), templateVersion: 2 }, currentSignature: current, activeTemplateVersion: 2 }),
+    true,
+    "the copy changed since it was rendered"
+  );
+  assert.equal(
+    reviewNeedsRender({ rendered: { campaignSignature: current, templateVersion: 1 }, currentSignature: current, activeTemplateVersion: 2 }),
+    true,
+    "the design was re-approved since"
+  );
+});

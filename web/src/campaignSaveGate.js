@@ -94,3 +94,18 @@ export function canHandoff({
 
   return { ok: true, revision: savedRevision };
 }
+
+// Whether the final review has to render the email itself before a draft can be
+// created. The preview normally comes from the Edit step, but an approved
+// campaign reopened after a reload lands straight on the final step, where
+// nothing had rendered it — so the handoff gate refused with "no approved
+// preview" and the merchant had to go back a step (found on the deployed app,
+// 2026-09-14). The final step renders when there is no render for the email as
+// it stands now, or when the design has moved on since.
+export function reviewNeedsRender({ rendered, currentSignature, activeTemplateVersion = null } = {}) {
+  if (!rendered || rendered.campaignSignature == null) return true;
+  if (rendered.campaignSignature !== currentSignature) return true;
+  if (activeTemplateVersion != null && rendered.templateVersion != null
+    && Number(rendered.templateVersion) !== Number(activeTemplateVersion)) return true;
+  return false;
+}
