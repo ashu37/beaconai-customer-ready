@@ -2531,6 +2531,13 @@ function StoreWorkspace({ onStoreChange }) {
   // conflict reported. The merchant loads the latest version first.
   const saveQueueRef = useRef({});
   const queuedSavesRef = useRef({});
+  // Fields whose save FAILED and has not been superseded, per campaign. A later
+  // save that succeeds for OTHER fields does not resolve them: showing "Saved"
+  // then hid an unpersisted destination and removed its Retry. They clear only
+  // when a successful save carries those same fields (or the merchant loads the
+  // latest version). Status changes are not kept here: they have their own action.
+  const unresolvedFieldsRef = useRef({});
+  const statusAfterSuccess = (key) => (Object.keys(unresolvedFieldsRef.current[key] || {}).length ? "failed" : "saved");
   const saveCampaignState = useCallback(async (key, fields, { afterConflict = false } = {}) => {
     // Identity is read ONCE, from the campaign record, when the save starts. A
     // campaign belongs to the run it was created in; writing it against
@@ -2565,7 +2572,10 @@ function StoreWorkspace({ onStoreChange }) {
         campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...campaignRowsRef.current[key], ...campaign } };
         setCampaignRowsByKey(campaignRowsRef.current);
         knownRevisionRef.current[key] = campaign.revision;
-        saveStatusRef.current[key] = "saved";
+        const unresolved = { ...(unresolvedFieldsRef.current[key] || {}) };
+        for (const name of Object.keys(fields || {})) delete unresolved[name];
+        unresolvedFieldsRef.current[key] = unresolved;
+        saveStatusRef.current[key] = statusAfterSuccess(key);
         // Record WHAT was persisted, from the row the server returned. The
         // handoff compares the draft on screen against this.
         savedSignatureRef.current[key] = campaignSignature({
@@ -2589,7 +2599,10 @@ function StoreWorkspace({ onStoreChange }) {
           });
           return { ok: false, reason: error.conflict, campaign: error.campaign, key };
         }
-        // A real write failure. Surfaced, not swallowed.
+        // A real write failure. Surfaced, not swallowed, and remembered until
+        // these fields are saved successfully.
+        const { status: _status, ...kept } = fields || {};
+        unresolvedFieldsRef.current[key] = { ...(unresolvedFieldsRef.current[key] || {}), ...kept };
         saveStatusRef.current[key] = "failed";
         return { ok: false, reason: "failed", key };
       }
@@ -2635,6 +2648,7 @@ function StoreWorkspace({ onStoreChange }) {
     latestRevision.current[key] = row.revision;
     savedSignatureRef.current[key] = campaignSignature({ edits: row.draftEdits, destinationUrl: row.destinationUrl });
     saveStatusRef.current[key] = "saved";
+    delete unresolvedFieldsRef.current[key];
     delete approvedRender.current[key];
     const put = (setter, value) => setter((prev) => {
       const next = { ...prev };
@@ -2649,6 +2663,21 @@ function StoreWorkspace({ onStoreChange }) {
       ? (prev.includes(key) ? prev : [...prev, key])
       : prev.filter((id) => id !== key)));
     setSaveStateByKey((prev) => ({ ...prev, [key]: "saved" }));
+    // The audience on screen was computed for the version just replaced (its
+    // holdout may have changed elsewhere). Discard it, read it again for the
+    // latest version, and keep the campaign from moving on until that read lands.
+    setAudiencePreviewsByCampaign((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    if (audienceRequestedRef.current === key) audienceRequestedRef.current = "";
+    setAudienceReload((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      await previewCampaignAudience({ id: key, play_id: row.playId, run_id: row.runId });
+    } catch (_) {
+      setAudienceReload((prev) => ({ ...prev, [key]: "failed" }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3506,6 +3535,9 @@ function StoreWorkspace({ onStoreChange }) {
   // the step's Continue button wait until the save and the re-read audience
   // have both landed. A merchant should not have to guess a safe pause.
   const [holdoutUpdatingKey, setHoldoutUpdatingKey] = useState("");
+  // Campaigns whose audience must be read again before they can move on:
+  // "loading" while it is re-read, "failed" until a read succeeds.
+  const [audienceReload, setAudienceReload] = useState({});
   async function changeHoldout(key, pct) {
     setHoldoutUpdatingKey(key);
     try {
@@ -3521,6 +3553,13 @@ function StoreWorkspace({ onStoreChange }) {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
+      // A successful read settles any reload the campaign was waiting on.
+      setAudienceReload((prev) => {
+        if (!(campaignDraft.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[campaignDraft.id];
+        return next;
+      });
       setAudiencePreviewsByCampaign((prev) => ({
         ...prev,
         [campaignDraft.id]: {
@@ -3566,6 +3605,9 @@ function StoreWorkspace({ onStoreChange }) {
   // handoff would go on refusing, with the UI insisting the campaign was saved.
   function retrySave(key) {
     return saveCampaignState(key, {
+      // Whatever failed and is still unresolved (template, holdout, …), with the
+      // copy and destination as they are on screen now.
+      ...(unresolvedFieldsRef.current[key] || {}),
       draftEdits: draftEditsByKey[key] || {},
       destinationUrl: destinationByKey[key] ?? null,
     });
@@ -4074,7 +4116,9 @@ function StoreWorkspace({ onStoreChange }) {
                       : "This campaign was handed off to Klaviyo, so its content is locked here. Make any further changes in Klaviyo.";
                     // Saves still queued, or the audience still updating: the next
                     // step would start from a campaign that isn't settled.
-                    const campaignBusy = saveStateByKey[reviewPlay.id] === "saving" || holdoutUpdatingKey === reviewPlay.id;
+                    const campaignBusy = saveStateByKey[reviewPlay.id] === "saving"
+                      || holdoutUpdatingKey === reviewPlay.id
+                      || Boolean(audienceReload[reviewPlay.id]);
                     // Send unlocks only after explicit approval — this is the gate
                     // that separates "reviewing" from "ready to send".
                     // P-A2: numbered steps. A step is "done" if a later step is
@@ -4188,6 +4232,20 @@ function StoreWorkspace({ onStoreChange }) {
 
                           {workspaceStep === "audience" && selectedCampaign ? (
                             <div className="audience-step">
+                              {/* Recovery from a conflict raised on this step
+                                  (a holdout change), and the audience reload that
+                                  follows it. Continue stays disabled meanwhile. */}
+                              {saveStateByKey[reviewPlay.id] === "conflict" ? (
+                                <p className="notice-line" role="alert">
+                                  This campaign changed elsewhere.{" "}
+                                  <button type="button" className="link-btn" onClick={() => loadLatestCampaign(reviewPlay.id)}>Load the latest version</button>
+                                </p>
+                              ) : null}
+                              {audienceReload[reviewPlay.id] === "loading" ? (
+                                <p className="notice-line" role="status">Reloading the audience for the latest version…</p>
+                              ) : audienceReload[reviewPlay.id] === "failed" ? (
+                                <p className="notice-line" role="alert">Couldn't reload the audience for the latest version. Use Show emails to try again before continuing.</p>
+                              ) : null}
                               <div className="segment-spec">
                                 <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
                                 <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>

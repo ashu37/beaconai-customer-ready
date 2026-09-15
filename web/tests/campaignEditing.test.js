@@ -324,3 +324,71 @@ test("the audience headline states assignment, not delivery; counts wait for cam
   assert.match(tile("Needs review") || "", /1/);
   apiModule.api.listCampaigns = record("listCampaigns", () => ({ ok: true, campaigns: clone(rows) }));
 });
+
+test("loading the latest version re-reads the audience and holds the campaign until it lands", async () => {
+  rows = [campaignRow()];
+  await mount();
+  await openCampaigns();
+  await click(button((t) => t === "Continue to audience"), 600);
+  const select = () => document.querySelector(".holdout-controls select");
+  assert.equal(select().value, "0.1");
+
+  // Another session sends this campaign to everyone.
+  Object.assign(rows[0], { holdoutPct: 0, revision: 5 });
+  await act(async () => { fireEvent.change(select(), { target: { value: "0.15" } }); await sleep(600); });
+  assert.match(text(), /This campaign changed elsewhere/);
+
+  hooks.beforeAudience = () => sleep(600);
+  await click(button((t) => t === "Load the latest version"), 150);
+  assert.match(text(), /Reloading the audience for the latest version/);
+  assert.equal(button((t) => t === "Updating…")?.disabled, true, "Continue waits for the audience");
+  assert.ok(!select() || select().value !== "0.1", "the old 10% split is not left on screen");
+
+  await settle(900);
+  assert.equal(select().value, "0", "the latest version's holdout");
+  assert.match(text(), /413 of 413 customers are assigned to the email group/);
+  assert.equal(button((t) => t === "Continue to send")?.disabled, false);
+
+  // And if the re-read fails, the campaign stays held until one succeeds.
+  Object.assign(rows[0], { holdoutPct: 0.05, revision: 9 });
+  await act(async () => { fireEvent.change(select(), { target: { value: "0.15" } }); await sleep(600); });
+  hooks.beforeAudience = () => { throw new Error("Server unavailable"); };
+  await click(button((t) => t === "Load the latest version"), 600);
+  assert.match(text(), /Couldn't reload the audience for the latest version/);
+  assert.equal(button((t) => t === "Updating…")?.disabled, true);
+  hooks.beforeAudience = null;
+  await click(button((t) => t === "Show emails"), 600);
+  assert.equal(button((t) => t === "Continue to send")?.disabled, false);
+  assert.equal(select().value, "0.05");
+});
+
+test("a later successful save does not hide an earlier failed one", async () => {
+  rows = [campaignRow()];
+  await mount();
+  await openCampaigns();
+  hooks.beforeSave = async (payload) => {
+    await sleep(400);
+    if (payload.destinationUrl !== undefined) throw new Error("Server unavailable");
+  };
+  await act(async () => { fireEvent.change(field("Button destination"), { target: { value: "https://shop.example/new" } }); });
+  await settle(700); // the destination save is on the wire
+  await type("Subject after the destination");
+  await settle(1800); // destination fails; the subject save queued behind it succeeds
+
+  assert.equal(rows[0].draftEdits.subject, "Subject after the destination");
+  assert.equal(rows[0].destinationUrl, undefined);
+  const state = document.querySelector(".save-state")?.textContent || "";
+  assert.match(state, /Not saved/, "the unsaved destination is still reported");
+  assert.ok(button((t) => t === "Retry save"), "and can still be retried");
+
+  await click(button((t) => t === "Continue to audience"), 400);
+  await click(button((t) => t === "Continue to send"), 900);
+  assert.equal(rows[0].status, "draft", "approval waits for the failed change");
+
+  hooks.beforeSave = null;
+  await click(button((t) => t.startsWith("Back")), 300);
+  await click(button((t) => t === "Retry save"), 600);
+  assert.equal(rows[0].destinationUrl, "https://shop.example/new");
+  assert.match(document.querySelector(".save-state")?.textContent || "", /Saved/);
+  assert.ok(!button((t) => t === "Retry save"));
+});
