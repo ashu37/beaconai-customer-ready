@@ -14,6 +14,8 @@ const {
   resolveStoredKlaviyoToken,
 } = require("../src/services/oauthService");
 
+// The nonce the initiating browser holds in its OAuth cookie.
+const BROWSER = "browser-nonce-1";
 const SHOP = "pkce-shop.myshopify.com";
 
 // Klaviyo's token endpoint, close enough to answer the two requests this flow
@@ -64,7 +66,7 @@ suite("the authorization link carries the challenge for a verifier we kept", asy
   await db.resetDatabase();
   const fake = await startFakeTokenEndpoint();
   try {
-    const url = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null }));
+    const url = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER }));
 
     assert.equal(url.searchParams.get("code_challenge_method"), "S256");
     const challenge = url.searchParams.get("code_challenge");
@@ -80,7 +82,7 @@ suite("the authorization link carries the challenge for a verifier we kept", asy
     );
     assert.ok(rows[0].code_verifier.startsWith("v1:"), "stored encrypted, not in the clear");
 
-    const exchange = await handleKlaviyoCallback({ state: stateFrom(url.toString()), code: "auth-code" });
+    const exchange = await handleKlaviyoCallback({ state: stateFrom(url.toString()), code: "auth-code" }, { browserNonce: BROWSER });
     assert.equal(exchange.shopDomain, SHOP);
     const sentVerifier = fake.requests[0].form.code_verifier;
     assert.ok(sentVerifier.length >= 43 && sentVerifier.length <= 128, `verifier length ${sentVerifier.length} is within 43-128`);
@@ -98,8 +100,8 @@ suite("two connection attempts never share a verifier", async () => {
   await db.resetDatabase();
   const fake = await startFakeTokenEndpoint();
   try {
-    const first = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null }));
-    const second = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null }));
+    const first = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER }));
+    const second = new URL(await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER }));
     assert.notEqual(first.searchParams.get("code_challenge"), second.searchParams.get("code_challenge"));
     assert.notEqual(first.searchParams.get("state"), second.searchParams.get("state"));
   } finally {
@@ -111,26 +113,26 @@ suite("a state cannot be replayed, and one without a verifier is refused", async
   await db.resetDatabase();
   const fake = await startFakeTokenEndpoint();
   try {
-    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null });
+    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER });
     const state = stateFrom(url);
-    await handleKlaviyoCallback({ state, code: "auth-code" });
+    await handleKlaviyoCallback({ state, code: "auth-code" }, { browserNonce: BROWSER });
 
     // Consumed. A second callback carrying it is not another connection.
     await assert.rejects(
-      () => handleKlaviyoCallback({ state, code: "auth-code" }),
-      /missing, expired, or already used/
+      () => handleKlaviyoCallback({ state, code: "auth-code" }, { browserNonce: BROWSER }),
+      /missing, expired, already used/
     );
 
     // A row written without a verifier (anything predating PKCE) is refused
     // here rather than sent to Klaviyo to be refused there.
     await query(
-      `INSERT INTO clean.oauth_states (state, provider, shop_domain, expires_at)
-       VALUES ('legacy-state', 'klaviyo', $1, NOW() + INTERVAL '5 minutes')`,
-      [SHOP]
+      `INSERT INTO clean.oauth_states (state, provider, shop_domain, browser_hash, expires_at)
+       VALUES ('legacy-state', 'klaviyo', $1, encode(sha256($2::bytea), 'hex'), NOW() + INTERVAL '5 minutes')`,
+      [SHOP, BROWSER]
     );
     const before = fake.requests.length;
     await assert.rejects(
-      () => handleKlaviyoCallback({ state: "legacy-state", code: "auth-code" }),
+      () => handleKlaviyoCallback({ state: "legacy-state", code: "auth-code" }, { browserNonce: BROWSER }),
       /Start connecting Klaviyo again/
     );
     assert.equal(fake.requests.length, before, "and Klaviyo was never asked");
@@ -143,8 +145,8 @@ suite("a refresh renews the token and sends no verifier", async () => {
   await db.resetDatabase();
   const fake = await startFakeTokenEndpoint();
   try {
-    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null });
-    await handleKlaviyoCallback({ state: stateFrom(url), code: "auth-code" });
+    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER });
+    await handleKlaviyoCallback({ state: stateFrom(url), code: "auth-code" }, { browserNonce: BROWSER });
 
     // The stored token is about to expire, which is what triggers a refresh.
     await query(
@@ -174,8 +176,8 @@ suite("simultaneous requests with an expired token share one refresh", async () 
   // the first refresh lands — the race a page load actually produces.
   const fake = await startFakeTokenEndpoint({ delayMs: 400 });
   try {
-    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null });
-    await handleKlaviyoCallback({ state: stateFrom(url), code: "auth-code" });
+    const url = await buildKlaviyoStartUrl({ shopDomain: SHOP, returnTo: null, browserNonce: BROWSER });
+    await handleKlaviyoCallback({ state: stateFrom(url), code: "auth-code" }, { browserNonce: BROWSER });
     await query(
       `UPDATE clean.connections SET klaviyo_expires_at = NOW() - INTERVAL '1 minute' WHERE shop_domain = $1`,
       [SHOP]

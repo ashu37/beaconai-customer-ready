@@ -9,6 +9,8 @@ const http = require("node:http");
 async function startApi() {
   const { router } = require("../../src/routes");
   const app = express();
+  // As server.js: webhook bodies stay raw for signature verification.
+  app.use("/api/webhooks", express.raw({ type: "*/*", limit: "1mb" }));
   app.use(express.json({ limit: "10mb" }));
   app.use("/api", router);
 
@@ -21,11 +23,14 @@ async function startApi() {
   // shop the request is about, so tests read as "this shop's merchant does X"
   // rather than bypassing the guard. Pass `session: null` to be anonymous, or a
   // different shop to be someone else.
-  function authHeaders(session, inferred) {
-    const { issueSession } = require("../../src/services/sessionService");
+  // Sessions are server-side, so each one is a real row (createSession).
+  async function authHeaders(session, inferred) {
+    const { createSession } = require("../../src/services/sessionService");
     if (session === null) return {};
     const shop = session || inferred;
-    return shop ? { authorization: `Bearer ${issueSession(shop)}` } : {};
+    if (!shop) return {};
+    const { token } = await createSession(shop);
+    return { authorization: `Bearer ${token}` };
   }
 
   return {
@@ -35,7 +40,7 @@ async function startApi() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...authHeaders(session, body?.shopDomain),
+          ...(await authHeaders(session, body?.shopDomain)),
         },
         body: JSON.stringify(body),
       });
@@ -49,7 +54,7 @@ async function startApi() {
         || path.match(/\/(?:campaigns|results|sync\/status|engine\/input|stats\/series|engine\/atul\/jobs\/latest|engine\/atul\/latest)\/([^/?]+)/)?.[1]
         || ""
       ) || null;
-      const response = await fetch(`${base}${path}`, { headers: authHeaders(session, inferred) });
+      const response = await fetch(`${base}${path}`, { headers: await authHeaders(session, inferred) });
       return { status: response.status, body: await response.json() };
     },
     async close() {

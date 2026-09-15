@@ -1,5 +1,11 @@
 require("dotenv").config();
 
+// The development default. Public by definition (it is in this repository), so
+// production refuses to start while any secret still falls back to it
+// (secretsPolicy.js).
+const DEV_SECRET = "beaconai-local-dev-secret";
+const isProduction = process.env.NODE_ENV === "production";
+
 function required(name) {
   const value = process.env[name];
   if (!value) {
@@ -10,7 +16,14 @@ function required(name) {
 
 const config = {
   port: Number(process.env.PORT || 4000),
+  // Runtime queries. In production this is the least-privilege application role
+  // (no BYPASSRLS, owns nothing).
   databaseUrl: required("DATABASE_URL"),
+  // Schema changes run as the table owner, separately. Unset in development,
+  // where one role does both.
+  migrationDatabaseUrl: process.env.MIGRATION_DATABASE_URL || null,
+  // The role the grants and row-level-security policy are written for.
+  appDbRole: process.env.APP_DB_ROLE || "beaconai_app",
   apiBaseUrl: process.env.API_BASE_URL || `http://localhost:${Number(process.env.PORT || 4000)}/api`,
   webBaseUrl: process.env.WEB_BASE_URL || "http://localhost:5177",
   // Origins allowed to send the session cookie. A credentialed request is
@@ -36,7 +49,20 @@ const config = {
   // ~152 s, narration ~60 s, so these leave wide headroom.
   engineTimeoutMs: Number(process.env.BEACONAI_ENGINE_TIMEOUT_MS) || 10 * 60 * 1000,
   narrationTimeoutMs: Number(process.env.BEACONAI_NARRATION_TIMEOUT_MS) || 5 * 60 * 1000,
-  tokenEncryptionSecret: process.env.TOKEN_ENCRYPTION_SECRET || process.env.SESSION_SECRET || "beaconai-local-dev-secret",
+  // Two secrets with two jobs. Sessions are signed with SESSION_SECRET, so
+  // signing out every browser never touches stored integration tokens, which are
+  // encrypted with TOKEN_ENCRYPTION_SECRET. They used to be one value.
+  //
+  // In production neither falls back to the other or to the development default:
+  // secretsPolicy.js refuses to start instead. In development they fall back so
+  // a fresh checkout runs.
+  sessionSecret: process.env.SESSION_SECRET
+    || (isProduction ? null : process.env.TOKEN_ENCRYPTION_SECRET || DEV_SECRET),
+  tokenEncryptionSecret: process.env.TOKEN_ENCRYPTION_SECRET
+    || (isProduction ? null : process.env.SESSION_SECRET || DEV_SECRET),
+  // Read-only: tokens that still decrypt under the previous key keep working
+  // while they are re-encrypted. Never used to encrypt.
+  tokenEncryptionPreviousSecret: process.env.TOKEN_ENCRYPTION_SECRET_PREVIOUS || null,
   shopify: {
     shopDomain: process.env.SHOPIFY_SHOP_DOMAIN,
     accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
@@ -64,4 +90,4 @@ const config = {
   },
 };
 
-module.exports = { config };
+module.exports = { config, DEV_SECRET };

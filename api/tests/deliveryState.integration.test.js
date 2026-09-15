@@ -6,7 +6,7 @@ const suite = db.available ? test : test.skip;
 
 const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
-const { issueSession } = require("../src/services/sessionService");
+
 const { upsertCampaign, getCampaign } = require("../src/services/campaignService");
 const {
   DELIVERY_STATES,

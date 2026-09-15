@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { config } = require("../config");
 const { pool, query } = require("../db");
+const { assertStoreActive } = require("./storeAccessService");
 const { buildEngineInputSnapshot, snapshotToCsv } = require("./engineInputSnapshot");
 
 const ENGINE_FLAGS = {
@@ -198,6 +199,8 @@ async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, ma
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // The analysis may have outlived the store's access. Refuse to store it.
+    await assertStoreActive(shopDomain, client);
     await client.query(
       `INSERT INTO clean.engine_run_snapshots
          (run_id, shop_domain, store_id, schema_version, engine_run, manifest,

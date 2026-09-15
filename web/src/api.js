@@ -143,6 +143,8 @@ export const api = {
   // would be a claim, not a credential.
   campaignDelivery: (campaignId) => request(`/campaigns/${campaignId}/delivery`),
   session: () => request("/session"),
+  // Ends this browser's session on the server, not only by clearing the cookie.
+  logout: () => request("/session/logout", { method: "POST" }),
   // The verified sender, or null. There is no sender-management feature here:
   // the merchant sets it in Klaviyo, and this only reports what is already true.
   klaviyoSender: () => request(`/klaviyo/sender?shopDomain=${encodeURIComponent(shopDomain)}`),

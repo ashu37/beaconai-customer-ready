@@ -33,6 +33,65 @@ function callbackUrl(provider) {
   return `${config.apiBaseUrl.replace(/\/$/, "")}/oauth/${provider}/callback`;
 }
 
+/**
+ * Where a completed connection may send the browser: a path on this app, or a
+ * URL on the configured web origin. Anything else — another site, a
+ * protocol-relative `//host`, a `javascript:` URL — is dropped for the default
+ * success page, so a crafted start link cannot turn sign-in into a redirect to a
+ * look-alike site.
+ */
+function safeReturnTo(value) {
+  if (!value || typeof value !== "string") return null;
+  const raw = value.trim();
+  let webOrigin;
+  try {
+    webOrigin = new URL(config.webBaseUrl).origin;
+  } catch (_) {
+    return null;
+  }
+  if (raw.startsWith("/")) {
+    if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
+    try {
+      const resolved = new URL(raw, webOrigin);
+      return resolved.origin === webOrigin ? resolved.toString() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  try {
+    const url = new URL(raw);
+    return url.origin === webOrigin && /^https?:$/.test(url.protocol) ? url.toString() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The browser that started a connection holds a random nonce in a short-lived
+// cookie; the state row holds only its hash.
+const OAUTH_BROWSER_COOKIE = "beaconai_oauth";
+const OAUTH_BROWSER_TTL_SECONDS = 15 * 60;
+
+function newBrowserNonce() {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function hashBrowserNonce(nonce) {
+  return crypto.createHash("sha256").update(String(nonce)).digest("hex");
+}
+
+function browserCookieAttributes(maxAge) {
+  const secure = /^https:/i.test(config.apiBaseUrl || config.webBaseUrl || "") ? "; Secure" : "";
+  return `Path=/api/oauth; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function oauthBrowserCookie(nonce) {
+  return `${OAUTH_BROWSER_COOKIE}=${encodeURIComponent(nonce)}; ${browserCookieAttributes(OAUTH_BROWSER_TTL_SECONDS)}`;
+}
+
+function clearOauthBrowserCookie() {
+  return `${OAUTH_BROWSER_COOKIE}=; ${browserCookieAttributes(0)}`;
+}
+
 function successRedirect(provider, shopDomain) {
   const url = new URL(config.webBaseUrl);
   url.searchParams.set("connected", provider);
@@ -40,29 +99,28 @@ function successRedirect(provider, shopDomain) {
   return url.toString();
 }
 
-function encryptionKey() {
-  return crypto.createHash("sha256").update(config.tokenEncryptionSecret).digest();
+// Token encryption lives in tokenCrypto.js (keyring, separate from session
+// signing). Re-exported below for existing callers.
+const { decryptToken, encryptToken } = require("./tokenCrypto");
+const { reactivateAfterReinstall } = require("./storeAccessService");
+
+// The address Shopify calls when the app is uninstalled, subscribed per store
+// after install. Compliance topics are configured in the app settings instead.
+function webhookAddress() {
+  return `${config.apiBaseUrl.replace(/\/$/, "")}/webhooks/shopify`;
 }
 
-function encryptToken(value) {
-  if (!value) return null;
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${encrypted.toString("base64")}`;
-}
-
-function decryptToken(value) {
-  if (!value) return null;
-  if (!String(value).startsWith("v1:")) return value;
-  const [, ivB64, tagB64, encryptedB64] = String(value).split(":");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivB64, "base64"));
-  decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(encryptedB64, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
+async function registerUninstallWebhook(shopDomain, accessToken) {
+  const url = `https://${shopDomain}/admin/api/${config.shopify.apiVersion}/webhooks.json`;
+  try {
+    await axios.post(url, {
+      webhook: { topic: "app/uninstalled", address: webhookAddress(), format: "json" },
+    }, { headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" }, timeout: 10000 });
+  } catch (error) {
+    // 422 "address for this topic has already been taken": already subscribed.
+    if (error.response?.status === 422) return;
+    throw error;
+  }
 }
 
 // PKCE (RFC 7636), which Klaviyo requires. A fresh verifier per authorization
@@ -76,7 +134,8 @@ function createPkcePair() {
   return { codeVerifier, codeChallenge };
 }
 
-async function createOauthState({ provider, shopDomain, returnTo, pkce = false }) {
+async function createOauthState({ provider, shopDomain, returnTo, browserNonce, pkce = false }) {
+  if (!browserNonce) throw new Error("An OAuth flow must be bound to the browser that starts it.");
   // Abandoned attempts expire but were never deleted, so the table only grew,
   // each row holding an encrypted verifier. Swept here, an hour past expiry, on
   // the path that creates them.
@@ -84,22 +143,33 @@ async function createOauthState({ provider, shopDomain, returnTo, pkce = false }
   const state = crypto.randomBytes(24).toString("hex");
   const { codeVerifier, codeChallenge } = pkce ? createPkcePair() : {};
   await query(
-    `INSERT INTO clean.oauth_states (state, provider, shop_domain, return_to, code_verifier, expires_at)
-     VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '15 minutes')`,
-    [state, provider, shopDomain || null, returnTo || null, codeVerifier ? encryptToken(codeVerifier) : null],
+    `INSERT INTO clean.oauth_states (state, provider, shop_domain, return_to, code_verifier, browser_hash, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '15 minutes')`,
+    [
+      state, provider, shopDomain || null, safeReturnTo(returnTo),
+      codeVerifier ? encryptToken(codeVerifier) : null, hashBrowserNonce(browserNonce),
+    ],
   );
   return { state, codeChallenge: codeChallenge || null };
 }
 
-async function consumeOauthState({ state, provider }) {
+// Consumed only by the browser that started it. A callback carrying a valid
+// state but no matching nonce leaves the row in place (so the real browser can
+// still finish) and fails — the case where someone else's callback link is
+// opened in this browser.
+async function consumeOauthState({ state, provider, browserNonce }) {
+  if (!state || !browserNonce) {
+    throw new Error("OAuth state is missing, expired, already used, or from another browser.");
+  }
   const result = await query(
     `DELETE FROM clean.oauth_states
      WHERE state = $1 AND provider = $2 AND expires_at > NOW()
+       AND browser_hash IS NOT NULL AND browser_hash = $3
      RETURNING state, provider, shop_domain, return_to, code_verifier`,
-    [state, provider],
+    [state, provider, hashBrowserNonce(browserNonce)],
   );
   if (!result.rows[0]) {
-    throw new Error("OAuth state is missing, expired, or already used.");
+    throw new Error("OAuth state is missing, expired, already used, or from another browser.");
   }
   const row = result.rows[0];
   return { ...row, code_verifier: decryptToken(row.code_verifier) };
@@ -124,11 +194,11 @@ function verifyShopifyHmac(queryParams) {
   return signature;
 }
 
-async function buildShopifyStartUrl({ shop, returnTo }) {
+async function buildShopifyStartUrl({ shop, returnTo, browserNonce }) {
   requireOauthConfig("shopify");
   const shopDomain = normalizeShopDomain(shop);
   // No PKCE: Shopify's authorization-code flow does not accept a challenge.
-  const { state } = await createOauthState({ provider: "shopify", shopDomain, returnTo });
+  const { state } = await createOauthState({ provider: "shopify", shopDomain, returnTo, browserNonce });
   const url = new URL(`https://${shopDomain}/admin/oauth/authorize`);
   url.searchParams.set("client_id", config.shopify.clientId);
   url.searchParams.set("scope", config.shopify.scopes);
@@ -137,11 +207,11 @@ async function buildShopifyStartUrl({ shop, returnTo }) {
   return url.toString();
 }
 
-async function handleShopifyCallback(queryParams) {
+async function handleShopifyCallback(queryParams, { browserNonce } = {}) {
   requireOauthConfig("shopify");
   verifyShopifyHmac(queryParams);
   const shopDomain = normalizeShopDomain(queryParams.shop);
-  const state = await consumeOauthState({ state: queryParams.state, provider: "shopify" });
+  const state = await consumeOauthState({ state: queryParams.state, provider: "shopify", browserNonce });
   if (state.shop_domain && state.shop_domain !== shopDomain) {
     throw new Error("Shopify callback shop does not match the OAuth state.");
   }
@@ -167,6 +237,15 @@ async function handleShopifyCallback(queryParams) {
     [shopDomain, encryptToken(accessToken), response.data.scope || config.shopify.scopes],
   );
 
+  // A reinstall lifts an uninstall block; a founder disable is not lifted by the
+  // merchant signing in, and no session is issued for it (routes.js checks).
+  await reactivateAfterReinstall(shopDomain);
+  // So an uninstall reaches us. Best effort: a failure here must not fail the
+  // sign-in, and is logged without the token.
+  await registerUninstallWebhook(shopDomain, accessToken).catch((error) => {
+    console.error(`[oauth] could not register app/uninstalled for ${shopDomain}: ${error.response?.status || error.message}`);
+  });
+
   return {
     provider: "shopify",
     shopDomain,
@@ -185,14 +264,14 @@ async function handleShopifyCallback(queryParams) {
  * is no session to require yet. Connecting Klaviyo is something an
  * already-signed-in merchant does, so there always is one.
  */
-async function buildKlaviyoStartUrl({ shopDomain: authorizedShopDomain, returnTo }) {
+async function buildKlaviyoStartUrl({ shopDomain: authorizedShopDomain, returnTo, browserNonce }) {
   // Checked BEFORE the config: an unauthenticated caller should be told to sign
   // in, not told which environment variables this deployment is missing.
   if (!authorizedShopDomain) throw new Error("An authenticated shop is required to connect Klaviyo.");
   requireOauthConfig("klaviyo");
   const shopDomain = normalizeShopDomain(authorizedShopDomain);
   const { state, codeChallenge } = await createOauthState({
-    provider: "klaviyo", shopDomain, returnTo, pkce: true,
+    provider: "klaviyo", shopDomain, returnTo, browserNonce, pkce: true,
   });
   const url = new URL(config.klaviyo.authorizeUrl);
   url.searchParams.set("response_type", "code");
@@ -207,9 +286,9 @@ async function buildKlaviyoStartUrl({ shopDomain: authorizedShopDomain, returnTo
   return url.toString();
 }
 
-async function handleKlaviyoCallback(queryParams) {
+async function handleKlaviyoCallback(queryParams, { browserNonce } = {}) {
   requireOauthConfig("klaviyo");
-  const state = await consumeOauthState({ state: queryParams.state, provider: "klaviyo" });
+  const state = await consumeOauthState({ state: queryParams.state, provider: "klaviyo", browserNonce });
   if (!queryParams.code) {
     throw new Error("Klaviyo callback is missing code.");
   }
@@ -403,6 +482,12 @@ async function resolveStoredKlaviyoToken(shopDomain) {
 }
 
 module.exports = {
+  OAUTH_BROWSER_COOKIE,
+  clearOauthBrowserCookie,
+  newBrowserNonce,
+  oauthBrowserCookie,
+  safeReturnTo,
+  webhookAddress,
   ownsGlobalCredentials,
   buildShopifyStartUrl,
   handleShopifyCallback,

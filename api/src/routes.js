@@ -47,16 +47,33 @@ const {
   getConnectionStatus,
   resolveStoredShopifyToken,
   resolveStoredKlaviyoToken,
+  OAUTH_BROWSER_COOKIE,
+  clearOauthBrowserCookie,
+  newBrowserNonce,
+  oauthBrowserCookie,
 } = require("./services/oauthService");
 const { resolveCampaignAudience } = require("./services/campaignAudienceService");
 const {
   authorizedForShop,
   authorizedShop,
-  issueSession,
+  clearSessionCookie,
+  createSession,
+  isFounderToken,
+  parseCookies,
   requireShopSession,
+  revokeSession,
   sessionCookie,
   sessionFromRequest,
 } = require("./services/sessionService");
+const {
+  StoreDisabledError,
+  assertStoreActive,
+  disableStore,
+  enableStore,
+  getStoreAccess,
+} = require("./services/storeAccessService");
+const { handleShopifyWebhook } = require("./services/shopifyWebhookService");
+const { tokenKeyHealth } = require("./services/tokenCrypto");
 const {
   DeliveryTransitionRejected,
   getDelivery,
@@ -105,7 +122,7 @@ const crypto = require("node:crypto");
 function renderFingerprint(html) {
   return crypto.createHash("sha256").update(String(html)).digest("hex").slice(0, 16);
 }
-const { getStartupState } = require("./startupState");
+const { getDatabaseSecurity, getStartupState } = require("./startupState");
 const { generateCampaignCopy, sanitizeStoredCopy, staticCopyFromPlay } = require("./services/copywriterService");
 const { splitAudience } = require("./services/holdoutService");
 const {
@@ -158,14 +175,18 @@ function requireFounderAuth(req, res) {
     });
     return false;
   }
-  const provided = req.get("x-beaconai-admin-token") || "";
-  // Length-independent comparison is not the concern here; an attacker cannot
-  // observe timing across a network for a secret of this shape. Constant-time
-  // would be better hygiene and is worth doing when Ticket D replaces this.
-  if (provided !== expected) {
+  // Constant-time, like every other founder-token check.
+  if (!isFounderToken(req.get("x-beaconai-admin-token"))) {
     res.status(403).json({ ok: false, error: "Not authorized to configure the email shell." });
     return false;
   }
+  return true;
+}
+
+// A disabled or uninstalled store, from any route that starts work for it.
+function storeDisabledResponse(res, error) {
+  if (!(error instanceof StoreDisabledError)) return false;
+  res.status(403).json({ ok: false, code: "store_disabled", error: error.message });
   return true;
 }
 
@@ -254,6 +275,10 @@ const PUBLIC_PATHS = [
   /^\/health$/,
   /^\/ready$/,
   /^\/session$/,
+  // Clears the cookie even for a session that is already gone.
+  /^\/session\/logout$/,
+  // Authenticated by Shopify's HMAC over the raw body, not a session.
+  /^\/webhooks\/shopify$/,
   /^\/oauth\//,
   /^\/connections\/status$/,
   /^\/$/,
@@ -290,12 +315,7 @@ async function resolveKlaviyoKey(shopDomain, { privateKey } = {}) {
 // The founder token, compared in constant time, for the few public endpoints
 // that show operators more than they show everyone else.
 function isFounderRequest(req) {
-  const expected = process.env.BEACONAI_ADMIN_TOKEN;
-  const provided = req.get("x-beaconai-admin-token");
-  if (!expected || !provided) return false;
-  const a = Buffer.from(String(provided));
-  const b = Buffer.from(String(expected));
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  return isFounderToken(req.get("x-beaconai-admin-token"));
 }
 
 // Health and readiness are public, so their bodies are too. The database target
@@ -334,11 +354,19 @@ router.get("/ready", async (req, res) => {
     }
   }
   const ready = startedReady && live;
+  // Founder view: the database boundary and which key opens each stored token
+  // (counts only). After a secrets change every token should be "current".
+  let security;
+  if (isFounderRequest(req)) {
+    const tokens = live ? await tokenKeyHealth(query).catch((error) => ({ error: error.message })) : null;
+    security = { database: getDatabaseSecurity(), tokens };
+  }
   res.status(ready ? 200 : 503).json({
     ok: ready,
     service: "beaconai-api",
     startup: startupForResponse(req),
     database: { live, ...(isFounderRequest(req) && liveError ? { error: liveError } : {}) },
+    ...(security ? { security } : {}),
   });
 });
 
@@ -382,12 +410,14 @@ router.get("/oauth/:provider/start", (req, res) => {
   Promise.resolve()
     .then(async () => {
       const provider = req.params.provider;
+      // Bound to this browser: the callback must come back with this cookie.
+      const browserNonce = newBrowserNonce();
 
       if (provider === "klaviyo") {
         // Connecting Klaviyo writes credentials against a shop. Which shop must
         // come from the session, not the query — otherwise anyone can start the
         // flow naming another store and overwrite its connection on completion.
-        const session = sessionFromRequest(req);
+        const session = await sessionFromRequest(req);
         if (!session) {
           res.status(401).json({ ok: false, error: "Sign in to this store before connecting Klaviyo." });
           return;
@@ -395,27 +425,29 @@ router.get("/oauth/:provider/start", (req, res) => {
         const url = await buildKlaviyoStartUrl({
           shopDomain: session.shopDomain,
           returnTo: req.query.returnTo,
+          browserNonce,
         });
+        res.setHeader("Set-Cookie", oauthBrowserCookie(browserNonce));
         res.redirect(url);
         return;
       }
 
-      const options = {
-        shop: req.query.shop,
-        returnTo: req.query.returnTo,
-      };
-      // Shopify only: this IS the sign-in, so there is no session to require.
-      const url = provider === "shopify"
-        ? await buildShopifyStartUrl(options)
-        : null;
-      if (!url) {
+      if (provider !== "shopify") {
         res.status(404).json({ ok: false, error: `Unsupported OAuth provider: ${provider}` });
         return;
       }
+      // Shopify only: this IS the sign-in, so there is no session to require.
+      const url = await buildShopifyStartUrl({
+        shop: req.query.shop,
+        returnTo: req.query.returnTo,
+        browserNonce,
+      });
+      res.setHeader("Set-Cookie", oauthBrowserCookie(browserNonce));
       res.redirect(url);
     })
     .catch((error) => {
-      res.status(500).json({ ok: false, error: error.message });
+      console.error(`[oauth] start failed for ${req.params.provider}: ${error.message}`);
+      res.status(500).json({ ok: false, error: "We couldn't start the connection. Try again from BeaconAI." });
     });
 });
 
@@ -423,37 +455,115 @@ router.get("/oauth/:provider/callback", (req, res) => {
   Promise.resolve()
     .then(async () => {
       const provider = req.params.provider;
+      const browserNonce = parseCookies(req.headers.cookie)[OAUTH_BROWSER_COOKIE] || null;
       const result = provider === "shopify"
-        ? await handleShopifyCallback(req.query)
+        ? await handleShopifyCallback(req.query, { browserNonce })
         : provider === "klaviyo"
-          ? await handleKlaviyoCallback(req.query)
+          ? await handleKlaviyoCallback(req.query, { browserNonce })
           : null;
       if (!result) {
         res.status(404).json({ ok: false, error: `Unsupported OAuth provider: ${provider}` });
         return;
       }
-      // The ONE place a session is minted: a completed Shopify OAuth callback is
-      // the only point at which the shop has demonstrably authorised us.
+      const cookies = [clearOauthBrowserCookie()];
+      // The ONE place a session is created: a completed Shopify OAuth callback is
+      // the only point at which the shop has demonstrably authorised us. Not for
+      // a store whose access the founder has turned off.
       if (provider === "shopify" && result.shopDomain) {
-        res.setHeader("Set-Cookie", sessionCookie(issueSession(result.shopDomain)));
+        await assertStoreActive(result.shopDomain);
+        const { token } = await createSession(result.shopDomain);
+        cookies.push(sessionCookie(token));
       }
+      res.setHeader("Set-Cookie", cookies);
       res.redirect(result.redirectTo);
     })
     .catch((error) => {
-      res.status(500).json({ ok: false, error: error.message });
+      // Details to the log (never the query string, which carries the code);
+      // a plain message to the browser.
+      console.error(`[oauth] callback failed for ${req.params.provider}: ${error.message}`);
+      res.setHeader("Set-Cookie", clearOauthBrowserCookie());
+      const disabled = error instanceof StoreDisabledError;
+      res.status(disabled ? 403 : 400).json({
+        ok: false,
+        code: disabled ? "store_disabled" : "oauth_failed",
+        error: disabled
+          ? error.message
+          : "We couldn't complete the connection. Start again from BeaconAI in this browser.",
+      });
     });
 });
 
 // The shop this caller is authenticated as, if any. The client uses it to know
 // whether to show a sign-in prompt; it is not itself a credential.
-router.get("/session", (req, res) => {
-  const session = sessionFromRequest(req);
-  res.json({
-    ok: true,
-    authenticated: Boolean(session),
-    shopDomain: session?.shopDomain || null,
-    expiresAt: session?.expiresAt || null,
-  });
+router.get("/session", async (req, res) => {
+  try {
+    const session = await sessionFromRequest(req);
+    res.json({
+      ok: true,
+      authenticated: Boolean(session),
+      shopDomain: session?.shopDomain || null,
+      expiresAt: session?.expiresAt || null,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: "Couldn't check the session." });
+  }
+});
+
+// Ends this session on the server, then clears the cookie. The same token is
+// refused afterwards even if something kept a copy of it.
+router.post("/session/logout", async (req, res) => {
+  try {
+    const session = await sessionFromRequest(req);
+    if (session) await revokeSession(session.sessionId, "logout");
+    res.setHeader("Set-Cookie", clearSessionCookie());
+    res.json({ ok: true, signedOut: true });
+  } catch (error) {
+    res.setHeader("Set-Cookie", clearSessionCookie());
+    res.status(500).json({ ok: false, error: "Couldn't end the session on the server. Try again." });
+  }
+});
+
+// Shopify webhooks: app/uninstalled and the privacy topics. Verified against the
+// raw body before anything in it is read (shopifyWebhookService.js).
+router.post("/webhooks/shopify", async (req, res) => {
+  try {
+    const result = await handleShopifyWebhook({
+      rawBody: req.body,
+      headers: req.headers,
+    });
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error(`[webhook] shopify handler failed: ${error.message}`);
+    // 500 so Shopify retries; nothing about the payload goes back.
+    res.status(500).json({ ok: false });
+  }
+});
+
+// Founder: turn a store's access off or back on. Off revokes every session,
+// stops running work and refuses new work; on lifts the block (the merchant
+// signs in again).
+router.post("/admin/stores/:shopDomain/disable", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const result = await disableStore(req.params.shopDomain, { reason: "disabled_by_founder" });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+router.post("/admin/stores/:shopDomain/enable", async (req, res) => {
+  if (!requireFounderAuth(req, res)) return;
+  try {
+    const access = await getStoreAccess(req.params.shopDomain);
+    if (access?.uninstalled_at && access.disabled_reason === "uninstalled") {
+      res.status(409).json({ ok: false, error: "This store uninstalled BeaconAI. It is re-enabled by reinstalling." });
+      return;
+    }
+    res.json({ ok: true, ...(await enableStore(req.params.shopDomain)) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 // Public, because onboarding must render "Connect Shopify" for a shop nobody has
@@ -467,7 +577,7 @@ router.get("/connections/status", async (req, res) => {
       return;
     }
     const status = await getConnectionStatus(shopDomain);
-    const session = sessionFromRequest(req);
+    const session = await sessionFromRequest(req);
     const authenticated = Boolean(session && session.shopDomain === shopDomain);
     if (authenticated && status?.shopify) {
       status.shopify.history = historyAccess({
@@ -751,6 +861,7 @@ router.post("/sync/shopify", async (req, res) => {
   try {
     const shop = authorizedShop(req, res, req.body.shopDomain);
     if (!shop) return;
+    await assertStoreActive(shop);
     const { shopDomain, accessToken } = await resolveShopifyConfig(shop, req.body);
     // No default cap: undefined limit paginates every resource to completion.
     // A caller may still pass an explicit numeric limit to bound the sync — and
@@ -819,6 +930,7 @@ router.post("/sync/shopify", async (req, res) => {
       },
     });
   } catch (error) {
+    if (storeDisabledResponse(res, error)) return;
     res.status(500).json({
       ok: false,
       syncRunId: error.syncRunId || null,
@@ -869,6 +981,7 @@ router.post("/engine/atul/run", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.body.shopDomain);
     if (!shopDomain) return;
+    await assertStoreActive(shopDomain);
     const useFixture = Boolean(req.body.useFixture);
 
     // The gate lives here, not on a disabled button. A fixture run is exempt
@@ -901,8 +1014,12 @@ router.post("/engine/atul/run", async (req, res) => {
       execute: async () => {
         // getEngineInput still supplies brand/product context; the ORDERS the
         // engine reads come from `snapshot`.
+        // Checked again at each stage: access can end while this runs, and a
+        // stopped store's data must not be analysed, stored or sent to narration.
+        await assertStoreActive(shopDomain);
         const input = await getEngineInput(shopDomain);
         const result = await runAtulEngine(input, { shopDomain, useFixture, snapshot, syncRunId });
+        await assertStoreActive(shopDomain);
         try {
           await narrateAtulRun(result);
         } catch (narrationError) {
@@ -914,6 +1031,7 @@ router.post("/engine/atul/run", async (req, res) => {
 
     res.status(202).json({ ok: true, accepted: true, shopDomain, job });
   } catch (error) {
+    if (storeDisabledResponse(res, error)) return;
     if (error instanceof SyncNotReadyError) {
       res.status(409).json({ ok: false, error: error.message, readiness: error.readiness });
       return;
@@ -973,6 +1091,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.body.shopDomain);
     if (!shopDomain) return;
+    await assertStoreActive(shopDomain);
     const privateKey = await resolveKlaviyoKey(shopDomain, req.body);
     if (!req.body.campaign) {
       res.status(400).json({ ok: false, error: "campaign is required" });
@@ -1304,6 +1423,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       assignment: packageResult.assignment,
     });
   } catch (error) {
+    if (storeDisabledResponse(res, error)) return;
     if (error instanceof UnverifiedInputError) {
       res.status(409).json({
         ok: false,

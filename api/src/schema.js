@@ -1,4 +1,8 @@
-const { pool, query } = require("./db");
+// Owner connection: schema changes, grants and policies are not the application
+// role's to make (databaseSecurity.js).
+const { migrationPool: pool, migrationQuery: query } = require("./db");
+const { applyAccessControls } = require("./services/databaseSecurity");
+const { config } = require("./config");
 
 async function initSchema() {
   await query(`CREATE SCHEMA IF NOT EXISTS raw;`);
@@ -41,6 +45,54 @@ async function initSchema() {
   // that request's state row and dies with it. Stored encrypted like every other
   // secret at rest, even though these rows expire in 15 minutes.
   await query(`ALTER TABLE clean.oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT;`);
+  // The browser that started the flow: a hash of the nonce in its short-lived
+  // cookie. The callback must present the same nonce, so a callback link opened
+  // in another browser cannot complete someone else's connection.
+  await query(`ALTER TABLE clean.oauth_states ADD COLUMN IF NOT EXISTS browser_hash TEXT;`);
+
+  // Server-side sessions. The signed token carries only this id; every request
+  // checks the row, so logout, a founder disable and an uninstall take effect
+  // immediately instead of when a 14-day signature expires.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.sessions (
+      id TEXT PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      revoked_at TIMESTAMPTZ,
+      revoked_reason TEXT
+    );
+  `);
+  await query(`CREATE INDEX IF NOT EXISTS sessions_shop_idx ON clean.sessions (shop_domain) WHERE revoked_at IS NULL;`);
+
+  // Whether a store may be used at all. Absent row = active. A disabled store's
+  // sessions are refused and no new sync, analysis or handoff starts for it.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.store_access (
+      shop_domain TEXT PRIMARY KEY,
+      disabled_at TIMESTAMPTZ,
+      disabled_reason TEXT,
+      uninstalled_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  // Privacy requests received from Shopify (customers/data_request,
+  // customers/redact, shop/redact), recorded on arrival and completed by the
+  // deletion work. The payload holds only what Shopify sent to identify the
+  // subject.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.privacy_requests (
+      id BIGSERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      topic TEXT NOT NULL,
+      webhook_id TEXT,
+      payload JSONB,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    );
+  `);
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS privacy_requests_webhook_idx ON clean.privacy_requests (webhook_id) WHERE webhook_id IS NOT NULL;`);
 
   // One analysis per store at a time, enforced by the database rather than by
   // process memory: the partial unique index admits a single 'running' row per
@@ -851,6 +903,10 @@ async function initSchema() {
       `input snapshots still hold pre-conversion dates, so each must re-sync before a new analysis.`
     );
   }
+
+  // Last, so every table created above is covered: grants to the application
+  // role only, nothing to the Supabase API roles, row-level security on.
+  await applyAccessControls(query, { appRole: config.appDbRole });
 }
 
 module.exports = { initSchema };
