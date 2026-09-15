@@ -468,9 +468,14 @@ function RecommendationDetail({
                 <strong>{narration.what_we_d_send}</strong>
               </div>
             ) : null}
+            {/* Always shown, from the product's actual behaviour and this play's
+                audience: one email, no offer. When the message-angle prose above
+                is dropped for contradicting the evidence, this is what remains. */}
             <div className="model-row">
-              <span>Template step</span>
-              <strong>Choose in Campaigns after approving</strong>
+              <span>What BeaconAI creates</span>
+              <strong>
+                One email draft for the {audienceLabel} customers in this audience. No discount or follow-up emails are added.
+              </strong>
             </div>
             <div className="model-row">
               <span>Next</span>
