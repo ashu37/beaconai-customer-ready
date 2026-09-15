@@ -24,7 +24,8 @@ const CLAIMING_COPY = {
     support: "",
     cta: "Shop the serum",
     rationale: "",
-    featured_product_id: null,
+    featured_product_id: "p1",
+    featured_product: { title: "Hyaluronic Daily Moisturizer", imageUrl: "https://cdn.example/moisturizer.png" },
   },
   fallback_slots: [],
   playbook_version: "test",
@@ -64,6 +65,9 @@ suite("the campaign list serves stored copy through the claim rules, leaving mer
   assert.equal(campaign.copy.copy.body, "", "blanked, so the draft uses its starting template");
   assert.equal(campaign.copy.copy.headline, "Explore Niacinamide Pore Serum");
   assert.deepEqual(campaign.draftEdits, { cta: "You picked up something great" }, "the merchant's own words are theirs");
+  // A real product of this store stays featured, image and all.
+  assert.equal(campaign.copy.copy.featured_product_id, "p1");
+  assert.deepEqual(campaign.copy.copy.featured_product, { title: "Hyaluronic Daily Moisturizer", imageUrl: "https://cdn.example/moisturizer.png" });
 });
 
 suite("cached copy is checked again before it is returned", async () => {

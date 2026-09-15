@@ -47,15 +47,35 @@ function sentenceAt(text, index) {
 
 // --- 1. Percentages ---------------------------------------------------------
 
-const PERCENT_FIGURE = /(\d+(?:\.\d+)?)\s*(percentage points?|percent\b|pp\b|points?\b|%)/gi;
-const CHANGE_WORDS = /\b(?:up|down|rose|risen|rising|fell|fallen|falling|dropped|declined?|increased?|decreased?|grew|grown|shift(?:ed)?|changed?|moved|higher|lower|gain(?:ed)?|lost)\b/i;
+// An optional explicit sign is part of the figure: "+20.6 points", "−20.6 points".
+const PERCENT_FIGURE = /([+\-\u2212]?)(\d+(?:\.\d+)?)\s*(percentage points?|percent\b|pp\b|points?\b|%)/gi;
+const UP_WORDS = "up|rose|risen|rising|increased?|increasing|grew|grown|growing|higher|gained?|climbed|jumped|improved|improving";
+const DOWN_WORDS = "down|fell|fallen|falling|dropped|dropping|declined?|declining|decreased?|decreasing|lower|lost|slipped|shrank|shrunk|worsened";
+const CHANGE_WORDS = new RegExp(`\\b(?:${UP_WORDS}|${DOWN_WORDS}|shift(?:ed)?|changed?|moved)\\b`, "i");
+const DIRECTION_WORD = new RegExp(`\\b(${UP_WORDS}|${DOWN_WORDS})\\b`, "gi");
+const IS_UP = new RegExp(`^(?:${UP_WORDS})$`, "i");
+
+// The direction a sentence claims for the figure at `index`: its explicit sign,
+// else the direction word nearest to it ("down 20.6 points", "20.6 points
+// lower"). null when the sentence names no direction ("changed by 20.6 points").
+function claimedDirection(sentence, figureIndex, sign) {
+  if (sign === "+") return "up";
+  if (sign === "-" || sign === "\u2212") return "down";
+  let nearest = null;
+  for (const match of sentence.matchAll(DIRECTION_WORD)) {
+    const distance = Math.abs(match.index - figureIndex);
+    if (!nearest || distance < nearest.distance) nearest = { distance, up: IS_UP.test(match[1]) };
+  }
+  return nearest ? (nearest.up ? "up" : "down") : null;
+}
 const RATE_FRAMING = /\b(?:sits? at|stands? at|is at|at roughly|at approximately|at about|at around|rate of|currently)\b/i;
 
 function checkPercentages(text, change) {
   const violations = [];
   for (const match of text.matchAll(PERCENT_FIGURE)) {
-    const value = Number(match[1]);
-    const unitToken = match[2].toLowerCase();
+    const sign = match[1];
+    const value = Number(match[2]);
+    const unitToken = match[3].toLowerCase();
     const sentence = sentenceAt(text, match.index);
     if (!change || !["percentage_points", "percent"].includes(change.unit)) {
       violations.push({ rule: "percentage_untraceable", figure: match[0] });
@@ -69,8 +89,15 @@ function checkPercentages(text, change) {
       violations.push({ rule: "percentage_untraceable", figure: match[0] });
     } else if (!unitMatches) {
       violations.push({ rule: "percentage_wrong_unit", figure: match[0], expectedUnit: change.unit });
-    } else if (RATE_FRAMING.test(sentence) || !CHANGE_WORDS.test(sentence)) {
+    } else if (RATE_FRAMING.test(sentence) || !(sign || CHANGE_WORDS.test(sentence))) {
       violations.push({ rule: "change_presented_as_rate", figure: match[0] });
+    } else {
+      // The right size in the wrong direction is the opposite finding.
+      const actual = Number(change.value) > 0 ? "up" : Number(change.value) < 0 ? "down" : null;
+      const claimed = claimedDirection(sentence, match.index - text.indexOf(sentence), sign);
+      if (actual && claimed && claimed !== actual) {
+        violations.push({ rule: "direction_reversed", figure: match[0], observed: actual });
+      }
     }
   }
   return violations;

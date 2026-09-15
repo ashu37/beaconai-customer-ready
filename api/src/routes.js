@@ -1387,7 +1387,9 @@ router.get("/campaigns/:shopDomain", async (req, res) => {
     const withCopy = listed.filter((c) => c.copy?.copy);
     let products = [];
     if (withCopy.length) {
-      const { rows } = await query(`SELECT title FROM clean.products WHERE shop_domain = $1 AND title IS NOT NULL`, [shopDomain]);
+      // `id` as well as `title`: the check keeps a featured product only when
+      // its id is a real product of this store.
+      const { rows } = await query(`SELECT id, title FROM clean.products WHERE shop_domain = $1`, [shopDomain]);
       products = rows;
     }
     const campaigns = listed.map((c) => (c.copy?.copy

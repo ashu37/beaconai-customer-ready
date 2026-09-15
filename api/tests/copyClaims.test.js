@@ -45,6 +45,37 @@ test("the walkthrough's purchase claim is refused for an audience not defined by
   assert.equal(copyClaimViolation("Explore Hyaluronic Daily Moisturizer.", { playId: FIRST_TO_SECOND, products: PRODUCTS }), null);
 });
 
+test("every common purchase construction is refused, with typographic apostrophes too", () => {
+  const broad = { playId: FIRST_TO_SECOND, products: PRODUCTS };
+  const noCatalog = { playId: FIRST_TO_SECOND, products: [] };
+  for (const text of [
+    "Thanks for purchasing Hyaluronic Daily Moisturizer.",
+    "You’ve bought Hyaluronic Daily Moisturizer.",
+    "You've bought Hyaluronic Daily Moisturizer.",
+    "Thank you for your order of the Hyaluronic Daily Moisturizer!",
+    "Thanks for choosing Hyaluronic Daily Moisturizer.",
+    "Your recent purchase of Hyaluronic Daily Moisturizer is on its way.",
+    "Hope you’re enjoying your Hyaluronic Daily Moisturizer.",
+    "How’s your Hyaluronic Daily Moisturizer?",
+  ]) {
+    assert.match(copyClaimViolation(text, broad) || "", /specific product/, `with the catalog: ${text}`);
+    assert.match(copyClaimViolation(text, noCatalog) || "", /specific product/, `without the catalog: ${text}`);
+  }
+
+  // Through the full validator: the review's two sentences never survive as copy.
+  const { copy } = validateAndFallback({
+    subject_variants: ["You’ve bought Hyaluronic Daily Moisturizer"],
+    body: "Thanks for purchasing Hyaluronic Daily Moisturizer.",
+    cta: "Shop the serum",
+  }, { subject: "Thanks for your first order", body: "Thanks for your first order. Here are a few more things to explore.", cta: "Shop the picks" }, PRODUCTS, { playId: FIRST_TO_SECOND });
+  assert.deepEqual(copy.subject_variants, ["Thanks for your first order"]);
+  assert.equal(copy.body, "Thanks for your first order. Here are a few more things to explore.");
+
+  // Generic thanks, where the audience guarantees an order, stays allowed.
+  assert.equal(copyClaimViolation("Thanks for purchasing with us.", broad), null);
+  assert.equal(copyClaimViolation("Thanks for your first order.", broad), null);
+});
+
 test("a generic purchase claim is allowed only where the audience guarantees an order", () => {
   assert.equal(audienceGuarantees(FIRST_TO_SECOND).priorPurchase, true);
   assert.equal(copyClaimViolation("Thanks for your first order.", { playId: FIRST_TO_SECOND }), null);

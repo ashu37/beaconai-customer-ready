@@ -44,6 +44,21 @@ test("a change in percentage points is not presented as the current rate", () =>
   assert.deepEqual(rules("Reactivation is down 35 points.", WINBACK, points(-20.6)), ["percentage_untraceable"]);
 });
 
+test("a change reported in the wrong direction is refused, however it is signed", () => {
+  // Observed: reactivation DOWN 20.6 points; second purchases UP 0.5 points.
+  assert.deepEqual(rules("Reactivation is up 20.6 percentage points.", WINBACK, points(-20.6)), ["direction_reversed"]);
+  assert.deepEqual(rules("Reactivation moved +20.6 points on the prior period.", WINBACK, points(-20.6)), ["direction_reversed"]);
+  assert.deepEqual(rules("Reactivation is 20.6 points higher than before.", WINBACK, points(-20.6)), ["direction_reversed"]);
+  assert.deepEqual(rules("The second-purchase rate fell 0.5 percentage points.", FIRST_TO_SECOND, points(0.5)), ["direction_reversed"]);
+  assert.deepEqual(rules("The second-purchase rate moved −0.5 points.", FIRST_TO_SECOND, points(0.5)), ["direction_reversed"]);
+
+  // The right direction, by word or sign, passes; so does naming no direction.
+  assert.deepEqual(rules("Reactivation is down 20.6 percentage points.", WINBACK, points(-20.6)), []);
+  assert.deepEqual(rules("Reactivation moved −20.6 points.", WINBACK, points(-20.6)), []);
+  assert.deepEqual(rules("The second-purchase rate is 0.5 percentage points higher.", FIRST_TO_SECOND, points(0.5)), []);
+  assert.deepEqual(rules("Reactivation changed by 20.6 percentage points.", WINBACK, points(-20.6)), []);
+});
+
 test("inactivity claims use the audience definition's own bound", () => {
   assert.equal(inactivityBound(WINBACK), 28, "no order in the last 28 days, not the 21-day parameter");
   assert.deepEqual(

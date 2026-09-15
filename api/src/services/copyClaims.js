@@ -50,14 +50,46 @@ function audienceGuarantees(playId) {
   };
 }
 
-// "You bought / picked up / ordered …" — a statement about what the reader did.
-const PURCHASE_VERB = /\byou(?:'ve| have)?\s+(?:recently\s+|already\s+|just\s+)?(?:picked up|bought|purchased|ordered|got|grabbed|tried|chose|added|went with|snagged)\b/i;
-// "You picked up the Hyaluronic Daily Moisturizer": a purchase verb followed by a
-// capitalized name. Catches the product-specific claim even when the catalog list
-// is not at hand. Deliberately case-sensitive on the name.
-const PURCHASE_OF_NAMED_THING = /\b[Yy]ou(?:'ve| have)?\s+(?:recently\s+|already\s+|just\s+)?(?:picked up|bought|purchased|ordered|got|grabbed|tried|chose|added|went with|snagged)\s+(?:the\s+|a\s+|an\s+|your\s+|our\s+)?[A-Z][\w'-]+/;
+// Statements about what the reader bought. One list of constructions, so every
+// check below uses the same coverage:
+//   "you bought / you've purchased / you just picked up …"
+//   "thanks for purchasing / thank you for your order of / thanks for choosing …"
+//   "your purchase of … / your recent order …"
+//   "hope you're enjoying your …"
+// Checked on normalized text, so curly apostrophes ("You’ve") match too.
+const PURCHASE_VERBS = "(?:picked up|bought|purchased|ordered|got|grabbed|tried|chose|chosen|added|went with|snagged|shopped)";
+const PURCHASE_CONSTRUCTIONS = [
+  `\\byou(?:'ve| have| had)?\\s+(?:recently\\s+|already\\s+|just\\s+|previously\\s+)?${PURCHASE_VERBS}\\b`,
+  "\\bthanks?(?: you)?\\s+(?:so much\\s+)?for\\s+(?:purchasing|buying|ordering|choosing|picking up|shopping for|trying|getting|your (?:purchase|order)(?: of)?)\\b",
+  "\\byour\\s+(?:recent\\s+|latest\\s+|last\\s+|new\\s+)?(?:purchase|order)\\s+of\\b",
+  "\\b(?:hope|hoping)\\s+you(?:'re| are)?\\s+(?:enjoying|loving|liking)\\b",
+  "\\bhow(?:'s| is| are)\\s+(?:your|you liking)\\b",
+];
+const PURCHASE_CONSTRUCTION = new RegExp(PURCHASE_CONSTRUCTIONS.join("|"), "i");
+// The same constructions, found one by one so the words after each can be read.
+const PURCHASE_CONSTRUCTION_ALL = new RegExp(PURCHASE_CONSTRUCTIONS.join("|"), "gi");
+// "… the Hyaluronic Daily Moisturizer": a capitalized name right after a purchase
+// construction. Catches the product-specific claim when the catalog is not at
+// hand. Case-sensitive on the name, which is why it is a separate test.
+const NAMED_THING_AFTER = /^\s+(?:(?:the|a|an|your|our|that|this)\s+)?[A-Z][\w'-]+/;
 // "your first order", "since your last purchase", "your first pick"
 const GENERIC_PURCHASE = /\b(?:your|since your)\s+(?:first|last|latest|recent|previous|most recent)\s+(?:order|purchase|pick|visit)\b|\bgreat first pick\b|\bwhat you (?:already )?(?:have|own|bought|ordered)\b/i;
+
+// Typographic punctuation a model or a merchant's keyboard produces, folded to
+// the plain forms the patterns are written against.
+function normalize(text) {
+  return String(text || "")
+    .replace(/[\u2018\u2019\u201B\u02BC\uFF07]/g, "'")
+    .replace(/[\u201C\u201D\u201F]/g, '"')
+    .replace(/\u00A0/g, " ");
+}
+
+function namesThingAfterPurchase(sentence) {
+  for (const match of sentence.matchAll(PURCHASE_CONSTRUCTION_ALL)) {
+    if (NAMED_THING_AFTER.test(sentence.slice(match.index + match[0].length))) return true;
+  }
+  return false;
+}
 const REPEAT_PURCHASE = /\b(?:you reorder|you keep coming back|your (?:second|next) order again|every order you've placed|your orders)\b/i;
 
 const PREFERENCE_OR_USAGE = [
@@ -95,14 +127,14 @@ function mentionsProduct(sentence, productNames) {
 
 // Returns a reason string for the first unsupported claim, or null.
 function copyClaimViolation(text, { playId = null, products = [] } = {}) {
-  const value = String(text || "");
+  const value = normalize(text);
   if (!value.trim()) return null;
   const guarantees = audienceGuarantees(playId);
-  const productNames = (products || []).map((p) => String(p.title || p.name || "").toLowerCase().trim()).filter(Boolean);
+  const productNames = (products || []).map((p) => normalize(p.title || p.name || "").toLowerCase().trim()).filter(Boolean);
 
   for (const sentence of sentences(value)) {
-    const purchaseClaim = PURCHASE_VERB.test(sentence) || GENERIC_PURCHASE.test(sentence);
-    const namesProduct = mentionsProduct(sentence, productNames) || PURCHASE_OF_NAMED_THING.test(sentence);
+    const purchaseClaim = PURCHASE_CONSTRUCTION.test(sentence) || GENERIC_PURCHASE.test(sentence);
+    const namesProduct = mentionsProduct(sentence, productNames) || namesThingAfterPurchase(sentence);
     if (purchaseClaim && namesProduct && !guarantees.purchasedProduct) {
       return "unsupported purchase claim (specific product)";
     }
