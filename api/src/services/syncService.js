@@ -9,6 +9,7 @@ const {
 const {
   buildEngineInputSnapshot,
   fetchedOrderCoverage,
+  fetchedOrderCreatedCoverage,
   SNAPSHOT_SCHEMA_VERSION,
 } = require("./engineInputSnapshot");
 
@@ -63,6 +64,37 @@ const PREFERRED_COVERAGE_DAYS = PILOT_PREFERRED_COVERAGE_DAYS;
 // the data and have opposite remedies.
 const SHOPIFY_DEFAULT_ORDER_WINDOW_DAYS = 60;
 const ALL_ORDERS_SCOPE = "read_all_orders";
+
+const scopeList = (value) => String(value || "").split(/[,\s]+/).filter(Boolean);
+
+// Whether this store can give BeaconAI its full order history, and whether it
+// has to reconnect for that.
+//
+//   requested — the app asks stores for read_all_orders (SHOPIFY_SCOPES). Until
+//               Shopify approves it for the app, it is not asked for, and no
+//               store is told to reconnect: reconnecting could not grant it.
+//   granted   — the token this store granted includes it. null when the token
+//               was not granted through OAuth (an environment token), because
+//               its scopes are then unknown rather than missing.
+//
+// A token keeps the scopes it was granted, so a store that installed before the
+// app asked for full history has to go through Connect Shopify again.
+function historyAccess({ requestedScopes, grantedScope }) {
+  const requested = scopeList(requestedScopes).includes(ALL_ORDERS_SCOPE);
+  const granted = grantedScope == null ? null : scopeList(grantedScope).includes(ALL_ORDERS_SCOPE);
+  return { requested, granted, reconnectRequired: requested && granted === false };
+}
+
+const RECONNECT_FOR_HISTORY_MESSAGE =
+  "Reconnect Shopify so BeaconAI can read your full order history. Until then Shopify only shares the last 60 days of orders, "
+  + "which isn't enough for an analysis. If you've already reconnected and still see this, contact BeaconAI support.";
+
+function reconnectForHistoryFailure() {
+  return fail("reconnect_for_history", RECONNECT_FOR_HISTORY_MESSAGE, {
+    action: "reconnect_shopify",
+    missingScope: ALL_ORDERS_SCOPE,
+  });
+}
 
 class UnverifiedInputError extends Error {
   constructor(provenance, detail) {
@@ -120,7 +152,11 @@ function validateFetch(data, requestedLimit) {
 // Validation that needs the normalized input: how much history the engine will
 // actually see. `shopifyScope` is the granted scope string, used only to explain
 // short coverage — never to assert coverage we did not observe.
-function validateCoverage(coverage, shopifyScope) {
+//
+// `createdCoverage` is the same fetch measured by created_at (the date Shopify's
+// window applies to); without it the hint falls back to the span above.
+// `appRequestsAllOrders` decides whether reconnecting is offered as the remedy.
+function validateCoverage(coverage, shopifyScope, { createdCoverage = null, appRequestsAllOrders = false } = {}) {
   const failures = [];
 
   if (!coverage || coverage.known !== true) {
@@ -130,10 +166,14 @@ function validateCoverage(coverage, shopifyScope) {
   }
 
   if (coverage.daysCovered < REQUIRED_COVERAGE_DAYS) {
-    const scopes = String(shopifyScope || "").split(/[,\s]+/).filter(Boolean);
-    const missingAllOrders = !scopes.includes(ALL_ORDERS_SCOPE);
+    const missingAllOrders = !scopeList(shopifyScope).includes(ALL_ORDERS_SCOPE);
+    // Shopify cuts by created_at, so that is the span that sits at ~60 days
+    // when the window is the cause.
+    const ceilingSpan = createdCoverage?.known ? createdCoverage.daysCovered : coverage.daysCovered;
     const looksLikeScopeCeiling =
-      missingAllOrders && coverage.daysCovered >= SHOPIFY_DEFAULT_ORDER_WINDOW_DAYS - 5;
+      missingAllOrders
+      && ceilingSpan >= SHOPIFY_DEFAULT_ORDER_WINDOW_DAYS - 5
+      && ceilingSpan <= SHOPIFY_DEFAULT_ORDER_WINDOW_DAYS + 1;
 
     failures.push(
       fail(
@@ -147,6 +187,8 @@ function validateCoverage(coverage, shopifyScope) {
           policy: "pilot_min_coverage_days",
           likelyScopeCeiling: looksLikeScopeCeiling,
           missingScope: looksLikeScopeCeiling ? ALL_ORDERS_SCOPE : null,
+          // Only offered when reconnecting can actually grant the scope.
+          action: looksLikeScopeCeiling && appRequestsAllOrders ? "reconnect_shopify" : null,
         }
       )
     );
@@ -166,11 +208,13 @@ function validateCoverage(coverage, shopifyScope) {
 //               by membership, not by date: a record missing from the middle of
 //               the fetched period sits inside the covered range and no range
 //               check would ever notice it. Reported, never folded in.
-function declaredCoverage(fetched, shopifyScope, published = null, residual = null) {
-  const scopes = String(shopifyScope || "").split(/[,\s]+/).filter(Boolean);
+function declaredCoverage(fetched, shopifyScope, published = null, residual = null, fetchedByCreatedAt = null) {
+  const scopes = scopeList(shopifyScope);
   return {
     ...fetched,
     fetched,
+    // The same fetch by created_at: the date Shopify's 60-day window uses.
+    fetchedByCreatedAt,
     published,
     // Historical records kept in the clean tables but NOT part of the published
     // input. Not an error — stores really do delete orders — but nothing this
@@ -233,7 +277,7 @@ async function finishSyncRun(id, { status, failureReason, validationFailures, re
  * published data — it is rolled back whole, and the previous complete snapshot
  * survives untouched.
  */
-async function runSync({ shopDomain, accessToken, limit, shopifyScope, fetchData = fetchShopifyData }) {
+async function runSync({ shopDomain, accessToken, limit, shopifyScope, appRequestsAllOrders = false, fetchData = fetchShopifyData }) {
   const run = await beginSyncRun({ shopDomain, requestedLimit: limit });
 
   let data;
@@ -298,9 +342,13 @@ async function runSync({ shopDomain, accessToken, limit, shopifyScope, fetchData
 
     // Judge the FETCH, not the accumulated tables. See declaredCoverage.
     const fetched = fetchedOrderCoverage(data.orders);
+    const fetchedByCreatedAt = fetchedOrderCreatedCoverage(data.orders);
     const residual = await reconcileGeneration(shopDomain, generation, client);
-    const coverage = declaredCoverage(fetched, shopifyScope, snapshot.coverage, residual);
-    const coverageFailures = validateCoverage(fetched, shopifyScope);
+    const coverage = declaredCoverage(fetched, shopifyScope, snapshot.coverage, residual, fetchedByCreatedAt);
+    const coverageFailures = validateCoverage(fetched, shopifyScope, {
+      createdCoverage: fetchedByCreatedAt,
+      appRequestsAllOrders: Boolean(appRequestsAllOrders),
+    });
 
     if (coverageFailures.length) {
       throw Object.assign(new Error(coverageFailures[0].message), {
@@ -627,6 +675,8 @@ async function assertReadyForAnalysis(shopDomain) {
 
 module.exports = {
   ALL_ORDERS_SCOPE,
+  historyAccess,
+  reconnectForHistoryFailure,
   PILOT_MIN_COVERAGE_DAYS,
   PILOT_PREFERRED_COVERAGE_DAYS,
   PREFERRED_COVERAGE_DAYS,

@@ -216,6 +216,14 @@ function observedCoverage(rows) {
 //
 // Same date precedence as the normalized projection (processed_at first), so
 // the two numbers are comparable.
+// The same fetch measured by `created_at`, which is the date Shopify's 60-day
+// window for apps without `read_all_orders` is applied to. Backdated or imported
+// orders can have a processed_at far older than their created_at, so only this
+// span says whether the window is what cut the history short.
+function fetchedOrderCreatedCoverage(orders) {
+  return coverageFromDates((orders || []).map((order) => order.created_at));
+}
+
 function fetchedOrderCoverage(orders) {
   return coverageFromDates(
     (orders || []).map((order) => order.processed_at || order.created_at)
@@ -270,6 +278,7 @@ module.exports = {
   buildEngineInputSnapshot,
   coverageFromDates,
   fetchedOrderCoverage,
+  fetchedOrderCreatedCoverage,
   observedCoverage,
   orderRows,
   shopLocalNaive,

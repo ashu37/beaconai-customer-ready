@@ -66,6 +66,8 @@ const {
   assertInputVerifiedForHandoff,
   getRunProvenance,
   getSyncStatus,
+  historyAccess,
+  reconnectForHistoryFailure,
   runSync,
   SyncNotReadyError,
   UnverifiedInputError,
@@ -463,6 +465,12 @@ router.get("/connections/status", async (req, res) => {
     const status = await getConnectionStatus(shopDomain);
     const session = sessionFromRequest(req);
     const authenticated = Boolean(session && session.shopDomain === shopDomain);
+    if (authenticated && status?.shopify) {
+      status.shopify.history = historyAccess({
+        requestedScopes: config.shopify.scopes,
+        grantedScope: status.shopify.grantedScopes ?? null,
+      });
+    }
     res.json({
       ok: true,
       status: authenticated ? status : {
@@ -743,11 +751,31 @@ router.post("/sync/shopify", async (req, res) => {
     const limit = req.body.limit;
     const connection = await getConnectionStatus(shopDomain).catch(() => null);
 
+    // Ask for the permission before fetching, not after. A store whose token
+    // lacks read_all_orders gets 60 days from Shopify, which fails coverage
+    // after a full fetch with a message it can do nothing about. Only when the
+    // app actually requests the scope: otherwise reconnecting cannot grant it.
+    const history = historyAccess({
+      requestedScopes: config.shopify.scopes,
+      grantedScope: connection?.shopify?.grantedScopes ?? null,
+    });
+    if (history.reconnectRequired) {
+      res.status(200).json({
+        ok: true,
+        published: false,
+        shopDomain,
+        status: "reconnect_required",
+        validationFailures: [reconnectForHistoryFailure()],
+      });
+      return;
+    }
+
     const result = await runSync({
       shopDomain,
       accessToken,
       limit,
       shopifyScope: connection?.shopify?.scopes || null,
+      appRequestsAllOrders: history.requested,
     });
 
     if (!result.published) {

@@ -7,6 +7,7 @@ const {
   ALL_ORDERS_SCOPE,
   REQUIRED_COVERAGE_DAYS,
   declaredCoverage,
+  historyAccess,
   validateCoverage,
   validateFetch,
 } = require("../src/services/syncService");
@@ -89,4 +90,56 @@ test("declared coverage records what was permitted, not only what was seen", () 
   const shallow = declaredCoverage({ known: true, daysCovered: 120 }, "read_orders");
   assert.equal(shallow.meetsRequired, true);
   assert.equal(shallow.meetsPreferred, false);
+});
+
+const { fetchedOrderCreatedCoverage } = require("../src/services/engineInputSnapshot");
+
+test("a store is told to reconnect only when the app asks for full history and its token lacks it", () => {
+  const asks = "read_products,read_customers,read_orders,read_all_orders";
+  const doesNotAsk = "read_products,read_customers,read_orders";
+
+  assert.deepEqual(historyAccess({ requestedScopes: asks, grantedScope: "read_products,read_orders" }),
+    { requested: true, granted: false, reconnectRequired: true });
+  assert.deepEqual(historyAccess({ requestedScopes: asks, grantedScope: "read_orders,read_all_orders" }),
+    { requested: true, granted: true, reconnectRequired: false });
+  // Before Shopify approves the scope the app does not ask for it, and a
+  // reconnect could not grant it, so nobody is sent round in a loop.
+  assert.equal(historyAccess({ requestedScopes: doesNotAsk, grantedScope: "read_orders" }).reconnectRequired, false);
+  // A token whose scopes are unknown (environment token, or granted before scopes
+  // were stored) is not assumed to be missing it.
+  assert.deepEqual(historyAccess({ requestedScopes: asks, grantedScope: null }),
+    { requested: true, granted: null, reconnectRequired: false });
+});
+
+test("the 60-day hint is judged on created_at, the date Shopify's window uses", () => {
+  // Orders processed over 85 days but created within the last 60: the window cut them.
+  const processed85 = { known: true, daysCovered: 85 };
+  const created60 = { known: true, daysCovered: 60 };
+  const ceiling = validateCoverage(processed85, "read_orders", { createdCoverage: created60, appRequestsAllOrders: true });
+  assert.equal(ceiling[0].likelyScopeCeiling, true);
+  assert.equal(ceiling[0].missingScope, ALL_ORDERS_SCOPE);
+  assert.equal(ceiling[0].action, "reconnect_shopify");
+
+  // A young store: 60 days by processed_at, but everything was created in the last 20.
+  const young = validateCoverage({ known: true, daysCovered: 60 }, "read_orders", { createdCoverage: { known: true, daysCovered: 20 }, appRequestsAllOrders: true });
+  assert.equal(young[0].likelyScopeCeiling, false, "nothing sits at the window's edge");
+  assert.equal(young[0].action, null);
+
+  // The scope was granted: short history is the store's, not the window's.
+  const granted = validateCoverage(processed85, `read_orders,${ALL_ORDERS_SCOPE}`, { createdCoverage: created60, appRequestsAllOrders: true });
+  assert.equal(granted[0].likelyScopeCeiling, false);
+
+  // The app does not ask for the scope yet: explained, but reconnect is not offered.
+  const notRequested = validateCoverage(processed85, "read_orders", { createdCoverage: created60, appRequestsAllOrders: false });
+  assert.equal(notRequested[0].likelyScopeCeiling, true);
+  assert.equal(notRequested[0].action, null);
+});
+
+test("created_at coverage ignores processed_at", () => {
+  const coverage = fetchedOrderCreatedCoverage([
+    { created_at: "2026-07-15T10:00:00Z", processed_at: "2026-01-01T10:00:00Z" },
+    { created_at: "2026-07-17T10:00:00Z", processed_at: "2026-07-17T10:00:00Z" },
+  ]);
+  assert.equal(coverage.daysCovered, 3);
+  assert.equal(coverage.earliestOrderAt, "2026-07-15T10:00:00.000Z");
 });

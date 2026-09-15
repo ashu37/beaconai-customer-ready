@@ -300,6 +300,10 @@ async function getConnectionStatus(shopDomain) {
       connected: Boolean(row?.shopify_access_token || config.shopify.accessToken),
       source: row?.shopify_access_token ? "oauth" : config.shopify.accessToken ? "env" : "none",
       scopes: row?.shopify_scope || config.shopify.scopes || null,
+      // What THIS store's token was actually granted, with no fallback to what
+      // the app asks for. null when there is no OAuth token or it predates
+      // scope tracking: unknown, not missing.
+      grantedScopes: row?.shopify_access_token ? row.shopify_scope || null : null,
     },
     klaviyo: {
       connected: Boolean(row?.klaviyo_access_token || row?.klaviyo_private_key || config.klaviyo.privateKey),

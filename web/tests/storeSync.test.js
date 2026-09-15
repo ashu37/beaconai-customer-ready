@@ -48,3 +48,18 @@ test("an unreachable status check never claims the server stopped", async () => 
   assert.equal(result.current.phase, "uncertain");
   assert.match(result.current.checkError, /may still be working/);
 });
+
+test("a sync refused for missing order-history access names reconnecting as the remedy", async () => {
+  const { result } = renderHook(() => useStoreSync({
+    start: async () => ({
+      ok: true, published: false, status: "reconnect_required",
+      validationFailures: [{ code: "reconnect_for_history", action: "reconnect_shopify", message: "Reconnect Shopify so BeaconAI can read your full order history." }],
+    }),
+    status: async () => ({ latest: { syncRunId: 6, status: "complete" } }),
+    onStatus: () => {}, onComplete: async () => {}, pollMs: 10000,
+  }));
+  await act(async () => { await result.current.run(6); });
+  assert.equal(result.current.phase, "failed");
+  assert.equal(result.current.action, "reconnect_shopify");
+  assert.match(result.current.message, /Reconnect Shopify/);
+});

@@ -1801,7 +1801,7 @@ function StoreGate({ draft, onDraftChange, onSubmit, error }) {
   );
 }
 
-function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
+function FirstRunProgress({ stage, counts, orders, error, onRetry, onReconnectShopify }) {
   const stageCopy = {
     syncing: { title: "Connecting your store…", sub: "Importing your products, customers, and orders from Shopify. First-time setup — this only happens once." },
     synced: { title: "Store connected.", sub: null },
@@ -1816,7 +1816,10 @@ function FirstRunProgress({ stage, counts, orders, error, onRetry }) {
       <div className="first-run-panel">
         <div className="first-run-inner">
           <p className="first-run-error">{error.message}</p>
-          <button className="btn primary" onClick={onRetry}>Retry</button>
+          {/* Shopify is withholding history: retrying cannot help, reconnecting can. */}
+          {error.action === "reconnect_shopify" && onReconnectShopify
+            ? <button className="btn primary" onClick={onReconnectShopify}>Reconnect Shopify</button>
+            : <button className="btn primary" onClick={onRetry}>Retry</button>}
         </div>
       </div>
     );
@@ -2852,6 +2855,8 @@ export function App() {
         next.shopify = Boolean(connection.status?.shopify?.connected);
         next.klaviyo = Boolean(connection.status?.klaviyo?.connected);
         next.shopifySource = connection.status?.shopify?.source || "none";
+        // Whether this store must reconnect to give full order history.
+        next.shopifyHistoryReconnect = Boolean(connection.status?.shopify?.history?.reconnectRequired);
         next.klaviyoSource = connection.status?.klaviyo?.source || "none";
       } catch (_) {}
       // These now require a session; skip them when there is none rather than
@@ -3119,6 +3124,7 @@ export function App() {
             phase: "sync",
             message: result.validationFailures?.[0]?.message
               || "Shopify returned an incomplete copy of the store. Retry the sync.",
+            action: result.validationFailures?.[0]?.action || null,
           });
           return;
         }
@@ -3620,6 +3626,7 @@ export function App() {
               orders={orderCount}
               error={firstRunError}
               onRetry={retryFirstRun}
+              onReconnectShopify={() => startOAuth("shopify")}
             />
           ) : null}
 
@@ -3678,7 +3685,9 @@ export function App() {
                     {storeSync.elapsed >= 60 && storeSync.busy ? <span>This is taking longer than usual. Status checks continue; this is not confirmation that the sync has stopped.</span> : null}
                   </div>
                   {storeSync.busy ? <button className="btn small" onClick={storeSync.check}>Check sync status</button> : null}
-                  {storeSync.phase === "failed" ? <button className="btn small" onClick={syncShopify}>Retry sync</button> : null}
+                  {storeSync.phase === "failed" && storeSync.action === "reconnect_shopify" ? (
+                    <button className="btn small primary" onClick={() => startOAuth("shopify")}>Reconnect Shopify</button>
+                  ) : storeSync.phase === "failed" ? <button className="btn small" onClick={syncShopify}>Retry sync</button> : null}
                 </div>
               ) : null}
               {!onboardingHidden ? (
@@ -4336,6 +4345,12 @@ export function App() {
                 <div className="integration-card">
                   <h3>Shopify</h3>
                   <p>{status.shopify ? "Connected. BeaconAI refreshes products, customers, and orders from this store." : "Connect Shopify to load products, customers, and orders."}</p>
+                  {status.shopify && status.shopifyHistoryReconnect ? (
+                    <p className="notice-line">
+                      BeaconAI can only read your last 60 days of orders. Reconnect Shopify to allow your full order history.{" "}
+                      <button type="button" className="link-btn" onClick={() => startOAuth("shopify")}>Reconnect Shopify</button>
+                    </p>
+                  ) : null}
                   <div className="action-row">
                     <button className="btn primary" onClick={status.shopify ? syncShopify : () => startOAuth("shopify")} disabled={status.shopify && loading}>{status.shopify ? (loading ? "Syncing…" : "Refresh Shopify now") : "Connect Shopify"}</button>
                   </div>
