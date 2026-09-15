@@ -65,7 +65,8 @@ Object.assign(apiModule.api, {
   previewCampaignHtml: record("previewCampaignHtml", () => ({ ok: true, html: "<p>email</p>", templateVersion: 1, renderFingerprint: "f" })),
   campaignDelivery: record("campaignDelivery", () => ({ ok: true, delivery: { state: "not_started" } })),
   getResults: record("getResults", forShop("results")),
-  saveCampaign: record("saveCampaign", (payload) => {
+  saveCampaign: record("saveCampaign", async (payload) => {
+    if (hooks.save) await hooks.save(shopNow(), payload);
     const store = stores[shopNow()];
     const row = store.rows.find((r) => r.runId === payload.runId && r.playId === payload.playId);
     Object.assign(row, { draftEdits: payload.draftEdits ?? row.draftEdits });
@@ -77,7 +78,10 @@ Object.assign(apiModule.api, {
     validationFailures: [{ code: "reconnect_for_history", action: "reconnect_shopify", message: "Reconnect Shopify so BeaconAI can read your full order history." }],
   })),
   runAtulEngine: record("runAtulEngine", () => ({ ok: true, accepted: true, job: { id: 1, status: "running" } })),
-  getLatestAnalysisJob: record("getLatestAnalysisJob", () => new Promise(() => {})),
+  getLatestAnalysisJob: record("getLatestAnalysisJob", async () => {
+    if (hooks.job) return hooks.job(shopNow());
+    return new Promise(() => {});
+  }),
 });
 
 const { App } = await import("../src/App.jsx");
@@ -225,4 +229,54 @@ test("clearing the store also clears it from the URL", () => {
   apiModule.api.setShopDomain("");
   assert.doesNotMatch(window.location.search, /shop=/);
   apiModule.api.setShopDomain(STORE_A);
+});
+
+test("an analysis started for one store never reads or caches another store's briefing", async () => {
+  await mount();
+  const cacheA = () => JSON.parse(localStorage.getItem(`beaconai:${STORE_A}:latest-briefing`) || "null")?.presentedRun?.run_id;
+  assert.equal(cacheA(), "run-a");
+
+  let finishJob;
+  hooks.job = () => new Promise((resolve) => { finishJob = () => resolve({ ok: true, job: { id: 1, status: "complete", runId: "run-a" } }); });
+  await click(button((t) => t === "Re-run analysis"), 200);
+  assert.ok(finishJob, "store A's analysis is waiting on its job");
+
+  await useStore(STORE_B, 300);
+  const bReadsBefore = calls.filter((c) => c.name === "getLatestEngineRun" && c.shop === STORE_B).length;
+  hooks.job = null;
+  await act(async () => { finishJob(); await sleep(400); });
+  await settle(300);
+
+  assert.equal(
+    calls.filter((c) => c.name === "getLatestEngineRun" && c.shop === STORE_B).length,
+    bReadsBefore,
+    "store A's finished analysis did not read the newly open store's briefing",
+  );
+  assert.equal(cacheA(), "run-a", "store A's cache still holds store A's briefing");
+
+  // Back to A, with its server slow: store B's briefing never appears while it
+  // loads, and A's own briefing is what arrives.
+  hooks.latest = (shop) => (shop === STORE_A ? sleep(600) : null);
+  await useStore(STORE_A, 150);
+  assert.doesNotMatch(text(), /Reduce discount dependency/);
+  await settle(900);
+  assert.doesNotMatch(text(), /Reduce discount dependency/);
+  assert.match(text(), /Bring back lapsed customers/);
+});
+
+test("a save that already failed keeps the store from switching and the text on screen", async () => {
+  await mount();
+  await goTo("Campaigns");
+  await settle(200);
+  hooks.save = () => { throw new Error("Server unavailable"); };
+  await act(async () => { fireEvent.change(subject(), { target: { value: "Store A, not saved" } }); });
+  await settle(900); // the debounced save has run and failed
+
+  await useStore(STORE_B, 300);
+  assert.equal(apiModule.api.shopDomain, STORE_A, "the store did not switch");
+  assert.match(text(), /changes that didn't save, so the store wasn't switched/);
+
+  hooks.save = null;
+  await goTo("Campaigns");
+  assert.equal(subject()?.value, "Store A, not saved", "the unsaved text is still there to retry");
 });

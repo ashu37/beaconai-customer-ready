@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import { campaignSignature, canHandoff, draftSignature, reviewNeedsRender } from "./campaignSaveGate";
-import { NARRATION_POLL_MS, isNarrationPending, thesisPlaceholder, waitForAnalysis, withRetries } from "./analysisJob";
+import { NARRATION_POLL_MS, abandonedError, isNarrationPending, thesisPlaceholder, waitForAnalysis, withRetries } from "./analysisJob";
 import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSelection } from "./campaignDraft";
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
@@ -2047,6 +2047,19 @@ function StoreWorkspace({ onStoreChange }) {
   const counts = sync?.synced || {};
   const currentRunId = atulEngineResult?.presentedRun?.run_id || null;
   // Read inside async callbacks, which otherwise see the render they started in.
+  // The store this workspace was opened for, and whether it is still the open
+  // one. The API client's store is global, so after a switch any request this
+  // (unmounting) workspace still makes would reach the NEW store, and anything it
+  // wrote to its cache would be the new store's data under this store's key.
+  // Every asynchronous continuation checks this before it requests, applies or
+  // caches anything.
+  const workspaceShopRef = useRef(api.shopDomain);
+  const workspaceMountedRef = useRef(true);
+  useEffect(() => () => { workspaceMountedRef.current = false; }, []);
+  const storeStillOpen = useCallback(
+    () => workspaceMountedRef.current && api.shopDomain === workspaceShopRef.current,
+    []
+  );
   const currentRunIdRef = useRef(currentRunId);
   currentRunIdRef.current = currentRunId;
   const activePageRef = useRef(activePage);
@@ -2937,6 +2950,7 @@ function StoreWorkspace({ onStoreChange }) {
   // overwrites a newer one (see campaignReconciliation.js). Returns whether it was
   // applied.
   function showBriefing(presentedRun, { authoritative }) {
+    if (!storeStillOpen()) return false;
     const incoming = briefingOrder(presentedRun, { authoritative });
     if (!shouldApplyBriefing(appliedBriefingRef.current, incoming)) return false;
     appliedBriefingRef.current = incoming;
@@ -2971,6 +2985,11 @@ function StoreWorkspace({ onStoreChange }) {
       applyEngineResult(result, { navigate: activePageRef.current === "briefing" });
       await loadSyncStatus();
       return result;
+    } catch (err) {
+      // The merchant switched stores while this ran: nothing to report, and
+      // nothing this workspace may show or cache.
+      if (err?.code === "abandoned") return null;
+      throw err;
     } finally {
       setRefreshingBriefing(false);
     }
@@ -2980,6 +2999,7 @@ function StoreWorkspace({ onStoreChange }) {
   // already running for this store), wait for the job to settle, then read the
   // finished briefing the same way a page load does.
   async function startAndAwaitAnalysis(useFixture) {
+    if (!storeStillOpen()) throw abandonedError();
     let startedJobId = null;
     try {
       const started = await api.runAtulEngine(useFixture);
@@ -2990,9 +3010,9 @@ function StoreWorkspace({ onStoreChange }) {
       if (err.code !== "analysis_in_progress") throw err;
     }
 
-    await waitForAnalysis({ getJob: () => api.getLatestAnalysisJob(), startedJobId });
+    await waitForAnalysis({ getJob: () => api.getLatestAnalysisJob(), startedJobId, isCancelled: () => !storeStillOpen() });
 
-    const latest = await withRetries(() => api.getLatestEngineRun());
+    const latest = await withRetries(() => api.getLatestEngineRun(), { isCancelled: () => !storeStillOpen() });
     if (!latest?.found) throw new Error("The analysis finished, but its briefing couldn't be loaded. Reload the page.");
     return { presentedRun: latest.presentedRun };
   }
@@ -3007,8 +3027,9 @@ function StoreWorkspace({ onStoreChange }) {
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
+        if (cancelled || !storeStillOpen()) return;
         const latest = await api.getLatestEngineRun();
-        if (cancelled || !latest?.found) return;
+        if (cancelled || !storeStillOpen() || !latest?.found) return;
         showBriefing(latest.presentedRun, { authoritative: true });
         if (latest.presentedRun?.recommendations?.length && briefingCacheKey) {
           try {
@@ -3095,9 +3116,21 @@ function StoreWorkspace({ onStoreChange }) {
       setError(next ? "" : "Enter a Shopify store domain before connecting.");
       return;
     }
-    const flushed = await flushPendingEdits();
-    if (!flushed.ok) {
-      setError("Your last edit to a campaign didn't save, so the store wasn't switched. Retry the save first.");
+    await flushPendingEdits();
+    // Not only saves still running: a save that already FAILED or CONFLICTED
+    // left the merchant's text unsaved too, and switching would unmount it. So
+    // after flushing, every campaign's text on screen must match what was
+    // persisted and its last save must have succeeded.
+    const unsaved = Object.keys(campaignRowsRef.current).filter((key) => {
+      const status = saveStatusRef.current[key];
+      if (status === "failed" || status === "conflict") return true;
+      const onScreen = campaignSignature({ edits: draftEditsByKey[key], destinationUrl: destinationByKey[key] });
+      return savedSignatureRef.current[key] !== undefined && onScreen !== savedSignatureRef.current[key];
+    });
+    if (unsaved.length) {
+      setError(unsaved.length === 1
+        ? "A campaign has changes that didn't save, so the store wasn't switched. Open Campaigns and retry the save first."
+        : `${unsaved.length} campaigns have changes that didn't save, so the store wasn't switched. Open Campaigns and retry the saves first.`);
       return;
     }
     api.setShopDomain(next);

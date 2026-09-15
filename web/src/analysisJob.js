@@ -42,9 +42,17 @@ export function thesisPlaceholder(narrationStatus) {
 // the wait with "Unexpected token '<'" although the run finished fine
 // (2026-09-14). Polling failures are ridden out until the give-up deadline;
 // only a job the server reports as failed ends the wait early.
+// Thrown when the caller stops caring — the merchant switched stores. Never
+// retried: the next request would go to a different store.
+export function abandonedError() {
+  return Object.assign(new Error("This analysis belongs to a store that is no longer open."), { code: "abandoned" });
+}
+
 export async function waitForAnalysis({
   getJob,
   startedJobId = null,
+  // Checked before every request and after every response.
+  isCancelled = () => false,
   pollMs = ANALYSIS_POLL_MS,
   giveUpMs = ANALYSIS_GIVE_UP_MS,
   now = () => Date.now(),
@@ -52,6 +60,7 @@ export async function waitForAnalysis({
 }) {
   const giveUpAt = now() + giveUpMs;
   for (;;) {
+    if (isCancelled()) throw abandonedError();
     let outcome = { state: "running" };
     try {
       const response = await getJob();
@@ -59,6 +68,7 @@ export async function waitForAnalysis({
     } catch (_) {
       // Transient: keep waiting.
     }
+    if (isCancelled()) throw abandonedError();
     if (outcome.state === "failed") throw new Error(outcome.message);
     if (outcome.state === "complete") return outcome;
     if (now() > giveUpAt) {
@@ -69,12 +79,16 @@ export async function waitForAnalysis({
 }
 
 // A read that may meet the same transient failure, retried a few times.
-export async function withRetries(fn, { attempts = 4, delayMs = 3000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+export async function withRetries(fn, { attempts = 4, delayMs = 3000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), isCancelled = () => false } = {}) {
   let lastError;
   for (let i = 0; i < attempts; i += 1) {
+    if (isCancelled()) throw abandonedError();
     try {
-      return await fn();
+      const result = await fn();
+      if (isCancelled()) throw abandonedError();
+      return result;
     } catch (error) {
+      if (error?.code === "abandoned") throw error;
       lastError = error;
       if (i < attempts - 1) await sleep(delayMs);
     }
