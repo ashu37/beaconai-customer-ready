@@ -1129,11 +1129,13 @@ function BriefingStatStrip({ products, customers, orders, reviewPending, campaig
 }
 
 // D4: metric value with count-up. Non-numeric (e.g. "—") renders as-is.
+// The value itself, immediately. It used to count up from 0 on every mount,
+// which showed a store's totals as zero whenever the strip re-rendered — and
+// indefinitely in a background tab, where animation frames never run.
 function MetricValue({ value }) {
   const numeric = typeof value === "number" || (typeof value === "string" && value !== "" && Number.isFinite(Number(value)));
-  const animated = useCountUp(numeric ? Number(value) : NaN);
   if (!numeric) return <>{value}</>;
-  return <>{animated.toLocaleString()}</>;
+  return <>{Number(value).toLocaleString()}</>;
 }
 
 // D6b: tiny inline sparkline (110×26, no axes). Points are numbers.
@@ -1852,9 +1854,12 @@ function FirstRunProgress({ stage, counts, orders, error, onRetry, onReconnectSh
 // A moving progress indicator for the manual briefing refresh, so a run that
 // takes a while never looks frozen the way the static "Working..." box did.
 // Reuses the first-run spinner; cycles reassuring copy on a timer.
-function BriefingWorking() {
+function BriefingWorking({ syncedAt = null }) {
+  // Analysis reads the store data already synced; it does not fetch new orders.
+  // Saying "latest orders" here claimed a refresh that was not happening.
+  const syncedLabel = formatDay(syncedAt);
   const messages = [
-    "Refreshing with your latest orders…",
+    syncedLabel ? `Analysing your saved store data from ${syncedLabel}…` : "Analysing your saved store data…",
     "Finding your best campaigns this cycle…",
     "Sizing the audience for each one…",
     "Checking the evidence behind each play…",
@@ -1887,28 +1892,16 @@ function BriefingWorking() {
 }
 
 // D4: count-up on mount (integers). Returns the display value; skips on reduced-motion.
-function useCountUp(target, duration = 500) {
-  const [value, setValue] = useState(0);
-  const rafRef = useRef(null);
-  useEffect(() => {
-    const end = Number(target);
-    if (!Number.isFinite(end)) { setValue(target); return undefined; }
-    const reduce = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || end === 0) { setValue(end); return undefined; }
-    let startTs = null;
-    const tick = (ts) => {
-      if (startTs == null) startTs = ts;
-      const p = Math.min(1, (ts - startTs) / duration);
-      setValue(Math.round(end * p));
-      if (p < 1) rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [target, duration]);
-  return value;
+// One workspace per store. Switching to a different store mounts a fresh one, so
+// nothing the previous store loaded — briefing, campaigns, results, totals, drafts
+// — can appear under the new store's name while its own data loads. Selecting the
+// store already open does nothing at all.
+export function App() {
+  const [storeKey, setStoreKey] = useState(api.shopDomain || "");
+  return <StoreWorkspace key={storeKey || "no-store"} onStoreChange={setStoreKey} />;
 }
 
-export function App() {
+function StoreWorkspace({ onStoreChange }) {
   // A shared or refreshed Results link (`?campaign=<id>`) reopens that result.
   // Read once at mount; cleared as soon as the merchant navigates, so it only
   // decides where a page LOAD lands.
@@ -1967,6 +1960,9 @@ export function App() {
   // Every campaign row this shop has, across runs, and the ones in the rail.
   const [campaignRowsByKey, setCampaignRowsByKey] = useState({});
   const [railKeys, setRailKeys] = useState([]);
+  // Whether this store's campaigns have been read at least once. Until then the
+  // Campaigns page is loading, not empty; after, a refresh keeps what it has.
+  const [campaignsLoad, setCampaignsLoad] = useState("loading"); // loading | loaded | failed
   // Per-campaign "saving" | "saved" | "failed" | "conflict". A silent write failure
   // used to leave the merchant editing a draft that was no longer being stored.
   const [saveStateByKey, setSaveStateByKey] = useState({});
@@ -2416,6 +2412,7 @@ export function App() {
           saveStatusRef.current[key] = "saved";
         }
 
+        setCampaignsLoad("loaded");
         // The rail: this run's live campaigns, plus what the merchant is still
         // holding — a campaign being edited, or an earlier one they reopened.
         setRailKeys((prev) => railCampaignKeys({
@@ -2427,6 +2424,9 @@ export function App() {
         // A read failure must not block the briefing. Let the next run change —
         // or the next load of this one — try again.
         if (seq === hydrationSeqRef.current) hydratedRunRef.current = null;
+        // Only a store that never loaded shows the failure; one that did keeps
+        // its last campaigns on screen.
+        setCampaignsLoad((prev) => (prev === "loaded" ? prev : "failed"));
       }
     })();
   }, [shopDomain, currentRunId]);
@@ -3082,33 +3082,26 @@ export function App() {
     return result;
   }
 
+  // Settings → Use store. The same store is a no-op: re-selecting it used to clear
+  // the whole workspace and show an existing store as brand new until a reload
+  // ("Did I just erase my work?", merchant walkthrough #1). A different store
+  // writes this store's pending edits first — the next workspace talks to the
+  // other store — then mounts a fresh workspace with its own loading state.
   async function saveShopDomain(event) {
     event?.preventDefault();
-    const next = api.setShopDomain(shopDomainDraft);
-    setShopDomain(next);
-    setShopDomainDraft(next);
-    setSync(null);
-    setEngineInput(null);
-    setAtulEngineResult(null);
-    appliedBriefingRef.current = null;
-    hydratedRunRef.current = null;
-    campaignRowsRef.current = {};
-    knownRevisionRef.current = {};
-    openedKeysRef.current = new Set();
-    setCampaignRowsByKey({});
-    setRailKeys([]);
-    setReviewKey("");
-    setSelectedTemplateByKey({});
-    setDraftEditsByKey({});
-    setAgentCopyByKey({});
-    setDestinationByKey({});
-    setApprovedForSend([]);
-    if (!next) {
-      setError("Enter a Shopify store domain before connecting.");
+    const next = api.normalizeShopDomain(shopDomainDraft);
+    if (next === shopDomain) {
+      setShopDomainDraft(next);
+      setError(next ? "" : "Enter a Shopify store domain before connecting.");
       return;
     }
-    setError("");
-    await checkConnections();
+    const flushed = await flushPendingEdits();
+    if (!flushed.ok) {
+      setError("Your last edit to a campaign didn't save, so the store wasn't switched. Retry the save first.");
+      return;
+    }
+    api.setShopDomain(next);
+    onStoreChange(next);
   }
 
   // O3: staged first-run pipeline — sync → auto engine run → first briefing.
@@ -3624,6 +3617,33 @@ export function App() {
           ) : null}
           {error ? <div className="error-box">{error}</div> : null}
 
+          {/* Sync progress and failure show on the page the sync was started
+              from — Briefing, Results or Settings — not only on Briefing. */}
+          {storeSync.phase !== "idle" && ((activePage === "briefing" && !firstRunActive) || activePage === "results" || activePage === "setup") ? (
+            <div className="data-state-banner sync-progress" role="status" aria-live="polite">
+              <div className="data-state-main">
+                <strong>{storeSync.busy ? <span className="sync-spinner" aria-hidden="true" /> : null}
+                  {storeSync.phase === "running" ? "Syncing store data" : storeSync.phase === "uncertain" ? "Sync is taking longer — checking its status" : storeSync.phase === "failed" ? "Store sync needs attention" : "Store sync complete"}
+                </strong>
+                {storeSync.busy ? <span>{storeSync.elapsed}s elapsed. The briefing below is from the previous analysis. Re-run analysis becomes available when sync finishes.</span> : null}
+                {storeSync.message ? <span>{storeSync.message}</span> : null}
+                {/* What is still on screen when a sync fails: the last one that
+                    worked. Without this, "reconnect for your order history" next
+                    to "240 days of orders" read as a contradiction (#6). */}
+                {storeSync.phase === "failed" && syncStatus?.active?.publishedAt ? (
+                  <span>Your briefing and store totals still use your last successful sync, from {formatDay(syncStatus.active.publishedAt, { time: true })}.</span>
+                ) : null}
+                {storeSync.lastCheck ? <span>Last status check: {new Date(storeSync.lastCheck).toLocaleTimeString()}{storeSync.serverStatus === "running" ? " · Server reports sync in progress" : ""}</span> : null}
+                {storeSync.checkError ? <span>{storeSync.checkError}</span> : null}
+                {storeSync.elapsed >= 60 && storeSync.busy ? <span>This is taking longer than usual. Status checks continue; this is not confirmation that the sync has stopped.</span> : null}
+              </div>
+              {storeSync.busy ? <button className="btn small" onClick={storeSync.check}>Check sync status</button> : null}
+              {storeSync.phase === "failed" && storeSync.action === "reconnect_shopify" ? (
+                <button className="btn small primary" onClick={() => startOAuth("shopify")}>Reconnect Shopify</button>
+              ) : storeSync.phase === "failed" ? <button className="btn small" onClick={syncShopify}>Retry sync</button> : null}
+            </div>
+          ) : null}
+
           {activePage === "briefing" && firstRunActive ? (
             <FirstRunProgress
               stage={firstRunStage}
@@ -3677,24 +3697,6 @@ export function App() {
                 busy={loading || storeSync.busy}
                 onSync={syncShopify}
               />
-              {storeSync.phase !== "idle" ? (
-                <div className="data-state-banner sync-progress" role="status" aria-live="polite">
-                  <div className="data-state-main">
-                    <strong>{storeSync.busy ? <span className="sync-spinner" aria-hidden="true" /> : null}
-                      {storeSync.phase === "running" ? "Syncing store data" : storeSync.phase === "uncertain" ? "Sync is taking longer — checking its status" : storeSync.phase === "failed" ? "Store sync needs attention" : "Store sync complete"}
-                    </strong>
-                    {storeSync.busy ? <span>{storeSync.elapsed}s elapsed. The briefing below is from the previous analysis. Re-run analysis becomes available when sync finishes.</span> : null}
-                    {storeSync.message ? <span>{storeSync.message}</span> : null}
-                    {storeSync.lastCheck ? <span>Last status check: {new Date(storeSync.lastCheck).toLocaleTimeString()}{storeSync.serverStatus === "running" ? " · Server reports sync in progress" : ""}</span> : null}
-                    {storeSync.checkError ? <span>{storeSync.checkError}</span> : null}
-                    {storeSync.elapsed >= 60 && storeSync.busy ? <span>This is taking longer than usual. Status checks continue; this is not confirmation that the sync has stopped.</span> : null}
-                  </div>
-                  {storeSync.busy ? <button className="btn small" onClick={storeSync.check}>Check sync status</button> : null}
-                  {storeSync.phase === "failed" && storeSync.action === "reconnect_shopify" ? (
-                    <button className="btn small primary" onClick={() => startOAuth("shopify")}>Reconnect Shopify</button>
-                  ) : storeSync.phase === "failed" ? <button className="btn small" onClick={syncShopify}>Retry sync</button> : null}
-                </div>
-              ) : null}
               {!onboardingHidden ? (
                 <OnboardingBanner
                   status={status}
@@ -3766,7 +3768,7 @@ export function App() {
                 ))}
               </dl>
               <div className="briefing-workbench">
-                {refreshingBriefing ? <BriefingWorking /> : (<>
+                {refreshingBriefing ? <BriefingWorking syncedAt={syncStatus?.active?.publishedAt || null} /> : (<>
                 <div className="recommendation-list">
                   <div className="lane-box">
                     <div className="lane-head">
@@ -4306,15 +4308,21 @@ export function App() {
                   )}
                 </section>
               </div>
-            ) : (
+            ) : campaignsLoad === "loaded" || (latestRunChecked && !currentRunId && !latestRunErrored) ? (
               <div className="empty-panel">Approve a play in Briefing to start your first campaign.</div>
+            ) : campaignsLoad === "failed" || (latestRunChecked && !currentRunId && latestRunErrored) ? (
+              <div className="empty-panel" role="alert">Couldn't load your campaigns. Reload the page to try again.</div>
+            ) : (
+              <div className="empty-panel" role="status">Loading your campaigns…</div>
             )
           )}
 
           {activePage === "results" && (
             <ResultsPage
               data={resultsData}
-              loading={resultsLoading}
+              // Not loaded yet is loading, not "no results": the page briefly said
+              // "Results appear after your first campaign" for a store with several (#26).
+              loading={resultsLoading || (Boolean(shopDomain) && !resultsData && !resultsError)}
               error={resultsError}
               openId={openResultId}
               onToggle={(id) => setOpenResultId((current) => (current === id ? null : id))}

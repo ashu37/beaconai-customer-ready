@@ -26,6 +26,11 @@ function setShopDomain(value) {
     window.history.replaceState({}, "", url.toString());
   } else {
     localStorage.removeItem(SHOP_DOMAIN_STORAGE_KEY);
+    // Clearing the store clears it from the URL too; otherwise a reload read the
+    // old `shop` parameter and restored the store that was just cleared.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("shop");
+    window.history.replaceState({}, "", url.toString());
   }
   return shopDomain;
 }
@@ -91,6 +96,7 @@ export const api = {
     return shopDomain;
   },
   setShopDomain,
+  normalizeShopDomain,
   oauthStartUrl: (provider, returnTo = window.location.href) => `${API_BASE_URL}/oauth/${provider}/start?shop=${encodeURIComponent(requireShopDomain())}&returnTo=${encodeURIComponent(returnTo)}`,
   health: () => request("/health"),
   connectionStatus: () => request(`/connections/status?shopDomain=${encodeURIComponent(shopDomain)}`),
