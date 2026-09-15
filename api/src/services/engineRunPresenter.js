@@ -420,10 +420,19 @@ function compactSentence(value, fallback) {
 // 21-45d ago, >=2 prior orders, no order in last 28d", "30-90 days before
 // anchor"). Merchants read them, so they are put into plain words — the same
 // conditions, nothing added or dropped (merchant walkthrough #14).
+//
+// Every day window the audience builders use ("30-90 days before anchor",
+// "21-45d ago", "in last 28d") is counted back from the newest order date in the
+// analysed data, not from the day the analysis ran; a re-run days later keeps
+// the same reference. No date is printed: the run's anchor_date comes from the
+// KPI snapshot, which leaves out cancelled and refunded orders, so it can differ
+// from the date the audiences were actually counted from.
+const ORDER_DATE_REFERENCE = "the latest order date in the analysed data";
+
 function plainAudienceDefinition(definition) {
   const text = String(definition || "").trim();
   if (!text) return text;
-  return text
+  const plain = text
     .replace(/\bwhose\s*>=\s*(\d+)%\s*of historical orders carried a discount\b/gi, "who used a discount on at least $1% of their past orders")
     .replace(/(\d+)\s*-\s*(\d+)\s*d\s+ago\b/gi, "$1–$2 days ago")
     .replace(/\blast\s+(\d+)\s*d\b/gi, "last $1 days")
@@ -431,8 +440,11 @@ function plainAudienceDefinition(definition) {
     .replace(/(\d+)\s*-\s*(\d+)\s+days/gi, "$1–$2 days")
     .replace(/>=\s*(\d+)/g, "at least $1")
     .replace(/<=\s*(\d+)/g, "at most $1")
-    .replace(/\bbefore anchor\b/gi, "before this analysis")
     .replace(/\bhistorical\b/gi, "past");
+  if (/\bbefore anchor\b/i.test(plain)) return plain.replace(/\bbefore anchor\b/gi, `before ${ORDER_DATE_REFERENCE}`);
+  // "ago" and "last N days" are counted from the same reference.
+  if (/\bdays ago\b|\blast \d+ days\b/i.test(plain)) return `${plain} (counted back from ${ORDER_DATE_REFERENCE})`;
+  return plain;
 }
 
 function audienceText(audience) {
