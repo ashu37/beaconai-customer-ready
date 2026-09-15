@@ -34,7 +34,7 @@ export function useStoreSync({ start, status, onStatus, onComplete, pollMs = 400
         await finish(attempt, result);
       } else if (isThisAttempt && ["failed", "incomplete"].includes(latest.status)) {
         active.current = null;
-        setState((s) => ({ ...s, phase: "failed", message: latest.validationFailures?.[0]?.message || result.reasons?.[0]?.message || "The sync did not complete. Your previous briefing is still shown." }));
+        setState((s) => ({ ...s, phase: "failed", action: latest.validationFailures?.[0]?.action || null, message: latest.validationFailures?.[0]?.message || result.reasons?.[0]?.message || "The sync did not complete. Your previous briefing is still shown." }));
       }
     } catch {
       if (active.current === attempt) setState((s) => ({ ...s, checkError: "Can't reach the sync status service. The server may still be working." }));
@@ -65,7 +65,10 @@ export function useStoreSync({ start, status, onStatus, onComplete, pollMs = 400
       if (active.current !== attempt) return result;
       if (result?.published === false) {
         active.current = null;
-        setState((s) => ({ ...s, phase: "failed", message: result.validationFailures?.[0]?.message || "Shopify returned incomplete data. Your previous briefing is still shown." }));
+        // `action` names the remedy when there is one the merchant can take —
+        // "reconnect_shopify" when Shopify is withholding order history.
+        const failure = result.validationFailures?.[0];
+        setState((s) => ({ ...s, phase: "failed", action: failure?.action || null, message: failure?.message || "Shopify returned incomplete data. Your previous briefing is still shown." }));
         const latest = await callbacks.current.status();
         callbacks.current.onStatus(latest);
       } else { await finish(attempt, result); }

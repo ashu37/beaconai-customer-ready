@@ -42,7 +42,11 @@ const config = {
     accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
     clientId: process.env.SHOPIFY_CLIENT_ID,
     clientSecret: process.env.SHOPIFY_CLIENT_SECRET,
-    scopes: process.env.SHOPIFY_SCOPES || "read_products,read_customers,read_orders,write_orders",
+    // What the app ASKS each store for at install. Full order history
+    // (`read_all_orders`) is switched on by adding it here, via SHOPIFY_SCOPES,
+    // once Shopify has approved it for the app; asking before approval would
+    // fail the install. Nothing writes orders, so `write_orders` is not requested.
+    scopes: process.env.SHOPIFY_SCOPES || "read_products,read_customers,read_orders",
     apiVersion: "2023-10",
   },
   klaviyo: {
