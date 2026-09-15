@@ -34,7 +34,7 @@ const TEMPLATE = {
   id: "beacon-winback-clean", source: "beacon", name: "Win-back",
   subject: "Your next favourite is waiting",
   previewText: "A reason to come back to Acme Skincare.",
-  bodyH2: "Still thinking about Night Serum?",
+  bodyH2: "Explore Night Serum.",
   bodyP1: "Your favourites are here, plus a few new arrivals you haven't met yet.",
   cta: "Explore the collection",
 };
@@ -44,7 +44,7 @@ const SAMPLE_HTML = `<!doctype html><html><body style="margin:0;font-family:Helv
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#fff;">
 <tr><td style="padding:20px 24px 0;"><div style="font:700 15px Helvetica;color:#1f2933;">ACME SKINCARE</div></td></tr>
 <tr><td style="padding:24px;">
-<h1 style="margin:0 0 16px;font-size:24px;line-height:1.25;color:#1f2933;">Still thinking about Night Serum?</h1>
+<h1 style="margin:0 0 16px;font-size:24px;line-height:1.25;color:#1f2933;">Explore Night Serum.</h1>
 <p style="margin:0 0 16px;font-size:16px;line-height:1.55;color:#333;">Your favourites are here, plus a few new arrivals you haven't met yet.</p>
 <div style="text-align:center;margin:0 0 20px;"><div style="width:260px;height:150px;background:#ece7e0;line-height:150px;color:#8a8578;font-size:13px;">Product image</div></div>
 <a href="https://acme.example/collections/serums" style="display:inline-block;background:#1f2933;color:#fff;text-decoration:none;font-weight:bold;padding:14px 22px;">Explore the collection</a>

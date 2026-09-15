@@ -103,7 +103,7 @@ function renderFingerprint(html) {
   return crypto.createHash("sha256").update(String(html)).digest("hex").slice(0, 16);
 }
 const { getStartupState } = require("./startupState");
-const { generateCampaignCopy } = require("./services/copywriterService");
+const { generateCampaignCopy, sanitizeStoredCopy, staticCopyFromPlay } = require("./services/copywriterService");
 const { splitAudience } = require("./services/holdoutService");
 const {
   measureCampaign,
@@ -616,7 +616,12 @@ router.post("/copy/generate", async (req, res) => {
     // sessions reads as the product being unreliable. A rewrite (regenerate)
     // always calls the model fresh, because it depends on the locked slots.
     if (runId && !regenerate) {
-      const cached = await findCachedCopy({ shopDomain, runId, playId, templateId: resolvedTemplateId });
+      const stored = await findCachedCopy({ shopDomain, runId, playId, templateId: resolvedTemplateId });
+      // Checked again on the way out: copy cached before a claim rule existed
+      // must not reach the draft just because it was saved.
+      const cached = stored
+        ? sanitizeStoredCopy(stored, { playId, products, staticCopy: staticCopyFromPlay(play, template) })
+        : null;
       if (cached) {
         res.json({ ok: true, available: true, ...cached, cached: true });
         return;
@@ -1375,7 +1380,21 @@ router.get("/campaigns/:shopDomain", async (req, res) => {
   try {
     const shopDomain = authorizedShop(req, res, req.params.shopDomain);
     if (!shopDomain) return;
-    const campaigns = await listCampaigns(shopDomain, { runId: req.query.runId || null });
+    const listed = await listCampaigns(shopDomain, { runId: req.query.runId || null });
+    // Generated copy stored on a campaign is checked against the claim rules
+    // every time it is served; failing slots come back blank, so the draft uses
+    // its starting template instead. Merchant edits (draftEdits) are untouched.
+    const withCopy = listed.filter((c) => c.copy?.copy);
+    let products = [];
+    if (withCopy.length) {
+      // `id` as well as `title`: the check keeps a featured product only when
+      // its id is a real product of this store.
+      const { rows } = await query(`SELECT id, title FROM clean.products WHERE shop_domain = $1`, [shopDomain]);
+      products = rows;
+    }
+    const campaigns = listed.map((c) => (c.copy?.copy
+      ? { ...c, copy: sanitizeStoredCopy(c.copy, { playId: c.playId, products }) }
+      : c));
     res.json({ ok: true, campaigns });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });

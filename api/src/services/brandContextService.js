@@ -173,10 +173,11 @@ function buildBrandContext(input = {}) {
   } : null;
 
   const categoryNoun = category === "commerce" ? "favorites" : category.replace(" and ", " ");
+  // Button labels go to customers: no usage ("restock") or stock claims.
   const ctaStyle = [
     topProducts[0] ? `Shop ${topProducts[0].title}` : "Shop best sellers",
-    category.includes("beauty") ? "Restock your routine" : "Find your next favorite",
-    averageOrderValue > 75 ? "Complete your set" : "See what is new",
+    "Find your next favorite",
+    averageOrderValue > 75 ? "Complete your set" : "Take a look",
   ];
 
   // C4c: reject seed/test/brand-name tokens from surfacing as "brand words".
@@ -232,16 +233,15 @@ function templateCopyForPlay(campaign, brandContext) {
   const category = brandContext.category || "favorites";
   const brand = brandContext.brandName || "your store";
   const cta = brandContext.messaging?.ctaStyle?.[1] || "Shop now";
-  const words = brandContext.messaging?.useWords?.slice(0, 3).join(", ");
 
   return {
     subject: orDefault(campaign.subject, `${brand}: ${title}`),
     previewText: orDefault(campaign.previewText, `A ${brandContext.tone?.[0] || "helpful"} note matched to your ${category} shoppers.`),
-    bodyH2: orDefault(campaign.bodyH2, bestSeller ? `${bestSeller} and more picks worth revisiting.` : `${title} is ready for review.`),
-    bodyP1: orDefault(campaign.bodyP1, `We used recent Shopify behavior, product language, and purchase history to shape this ${category} message for ${brand}.`),
-    bodyP2: orDefault(campaign.bodyP2, words
-      ? `Keep the copy close to the brand vocabulary: ${words}.`
-      : "Keep the copy direct, useful, and tied to the customer's recent shopping context."),
+    // Defaults for a field that was never set. They reach customers, so they are
+    // plain and claim nothing; the old ones were instructions to a copywriter.
+    bodyH2: orDefault(campaign.bodyH2, bestSeller ? `Explore ${bestSeller}.` : `A few picks from ${brand}.`),
+    bodyP1: orDefault(campaign.bodyP1, `A few picks from ${brand}, worth a look.`),
+    bodyP2: orDefault(campaign.bodyP2, ""),
     cta: orDefault(campaign.cta, cta),
   };
 }
@@ -273,6 +273,10 @@ function buildBeaconTemplates(brandContext) {
   const category = brandContext?.category || "commerce";
   const cta = brandContext?.messaging?.ctaStyle || ["Shop best sellers", "Find your next favorite", "Complete your set"];
 
+  // Starting copy goes to customers and may be used with ANY play, so it makes no
+  // claim about what the reader bought, liked or is running low on, and none
+  // about stock, popularity or results (copyClaims.js). Best sellers are named
+  // as products to explore: that ranking comes from the store's own orders.
   return [
     {
       id: "beacon-winback-clean",
@@ -280,10 +284,10 @@ function buildBeaconTemplates(brandContext) {
       name: "Winback",
       // Bestseller appears at most twice per email: here in subject + headline.
       // Keep the body product-neutral so the same name isn't echoed a third time.
-      subject: bestSeller ? `Still thinking about ${bestSeller}?` : `A fresh reason to come back to ${brand}`,
-      previewText: "It's been a while — come see what's new.",
-      bodyH2: bestSeller ? `${bestSeller} is a good place to restart.` : "Your next favorite is ready.",
-      bodyP1: "Your favorites are still here, plus a few new arrivals you haven't met yet.",
+      subject: bestSeller ? `Take a look at ${bestSeller}` : `A fresh reason to come back to ${brand}`,
+      previewText: "It's been a while. Come take another look.",
+      bodyH2: bestSeller ? `Explore ${bestSeller}.` : "Take another look around.",
+      bodyP1: "A few best sellers and picks from the shop, worth a look.",
       cta: cta[0],
       brandContext,
     },
@@ -291,10 +295,10 @@ function buildBeaconTemplates(brandContext) {
       id: "beacon-second-purchase",
       source: "beacon",
       name: "Second purchase",
-      subject: "Make the most of your first order",
-      previewText: "A few picks that pair well with your first order.",
-      bodyH2: bestSeller ? `Pair your first pick with ${bestSeller}.` : "Here is what pairs well with your first pick.",
-      bodyP1: "Great first pick. Here's what other customers added next — chosen to go with what you already have.",
+      subject: "A few picks for your next order",
+      previewText: "A few more things from the shop to explore.",
+      bodyH2: bestSeller ? `Explore ${bestSeller}.` : "A few more things to explore.",
+      bodyP1: "Here are a few more things from the shop, whenever you're ready.",
       cta: cta[1],
       brandContext,
     },
@@ -302,10 +306,10 @@ function buildBeaconTemplates(brandContext) {
       id: "beacon-lifecycle-soft-nudge",
       source: "beacon",
       name: "Gentle nudge",
-      subject: "Picked for where you are now",
-      previewText: "A few things picked for you.",
-      bodyH2: "A small nudge, matched to your timing.",
-      bodyP1: "No rush — just a few picks we think fit what you've been shopping for.",
+      subject: "A few picks worth a look",
+      previewText: "A few things from the shop.",
+      bodyH2: "A few picks, no rush.",
+      bodyP1: "No rush. Here are a few picks from the shop.",
       cta: cta[2],
       brandContext,
     },

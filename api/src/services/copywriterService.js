@@ -10,6 +10,7 @@
 // with no `@anthropic-ai/sdk` installed and no ANTHROPIC_API_KEY set.
 
 const { PLAYBOOK, PLAYBOOK_VERSION } = require("./copyPlaybook");
+const { copyClaimViolation } = require("./copyClaims");
 
 const ENV_API_KEY = "ANTHROPIC_API_KEY";
 const ENV_MODEL = "COPYWRITER_MODEL";
@@ -129,9 +130,17 @@ function totalExclamations(slots) {
 
 // Validate the parsed copy against a static fallback. Returns
 // { copy, fallback_slots } where failing slots are replaced by the static value.
-function validateAndFallback(parsed, staticCopy, products) {
+//
+// `playId` decides which claims about the reader are supported (copyClaims.js).
+// Used for fresh copy, rewrites and copy served from the cache alike.
+function validateAndFallback(parsed, staticCopy, products, { playId = null } = {}) {
   const out = {};
   const fallback = [];
+  const claimContext = { playId, products };
+  const violation = (text, capKey) => slotTextViolation(text, capKey) || copyClaimViolation(text, claimContext);
+  // A fallback value is used only if it is itself clean; otherwise the slot is
+  // left empty rather than replaced by another unsupported claim.
+  const cleanStatic = (value) => (value && !copyClaimViolation(value, claimContext) ? value : "");
   const productNames = (products || []).map((p) => String(p.title || "").toLowerCase()).filter(Boolean);
   const productIds = new Set((products || []).map((p) => String(p.id)));
 
@@ -139,11 +148,11 @@ function validateAndFallback(parsed, staticCopy, products) {
   const variants = Array.isArray(parsed.subject_variants) ? parsed.subject_variants : [];
   const validVariants = variants
     .map((v) => String(v || "").trim())
-    .filter((v) => v && !slotTextViolation(v, "subject"));
+    .filter((v) => v && !violation(v, "subject"));
   if (validVariants.length >= 1) {
     out.subject_variants = validVariants.slice(0, 3);
   } else {
-    out.subject_variants = [staticCopy.subject].filter(Boolean);
+    out.subject_variants = [cleanStatic(staticCopy.subject)].filter(Boolean);
     fallback.push("subject_variants");
   }
 
@@ -163,13 +172,13 @@ function validateAndFallback(parsed, staticCopy, products) {
       out[key] = "";
       continue;
     }
-    let violation = slotTextViolation(raw, capKey);
+    let reason = violation(raw, capKey);
     // CTA-specific: reject weak/banned call-to-action phrases (playbook).
-    if (!violation && key === "cta" && containsAny(raw, BANNED_CTAS)) {
-      violation = "banned CTA phrase";
+    if (!reason && key === "cta" && containsAny(raw, BANNED_CTAS)) {
+      reason = "banned CTA phrase";
     }
-    if (violation) {
-      out[key] = staticValue || "";
+    if (reason) {
+      out[key] = cleanStatic(staticValue);
       // rationale has no static equivalent — omit rather than surface a template.
       if (key !== "rationale") fallback.push(key);
       else out[key] = "";
@@ -228,6 +237,8 @@ const OUTPUT_CONTRACT = `Output STRICT JSON with EXACTLY these keys and nothing 
 - subject_variants: EXACTLY 3, each under 45 characters.
 - support may be an empty string.
 - featured_product_id must be one of the provided product ids, or null.
+- Never say or imply what the reader bought, liked, browsed or is running low on. Name a product neutrally ("Explore X"), never "the X you picked up".
+- Never claim product results, stock levels, popularity or an offer. Copy that does is discarded.
 - Output ONLY the JSON object. No prose, no code fences, no explanation.`;
 
 function userMessage({ play, brandContext, template, products, lockedSlots, steer }) {
@@ -340,13 +351,31 @@ async function generateCampaignCopy(args) {
   }
   if (parsed === null) return { available: false };
 
-  const { copy, fallback_slots } = validateAndFallback(parsed, staticCopy, products);
+  const { copy, fallback_slots } = validateAndFallback(parsed, staticCopy, products, { playId: play?.play_id || play?.id || null });
 
   // adopt #1: the server returns fresh copy for ALL slots (it saw the locked
   // slots as prompt context, so the result coheres with them). The FRONTEND
   // owns which slots are edited and applies the result to Suggested slots only,
   // never overwriting a merchant edit. So no server-side re-injection is needed.
   return { available: true, copy, fallback_slots, playbook_version: PLAYBOOK_VERSION };
+}
+
+// Copy saved earlier — cached on a campaign row, or generated before a rule
+// existed — is checked again every time it is served. Slots that fail are
+// blanked, so the draft falls back to its starting template rather than showing
+// an unsupported claim. The envelope's other fields are kept.
+function sanitizeStoredCopy(envelope, { playId = null, products = [], staticCopy = {} } = {}) {
+  if (!envelope?.copy || typeof envelope.copy !== "object") return envelope;
+  const { copy, fallback_slots } = validateAndFallback(envelope.copy, staticCopy || {}, products, { playId });
+  return {
+    ...envelope,
+    copy: {
+      ...copy,
+      // Resolved product details are not slots; keep them only while the featured id survives.
+      ...(envelope.copy.featured_product && copy.featured_product_id ? { featured_product: envelope.copy.featured_product } : {}),
+    },
+    fallback_slots: Array.from(new Set([...(envelope.fallback_slots || []), ...fallback_slots])),
+  };
 }
 
 // Map the play's static template_prompt into the slot shape the validator uses
@@ -365,6 +394,8 @@ function staticCopyFromPlay(play, template) {
 
 module.exports = {
   generateCampaignCopy,
+  sanitizeStoredCopy,
+  staticCopyFromPlay,
   // exported for tests / verification
   validateAndFallback,
   slotTextViolation,

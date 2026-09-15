@@ -343,8 +343,11 @@ suite("an intentionally emptied paragraph stays empty in the sent email", async 
   assert.ok(!html.includes("Keep the copy"));
 
   // An ABSENT field still gets its default — that is the difference being drawn.
-  const absent = finalizeCampaignForRender({ ...draft, bodyP2: undefined }, brandContext);
-  assert.ok(absent.bodyP2.length > 0);
+  // The optional support paragraph's default is now empty (its old default was
+  // copywriter guidance), so the distinction is shown on the body paragraph.
+  const absent = finalizeCampaignForRender({ ...draft, bodyP1: undefined, bodyP2: undefined }, brandContext);
+  assert.ok(absent.bodyP1.length > 0, "an absent body gets a plain default");
+  assert.equal(absent.bodyP2, "", "an absent optional paragraph gets no filler");
 });
 
 suite("the handoff payload is byte-identical to the preview", async () => {

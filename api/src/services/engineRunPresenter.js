@@ -3,6 +3,8 @@
 // through even without used_fallback set; reject any guarded narration carrying it.
 const TAUTOLOGY_THESIS = /^This play targets the .* opportunity/i;
 
+const { checkNarration } = require("./narrationChecks");
+
 function isTautologyNarration(narration) {
   return Boolean(narration && TAUTOLOGY_THESIS.test(String(narration.play_thesis || "")));
 }
@@ -15,90 +17,93 @@ function titleizeId(value) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+// Starting copy is sent to customers, so it follows the same claim rules as
+// generated copy (copyClaims.js): no product, preference, usage, stock or offer
+// claims, and "your first order" only where the audience guarantees one.
 const PLAY_DISPLAY = {
   winback_dormant_cohort: {
     display_name: "Bring back lapsed customers",
     one_liner: "Customers who bought before but have gone quiet",
-    subject: "We saved something for you",
-    cta: "Come back and save",
-    customer_body: "It's been a while — here's what's new since your last order.",
+    subject: "Come take another look",
+    cta: "Take a look",
+    customer_body: "It's been a little while. Take another look around the shop.",
   },
   winback_21_45: {
     display_name: "Win back recent lapses (21–45 days)",
     one_liner: "Buyers who lapsed in the last 21–45 days — still warm",
-    subject: "It's been a minute — come see what's new",
-    cta: "Come back and save",
-    customer_body: "It's been a few weeks — we've kept your favorites in stock and added a few new picks.",
+    subject: "It's been a few weeks",
+    cta: "Take a look",
+    customer_body: "It's been a few weeks. Here are a few picks worth a look.",
   },
   cohort_journey_first_to_second: {
     display_name: "Turn first-time buyers into repeat buyers",
     one_liner: "One-time buyers who haven't come back yet",
-    subject: "Your next favorite is waiting",
+    subject: "Thanks for your first order",
     cta: "Shop the picks",
-    customer_body: "Thanks for your first order — here are a few things we think you'll love next.",
+    customer_body: "Thanks for your first order. Here are a few more things to explore.",
   },
   aov_lift_via_threshold_bundle: {
     display_name: "Raise order size with a bundle offer",
     one_liner: "Shoppers near a spend threshold worth nudging up",
-    subject: "So close to something extra",
+    subject: "Pair a few things together",
     cta: "Build your bundle",
-    customer_body: "You're close to unlocking more — pair a few favorites and get more for your order.",
+    customer_body: "Shopping for more than one thing? Here are a few picks to pair.",
   },
   discount_dependency_hygiene: {
     display_name: "Reduce discount dependency",
     one_liner: "Customers who only buy on discount — rebuild full-price habits",
-    subject: "Worth full price — here's why",
+    subject: "A closer look at the range",
     cta: "Shop the picks",
-    customer_body: "Here's what makes these worth it — quality that lasts, at everyday value.",
+    customer_body: "Here's a closer look at a few pieces from the range.",
   },
   discount_hygiene: {
     display_name: "Protect your margins on promos",
     one_liner: "Tighten who gets discounts and how deep",
-    subject: "A little something, just for you",
+    subject: "A few picks worth a look",
     cta: "Shop the picks",
-    customer_body: "A small thank-you, just for you — enjoy something you've had your eye on.",
+    customer_body: "A few picks from the shop worth a look.",
   },
   bestseller_amplify: {
     display_name: "Amplify your bestsellers",
     one_liner: "Put proven products in front of the right buyers",
-    subject: "The ones everyone keeps reordering",
+    subject: "Our best sellers right now",
     cta: "Shop the picks",
-    customer_body: "These are the picks customers keep coming back for — see what all the fuss is about.",
+    customer_body: "Here are the best sellers in the shop right now.",
   },
   replenishment_due: {
     display_name: "Remind customers to reorder",
     one_liner: "Customers likely running low, based on reorder timing",
-    subject: "Running low? Right on time",
-    cta: "Reorder now",
-    customer_body: "You might be running low — reorder in a couple of taps and never miss a beat.",
+    subject: "Ready to reorder?",
+    cta: "Reorder",
+    customer_body: "When you're ready for more, reordering takes a couple of taps.",
   },
   at_risk_repeat_buyer_rescue: {
     display_name: "Rescue at-risk repeat buyers",
     one_liner: "Loyal customers showing early signs of drifting away",
-    subject: "We miss you already",
-    cta: "Come back and save",
-    customer_body: "We've missed you — here's a little something to welcome you back.",
+    subject: "It's been a little while",
+    cta: "Take a look",
+    customer_body: "It's been a little while since your last order. Here are a few picks worth a look.",
   },
   subscription_nudge: {
     display_name: "Nudge repeat buyers toward subscription",
     one_liner: "Frequent buyers ready for a subscribe-and-save offer",
-    subject: "Never run out again",
-    cta: "Subscribe & save",
-    customer_body: "Since you reorder regularly, subscribe and save — delivered right on schedule.",
+    subject: "Set up regular deliveries",
+    cta: "Subscribe",
+    customer_body: "Want it on a schedule? You can set up regular deliveries.",
   },
   frequency_accelerator: {
     display_name: "Increase purchase frequency",
     one_liner: "Good customers who could buy more often",
-    subject: "Your routine, upgraded",
+    subject: "A few picks for your next order",
     cta: "Shop the picks",
-    customer_body: "Ready to level up your routine? Here are a few picks to add to the mix.",
+    customer_body: "Here are a few picks to consider for your next order.",
   },
   routine_builder: {
     display_name: "Build routines with cross-category offers",
     one_liner: "Buyers of one category likely to add a second",
-    subject: "Complete the routine",
+    subject: "Explore another part of the range",
     cta: "Shop the picks",
-    customer_body: "Round out your routine — these pair perfectly with what you already love.",
+    customer_body: "Here are a few picks from another part of the range.",
   },
   onsite_funnel_watch: {
     display_name: "Watch your onsite funnel",
@@ -110,9 +115,9 @@ const PLAY_DISPLAY = {
   empty_bottle: {
     display_name: "Time reorders to the empty bottle",
     one_liner: "Reorder reminders timed to product usage",
-    subject: "Time for a refill?",
-    cta: "Reorder now",
-    customer_body: "You're probably about due for a refill — reorder now and stay stocked.",
+    subject: "Ready for more?",
+    cta: "Reorder",
+    customer_body: "When you're ready for more, reordering takes a couple of taps.",
   },
 };
 
@@ -520,18 +525,21 @@ function buildTemplatePrompt(card, id) {
   // onsite_funnel_watch (and any monitor-only play) has no template.
   if (display && display.subject === null) return null;
 
-  const displayName = playDisplayName(id);
-  const oneLiner = playOneLiner(id) || audienceText(card.audience);
-  const customerBody = display?.customer_body || `${displayName}.`;
-  const subject = display?.subject || displayName;
+  // A play without starting copy of its own gets neutral copy, never its
+  // merchant-facing name.
+  const customerBody = display?.customer_body || "A few picks from the shop, worth a look.";
+  const subject = display?.subject || "A few picks worth a look";
   const cta = display?.cta || "Shop the picks";
 
   return {
     subject,
     previewText: customerBody,
-    headline: displayName,
+    // The customer-facing subject, not the play's name: "Reduce discount
+    // dependency" is a note to the merchant, not a headline for their customers.
+    headline: subject,
     body: customerBody,
-    support: customerBody,
+    // Optional, and repeating the body word for word as a second paragraph is not support.
+    support: "",
     cta,
   };
 }
@@ -552,12 +560,20 @@ function normalizeCard(card, role, index, manifest, narrationMap, currency) {
     && !isTautologyNarration(rawGuardedNarration)
     ? rawGuardedNarration
     : null;
-  const narration = guardedNarration ? {
+  // Each prose field must agree with this card's structured evidence
+  // (narrationChecks.js). A field that doesn't is dropped, so the briefing shows
+  // the evidence itself for that tab instead of a sentence contradicting it.
+  const { narration: checkedNarration, violations: claimViolations } = checkNarration(guardedNarration, {
+    card,
+    observedChange: observedChange(card.measurement, currency),
+  });
+  const narration = checkedNarration ? {
     role,
-    play_thesis: guardedNarration.play_thesis,
-    what_we_d_send: guardedNarration.what_we_d_send,
-    evidence_summary: guardedNarration.evidence_summary,
+    play_thesis: checkedNarration.play_thesis,
+    what_we_d_send: checkedNarration.what_we_d_send,
+    evidence_summary: checkedNarration.evidence_summary,
     guard_violations: guardedNarration.guard_violations || [],
+    claim_violations: claimViolations,
     used_fallback: false,
     llm_mode: "atul-narration",
   } : null;
@@ -598,7 +614,15 @@ function normalizeRejectedCard(card, index, narrationMap) {
   const id = card.play_id || `considered-${index + 1}`;
   const rawGuardedNarration = narrationFor(narrationMap, id, "considered");
   // C4b: reject the templated tautology sentence here too.
-  const guardedNarration = isTautologyNarration(rawGuardedNarration) ? null : rawGuardedNarration;
+  const tautologyFree = isTautologyNarration(rawGuardedNarration) ? null : rawGuardedNarration;
+  const { narration: guardedNarration, violations: claimViolations } = checkNarration(tautologyFree, {
+    card: {
+      audience: { definition: card.audience_definition || null, size: card.audience_size ?? null },
+      measurement: card.measurement || null,
+      mechanism_intent: card.mechanism_intent || null,
+    },
+    observedChange: observedChange(card.measurement),
+  });
   return {
     id,
     play_id: id,
@@ -621,6 +645,7 @@ function normalizeRejectedCard(card, index, narrationMap) {
       what_we_d_send: guardedNarration.what_we_d_send,
       evidence_summary: guardedNarration.evidence_summary,
       guard_violations: guardedNarration.guard_violations || [],
+      claim_violations: claimViolations,
       used_fallback: Boolean(guardedNarration.used_fallback),
       llm_mode: "atul-narration",
     } : null,
