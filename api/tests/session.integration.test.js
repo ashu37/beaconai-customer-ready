@@ -8,9 +8,9 @@ const { query } = require("../src/db");
 const { startApi } = require("./helpers/httpApp");
 const {
   authorizedForShop,
-  issueSession,
   readSession,
   sessionCookie,
+  signSessionToken,
 } = require("../src/services/sessionService");
 
 let api;
@@ -20,13 +20,19 @@ test.after(async () => {
   if (db.available) await db.closeDatabase();
 });
 
+// A signed token for a session id; whether the session is live is checked
+// against the database separately (authenticateToken).
+const issue = (shopDomain, { ttlMs = 60_000 } = {}) => signSessionToken({
+  sessionId: "sid-test", shopDomain, expiresAt: Date.now() + ttlMs,
+});
+
 test("a session names exactly the shop it was issued for", () => {
-  const token = issueSession("acme.myshopify.com");
+  const token = issue("acme.myshopify.com");
   assert.equal(readSession(token).shopDomain, "acme.myshopify.com");
 });
 
 test("a forged or altered token authenticates nobody", () => {
-  const token = issueSession("acme.myshopify.com");
+  const token = issue("acme.myshopify.com");
   const [body] = token.split(".");
 
   // Every one of these is simply "not authenticated". Distinguishing them for
@@ -39,7 +45,9 @@ test("a forged or altered token authenticates nobody", () => {
     null,
     undefined,
     // The shop swapped, signature kept: the signature covers the body.
-    `${Buffer.from(JSON.stringify({ shop: "victim.myshopify.com", exp: Date.now() + 1000 })).toString("base64url")}.${token.split(".")[1]}`,
+    `${Buffer.from(JSON.stringify({ sid: "sid-test", shop: "victim.myshopify.com", exp: Date.now() + 1000 })).toString("base64url")}.${token.split(".")[1]}`,
+    // A token from before server-side sessions: signed, but no session id.
+    (() => { const crypto = require("node:crypto"); const { config } = require("../src/config"); const b = Buffer.from(JSON.stringify({ shop: "acme.myshopify.com", exp: Date.now() + 1000 })).toString("base64url"); return `${b}.${crypto.createHmac("sha256", config.sessionSecret).update(b).digest("base64url")}`; })(),
   ]) {
     assert.equal(readSession(bad), null, `should reject: ${String(bad).slice(0, 40)}`);
   }
@@ -48,15 +56,15 @@ test("a forged or altered token authenticates nobody", () => {
 test("an expiry cannot be extended by editing the token", () => {
   // The expiry is inside the signed body, so rewriting it invalidates the
   // signature rather than buying more time.
-  const expired = issueSession("acme.myshopify.com", { ttlMs: -1 });
+  const expired = issue("acme.myshopify.com", { ttlMs: -1 });
   assert.equal(readSession(expired), null);
 
-  const forged = `${Buffer.from(JSON.stringify({ shop: "acme.myshopify.com", exp: Date.now() + 99999999 })).toString("base64url")}.${expired.split(".")[1]}`;
+  const forged = `${Buffer.from(JSON.stringify({ sid: "sid-test", shop: "acme.myshopify.com", exp: Date.now() + 99999999 })).toString("base64url")}.${expired.split(".")[1]}`;
   assert.equal(readSession(forged), null);
 });
 
 test("the session cookie is not readable by page scripts", () => {
-  const cookie = sessionCookie(issueSession("acme.myshopify.com"));
+  const cookie = sessionCookie(issue("acme.myshopify.com"));
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Lax/);
   assert.match(cookie, /Path=\//);
@@ -307,7 +315,7 @@ suite("the state a Klaviyo connection binds to comes from the session", async ()
   // Not callable without an authenticated shop at all — the shop is no longer
   // something a caller can pass in.
   await assert.rejects(
-    () => buildKlaviyoStartUrl({ shopDomain: null, returnTo: null }),
+    () => buildKlaviyoStartUrl({ shopDomain: null, returnTo: null, browserNonce: "browser-nonce-1" }),
     /authenticated shop is required/
   );
 });
@@ -387,7 +395,7 @@ suite("abandoned OAuth attempts are swept when new ones start", async () => {
   config.shopify.clientSecret = "test-secret";
   try {
     const { buildShopifyStartUrl } = require("../src/services/oauthService");
-    await buildShopifyStartUrl({ shop: "acme.myshopify.com", returnTo: null });
+    await buildShopifyStartUrl({ shop: "acme.myshopify.com", returnTo: null, browserNonce: "browser-nonce-1" });
   } finally {
     config.shopify.clientId = previous.id;
     config.shopify.clientSecret = previous.secret;

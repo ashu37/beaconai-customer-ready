@@ -741,10 +741,11 @@ suite("the public patch route cannot claim reservation authority", async () => {
   // patch object, which came from the request body — so anyone who could call
   // this route could assert it and edit content mid-handoff, nullifying the
   // guard entirely.
-  const { issueSession } = require("../src/services/sessionService");
+  const { createSession } = require("../src/services/sessionService");
+  const { token } = await createSession(SHOP);
   const patched = await fetch(`${api.base}/campaigns/${created.id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", authorization: `Bearer ${issueSession(SHOP)}` },
+    headers: { "Content-Type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({
       draftEdits: { subject: "Snuck in" },
       expectedRevision: reserved.revision,
@@ -765,10 +766,11 @@ suite("unknown patch fields are ignored, not forwarded", async () => {
   await seedRun("run-1");
   const created = await upsertCampaign({ shopDomain: SHOP, runId: "run-1", playId: PLAY });
 
-  const { issueSession } = require("../src/services/sessionService");
+  const { createSession } = require("../src/services/sessionService");
+  const { token } = await createSession(SHOP);
   const response = await fetch(`${api.base}/campaigns/${created.id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", authorization: `Bearer ${issueSession(SHOP)}` },
+    headers: { "Content-Type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({
       status: "approved",
       expectedRevision: created.revision,

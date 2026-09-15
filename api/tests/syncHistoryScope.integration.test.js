@@ -54,7 +54,7 @@ suite("a store without full-history access is asked to reconnect instead of sync
   const saved = { clientId: config.shopify.clientId, clientSecret: config.shopify.clientSecret };
   Object.assign(config.shopify, { clientId: "client", clientSecret: "secret" });
   try {
-    const url = new URL(await buildShopifyStartUrl({ shop: SHOP }));
+    const url = new URL(await buildShopifyStartUrl({ shop: SHOP, browserNonce: "browser-nonce-1" }));
     assert.ok(url.searchParams.get("scope").split(",").includes("read_all_orders"));
   } finally {
     Object.assign(config.shopify, saved);

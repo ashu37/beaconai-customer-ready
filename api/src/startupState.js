@@ -29,6 +29,15 @@ const state = {
   },
 };
 
+// The last database security inspection (databaseSecurity.js). Founder view only.
+let databaseSecurity = null;
+function recordDatabaseSecurity(result) {
+  databaseSecurity = { ...result, checkedAt: new Date().toISOString() };
+}
+function getDatabaseSecurity() {
+  return databaseSecurity;
+}
+
 function markDatabaseReady() {
   state.database = {
     status: "ready",
@@ -55,6 +64,8 @@ function getStartupState() {
 }
 
 module.exports = {
+  getDatabaseSecurity,
+  recordDatabaseSecurity,
   getStartupState,
   markDatabaseReady,
   markDatabaseFailed,

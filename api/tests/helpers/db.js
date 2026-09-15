@@ -31,6 +31,10 @@ const TABLES = [
   "clean.products",
   "clean.shop",
   "clean.connections",
+  "clean.sessions",
+  "clean.store_access",
+  "clean.privacy_requests",
+  "clean.oauth_states",
   "raw.shopify_events",
 ];
 

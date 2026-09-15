@@ -3093,6 +3093,20 @@ function StoreWorkspace({ onStoreChange }) {
     }
   }
 
+  // Ends the session on the server, then reloads so nothing from this store stays
+  // on screen. The cookie is cleared by the response either way.
+  const [signingOut, setSigningOut] = useState(false);
+  async function signOut() {
+    setSigningOut(true);
+    try {
+      await api.logout();
+      window.location.reload();
+    } catch (err) {
+      setSigningOut(false);
+      showToast({ message: "Couldn't sign out. Try again.", error: true });
+    }
+  }
+
   async function preloadStoreSnapshot() {
     try {
       const result = await api.getEngineInput();
@@ -4698,6 +4712,14 @@ function StoreWorkspace({ onStoreChange }) {
                   />
                   <button className="btn primary" type="submit">Use store</button>
                 </form>
+                {signedInShop ? (
+                  <p className="settings-signout">
+                    Signed in to {signedInShop}.{" "}
+                    <button type="button" className="link-btn" onClick={signOut} disabled={signingOut}>
+                      {signingOut ? "Signing out…" : "Sign out"}
+                    </button>
+                  </p>
+                ) : null}
               </div>
 
               <div className="setup-grid">

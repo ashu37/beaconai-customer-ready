@@ -1,4 +1,5 @@
 const { pool, query } = require("../db");
+const { assertStoreActive } = require("./storeAccessService");
 const { fetchShopifyData } = require("./shopifyClient");
 const {
   saveRawShopifyData,
@@ -310,6 +311,9 @@ async function runSync({ shopDomain, accessToken, limit, shopifyScope, appReques
     // Serializes publication per shop for the rest of this transaction. Two
     // syncs of the same store can fetch concurrently; only one can publish.
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [shopDomain]);
+    // Access may have ended while the fetch ran (a founder disable or an
+    // uninstall). Nothing from this fetch is written for a store that stopped.
+    await assertStoreActive(shopDomain, client);
 
     // An older sync must not overwrite a newer one. Compare start times, not
     // finish times: the sync that began later saw the newer store.

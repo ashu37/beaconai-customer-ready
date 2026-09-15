@@ -4,11 +4,14 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const morgan = require("morgan");
 const { config } = require("./config");
+const { productionSecretProblems } = require("./secretsPolicy");
+const { requestLogger } = require("./requestLog");
 const { initSchema } = require("./schema");
 const { router } = require("./routes");
-const { getStartupState, markDatabaseFailed, markDatabaseReady } = require("./startupState");
+const { getStartupState, markDatabaseFailed, markDatabaseReady, recordDatabaseSecurity } = require("./startupState");
+const { query } = require("./db");
+const { databaseSecurityProblems, inspectDatabaseSecurity } = require("./services/databaseSecurity");
 
 const app = express();
 
@@ -48,8 +51,11 @@ app.use(cors({
   },
   credentials: true,
 }));
+// Webhooks are verified against the exact bytes Shopify signed, so their bodies
+// stay raw. express.json skips a body this has already read.
+app.use("/api/webhooks", express.raw({ type: "*/*", limit: "1mb" }));
 app.use(express.json({ limit: "10mb" }));
-app.use(morgan("dev"));
+app.use(requestLogger());
 
 app.use("/api", router);
 
@@ -97,12 +103,35 @@ app.get("*", (req, res, next) => {
 });
 
 async function start() {
+  // Before listening: a production instance with a missing, default, short or
+  // shared secret must not serve a single request.
+  const secretProblems = productionSecretProblems(process.env);
+  if (secretProblems.length) {
+    for (const problem of secretProblems) console.error(`[config] ${problem}`);
+    console.error("[config] Refusing to start. Fix the environment and redeploy.");
+    process.exit(1);
+  }
+
   app.listen(config.port, () => {
     console.log(`BeaconAI API running on http://localhost:${config.port}`);
   });
 
   try {
     await initSchema();
+    // The boundary as the APPLICATION connection sees it. In production a
+    // superuser, BYPASSRLS or owner runtime role, or any API-role access to
+    // clean/raw, keeps the instance not-ready rather than serving customer data
+    // over a boundary that isn't there.
+    const report = await inspectDatabaseSecurity(query, { appRole: config.appDbRole });
+    const problems = databaseSecurityProblems(report);
+    recordDatabaseSecurity({ report, problems });
+    if (problems.length) {
+      for (const problem of problems) console.error(`[database-security] ${problem}`);
+    }
+    if (problems.length && process.env.NODE_ENV === "production") {
+      markDatabaseFailed(new Error("Database security check failed. See the server log or `npm run security:db-check`."));
+      return;
+    }
     markDatabaseReady();
     console.log("Database schema is ready.");
   } catch (error) {
