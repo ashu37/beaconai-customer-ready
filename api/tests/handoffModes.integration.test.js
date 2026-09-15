@@ -12,6 +12,7 @@ const { getCampaign, upsertCampaign, updateCampaign } = require("../src/services
 const { saveBrandTemplate } = require("../src/services/brandEmailTemplateService");
 const { buildStarterShell } = require("../src/services/brandEmailRenderer");
 const { klaviyoCampaignUrl } = require("../src/services/klaviyoClient");
+const { reconcileCampaign } = require("../src/services/reconciliationService");
 
 // The two handoff modes. "Finish design in Klaviyo" creates the draft without a
 // BeaconAI email, so it must not need a design or a preview — and must keep every
@@ -144,6 +145,15 @@ suite("finish in Klaviyo: a draft without a design, a preview or a template", as
     const delivery = await api.get(`/campaigns/${campaign.id}/delivery`, { session: SHOP });
     assert.equal(delivery.body.delivery.providerCampaignUrl, "https://www.klaviyo.com/campaign/camp-1/wizard/1");
 
+    // The response carries the campaign as the handoff left it, so the client
+    // can adopt it instead of saving over it with a revision that has moved.
+    const record = response.body.campaign_record;
+    assert.equal(record.frozen, true);
+    assert.equal(record.handoffMode, "klaviyo_design");
+    assert.equal(record.deliveryState, "created");
+    assert.equal(record.revision, after.revision, "the current revision, not the one quoted");
+    assert.ok(record.revision > campaign.revision);
+
     const original = await api.get(`/campaigns/${campaign.id}/original`, { session: SHOP });
     assert.equal(original.body.handoffMode, "klaviyo_design");
     assert.equal(original.body.renderedHtml, null);
@@ -259,11 +269,26 @@ suite("finish in Klaviyo: an uncertain provider outcome stays locked", async () 
     const after = await getCampaign(campaign.id);
     assert.equal(after.deliveryState, "uncertain");
     assert.ok(after.handoffReservedAt, "kept: a campaign may exist in Klaviyo");
+    // How the possible draft was made is known even though the outcome is not.
+    assert.equal(after.handoffMode, "klaviyo_design");
+    assert.equal(after.approvedCopy.subject, COPY.subject, "the suggestion it carried");
+    assert.equal(after.frozen, false);
 
     const before = fake.requests.length;
     const retry = await handOff(after);
     assert.equal(retry.status, 409);
     assert.equal(fake.requests.length, before, "no blind retry");
+
+    // Reconciliation finds the draft Klaviyo did create. The mode and the
+    // suggestion survive it.
+    const result = await reconcileCampaign(campaign.id, {
+      findByName: async () => ({ matches: [{ provider: "klaviyo", id: "camp-1", status: "draft" }], complete: true }),
+    });
+    assert.equal(result.ok, true);
+    const reconciled = await getCampaign(campaign.id);
+    assert.equal(reconciled.deliveryState, "awaiting_send");
+    assert.equal(reconciled.handoffMode, "klaviyo_design");
+    assert.equal(reconciled.approvedCopy.subject, COPY.subject);
   } finally {
     await fake.close();
   }
@@ -286,6 +311,35 @@ suite("finish in Klaviyo: a failure before Klaviyo is contacted can be retried",
     const retry = await handOff(after);
     assert.equal(retry.status, 200, JSON.stringify(retry.body));
     assert.equal((await getCampaign(campaign.id)).deliveryState, "created");
+  } finally {
+    await fake.close();
+  }
+});
+
+suite("a retry after a proven failure records its own mode, not the failed attempt's", async () => {
+  const campaign = await seedCampaign({ withKlaviyoKey: false, withDesign: true });
+  const fake = await startFakeKlaviyo();
+  try {
+    const failed = await handOff(campaign);
+    assert.equal(failed.status, 500);
+    assert.equal(failed.body.providerStage, "not_started");
+    const afterFailure = await getCampaign(campaign.id);
+    assert.equal(afterFailure.handoffMode, "klaviyo_design", "the attempt was recorded before Klaviyo");
+    assert.equal(afterFailure.handoffReservedAt, null);
+
+    // The merchant switches to the store's design and tries again.
+    await connectKlaviyo();
+    const preview = await api.post("/klaviyo/campaigns/preview-html", { shopDomain: SHOP, campaign: COPY });
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const retry = await handOff(afterFailure, {
+      handoffMode: "rendered_email",
+      expectedTemplateVersion: preview.body.templateVersion,
+      expectedRenderFingerprint: preview.body.renderFingerprint,
+    });
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    const done = await getCampaign(campaign.id);
+    assert.equal(done.handoffMode, "rendered_email");
+    assert.ok(done.renderedHtml, "the rendered email is recorded");
   } finally {
     await fake.close();
   }

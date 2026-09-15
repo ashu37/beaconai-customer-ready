@@ -473,6 +473,37 @@ async function reserveCampaignForHandoff(id, expectedRevision) {
 }
 
 /**
+ * Record what this handoff attempt is about to hand to the provider: its mode and
+ * the copy it carries. Written by the route that holds the reservation, AFTER
+ * everything knowable locally has passed and BEFORE the provider is contacted.
+ *
+ * Written first because the outcome may never be seen. If the provider creates a
+ * draft and the response is lost, the campaign is left uncertain and only
+ * reconciliation can adopt it — which recovers the provider id, not how the
+ * draft was made. Without this, a template-free draft could later be described
+ * as a rendered email. Reconciliation never touches these columns, so they
+ * survive it. A later attempt after a proven failure overwrites them.
+ *
+ * Bookkeeping on a reserved row, so it does not move `revision` (like the
+ * provider campaign name). Refuses unless the row is reserved and not frozen.
+ */
+async function recordHandoffAttempt(id, { handoffMode, suggestedCopy }) {
+  const { rows } = await query(
+    `UPDATE clean.campaigns
+        SET handoff_mode  = $2,
+            approved_copy = $3::jsonb,
+            updated_at    = NOW()
+      WHERE id = $1 AND handoff_reserved_at IS NOT NULL AND frozen_at IS NULL
+      RETURNING *`,
+    [id, handoffMode, JSON.stringify(suggestedCopy || null)]
+  );
+  if (!rows.length) {
+    throw new Error(`Campaign ${id} is not reserved for handoff; nothing was sent to the provider.`);
+  }
+  return rowToCampaign(rows[0]);
+}
+
+/**
  * Give the reservation back so the merchant can retry.
  *
  * ONLY safe when nothing was created at the provider. If a draft may exist,
@@ -734,6 +765,7 @@ module.exports = {
   CampaignHandoffInProgress,
   CampaignRevisionRequired,
   releaseHandoffReservation,
+  recordHandoffAttempt,
   reserveCampaignForHandoff,
   findCampaign,
   freezeCampaignAtHandoff,

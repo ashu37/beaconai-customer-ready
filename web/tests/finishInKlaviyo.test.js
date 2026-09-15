@@ -119,6 +119,9 @@ Object.assign(apiModule.api, {
       providerCampaignUrl: "https://www.klaviyo.com/campaign/K1/wizard/1",
     };
     const row = rows.find((r) => String(r.id) === String(payload.campaignId));
+    // As the server does: the reservation and the freeze each move the revision,
+    // so the revision the client quoted is out of date once this returns.
+    row.revision += 2;
     Object.assign(row, {
       frozen: true, frozenAt: "2026-09-15T12:00:00.000Z", deliveryState: "created", klaviyoCampaignId: "K1",
       handoffMode: payload.handoffMode || "rendered_email", providerCampaignName: "BeaconAI - Bring back lapsed customers",
@@ -220,8 +223,15 @@ test("without a BeaconAI design: suggested messaging to copy, and a draft with n
 
   let savedRevision = null;
   hooks.beforeHandoff = () => { savedRevision = rows[0].revision; };
+  const savesBeforeHandoff = saves().length;
   await click(button((t) => t === "Create draft in Klaviyo"), 900);
   assert.equal(previews().length, 0, "no BeaconAI email was ever rendered");
+  // The returned campaign is adopted: nothing is saved over the frozen record
+  // with the revision the handoff already moved, and no conflict follows.
+  assert.equal(saves().length, savesBeforeHandoff, "no save after handoff");
+  assert.doesNotMatch(text(), /Changed elsewhere|changed elsewhere/);
+  assert.match(messaging()?.textContent || "", /Handoff suggestion/, "shown straight away, without a reload");
+  assert.match(messaging().textContent, /A new subject/);
   const [payload] = handoffs();
   assert.equal(payload.handoffMode, "klaviyo_design");
   assert.equal(payload.expectedRenderFingerprint, null);
@@ -315,6 +325,29 @@ test("finishing in Klaviyo still refuses a handoff whose last edit didn't save",
   assert.equal(handoffs().length, 0);
   assert.equal(rows[0].status, "draft");
   assert.match(text(), /haven't saved yet|didn't save|Not saved/);
+});
+
+test("an uncertain finish-in-Klaviyo handoff keeps its mode after reload, even on a store with a design", async () => {
+  designConfigured = true;
+  // Klaviyo may have created the draft; the response never came back. Nothing
+  // was frozen, but the attempt's mode and suggestion were recorded first.
+  rows = [campaignRow({
+    id: 11, status: "approved", revision: 5, frozen: false, frozenAt: null,
+    handoffReservedAt: "2026-09-15T12:00:00.000Z", deliveryState: "uncertain", handoffMode: "klaviyo_design",
+    approvedCopy: { subject: "Attempted subject", previewText: "Attempted preview" },
+  })];
+  delivery = { state: "uncertain" };
+  await mount();
+  await openCampaigns();
+  await settle(900);
+
+  assert.match(document.querySelector(".step.current")?.textContent || "", /Review & create draft/);
+  assert.match(messaging()?.textContent || "", /Handoff suggestion/);
+  assert.match(messaging().textContent, /Attempted subject/);
+  assert.doesNotMatch(text(), /Current email preview|Handoff email|Design: Acme approved design/);
+  assert.match(text(), /Design: you choose a template in Klaviyo/);
+  assert.ok(!button((t) => t === "Create draft in Klaviyo"), "no retry from an uncertain outcome");
+  assert.equal(previews().length, 0, "not described or rendered as a BeaconAI email");
 });
 
 test("a campaign finished in Klaviyo keeps its handoff suggestion, never called the sent email", async () => {

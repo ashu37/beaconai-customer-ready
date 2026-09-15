@@ -2132,13 +2132,22 @@ function StoreWorkspace({ onStoreChange }) {
   // Earlier-run campaigns the merchant reopened, kept in the rail across reads.
   const openedKeysRef = useRef(new Set());
 
+  // A draft may exist in Klaviyo: frozen, reserved, or in any delivery state past
+  // a proven failure. The mode recorded for the attempt then describes that
+  // draft, even when the outcome is uncertain and nothing was frozen.
+  function mayExistInKlaviyo(row) {
+    if (!row) return false;
+    if (row.frozenAt || row.frozen || row.handoffReservedAt) return true;
+    return !["not_started", "failed", undefined, null].includes(row.deliveryState);
+  }
+
   // How this campaign is (or was) handed off. Read at call time from the ref,
   // like the rest of a handoff's identity.
   function handoffModeFor(key) {
     const row = campaignRowsRef.current[key] || campaignRowsByKey[key] || null;
     return resolveHandoffMode({
       storedMode: row?.handoffMode || null,
-      handedOff: Boolean(row?.frozenAt || row?.frozen),
+      handedOff: mayExistInKlaviyo(row),
       chosenMode: handoffModeByKey[key] || null,
       designConfigured: Boolean(brandDesign?.configured),
     });
@@ -3605,7 +3614,11 @@ function StoreWorkspace({ onStoreChange }) {
           createdAt: new Date().toISOString(),
         },
       }));
-      if (campaignId) saveCampaignState(key, { klaviyoCampaignId: campaignId });
+      // Adopt the campaign as the handoff left it: frozen, its mode recorded,
+      // and a revision the handoff has already moved. Saving the Klaviyo id
+      // again quoted the pre-handoff revision and was refused as a conflict,
+      // leaving the workspace on stale state until a reload.
+      if (result.campaign_record) registerCampaignRow(result.campaign_record);
       // Re-read the DURABLE state. Without this the screen kept showing "Create
       // draft" after a successful creation, and the next click made a second one.
       await loadDelivery(key);
@@ -4517,6 +4530,7 @@ function StoreWorkspace({ onStoreChange }) {
                                 summary={summary}
                                 sender={sender}
                                 handoffMode={reviewMode}
+                                handedOff={mayExistInKlaviyo(storedRow)}
                                 handoffCopy={storedRow?.approvedCopy || null}
                                 design={finishesInKlaviyo(reviewMode)
                                   ? "you choose a template in Klaviyo"

@@ -123,6 +123,7 @@ const {
   ReplacementRefused,
   createReplacementDraft,
   releaseHandoffReservation,
+  recordHandoffAttempt,
   reserveCampaignForHandoff,
   upsertCampaign,
   recordRecipients,
@@ -1180,6 +1181,18 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       }
     }
 
+    // The attempt's mode and copy, recorded before the provider is contacted so
+    // an outcome we never see still says how the draft was made. A failure here
+    // happens before anything external, so the reservation is handed back.
+    if (campaignRow) {
+      try {
+        campaignRow = await recordHandoffAttempt(campaignRow.id, { handoffMode, suggestedCopy: campaign });
+      } catch (recordError) {
+        await releaseHandoffReservation(campaignRow.id).catch(() => {});
+        throw recordError;
+      }
+    }
+
     let packageResult;
     try {
       packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience, {
@@ -1277,7 +1290,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
-      campaign_record: campaignRow,
+      // Re-read after the last write above (the delivery transition does not
+      // return the row), so the client can adopt the frozen campaign as it is
+      // rather than save over it with a revision the handoff already moved.
+      campaign_record: campaignRow ? await getCampaign(campaignRow.id) : null,
       inputProvenance: provenance.provenance,
       syncRunId: provenance.syncRunId,
       template: packageResult.template,

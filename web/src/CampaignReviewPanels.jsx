@@ -130,7 +130,7 @@ export function AudiencePanel({ summary }) {
 export function FinalReviewPanel({
   campaign, summary, sender, design, effectiveDestination,
   previewHtml, frozenHtml, frozenAt, onEditStep,
-  handoffMode = "rendered_email", handoffCopy = null,
+  handoffMode = "rendered_email", handoffCopy = null, handedOff = false,
 }) {
   const frozen = Boolean(frozenHtml || frozenAt);
   const inKlaviyo = finishesInKlaviyo(handoffMode);
@@ -173,7 +173,7 @@ export function FinalReviewPanel({
 
       {inKlaviyo ? (
         <div className="final-review-block final-review-klaviyo">
-          {frozen ? (
+          {frozen || handedOff ? (
             <SuggestedMessaging
               copy={handoffCopy || campaign}
               destinationUrl={handoffCopy ? handoffCopy.destinationUrl : effectiveDestination}
