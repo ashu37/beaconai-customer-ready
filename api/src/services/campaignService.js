@@ -134,6 +134,9 @@ function rowToCampaign(row) {
     approvedCopy: row.approved_copy,
     renderedHtml: row.rendered_html,
     templateVersion: row.template_version,
+    // How it was handed off: "rendered_email", "klaviyo_design", or null for a
+    // campaign not handed off yet (or handed off before modes existed).
+    handoffMode: row.handoff_mode ?? null,
     providerCampaignName: row.provider_campaign_name,
     audienceRef: row.audience_ref,
     audienceHash: row.audience_hash,
@@ -294,7 +297,7 @@ async function findCampaign({ shopDomain, runId, playId }) {
  * who it went to cannot change.
  */
 async function freezeCampaignAtHandoff(id, {
-  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds,
+  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds, handoffMode = null,
 }) {
   const { rows } = await query(
     `UPDATE clean.campaigns
@@ -303,6 +306,7 @@ async function freezeCampaignAtHandoff(id, {
             template_version = COALESCE($4, template_version),
             audience_ref     = COALESCE($5::jsonb, audience_ref),
             audience_hash    = COALESCE($6, audience_hash),
+            handoff_mode     = COALESCE($7, handoff_mode),
             reviewed_at      = COALESCE(reviewed_at, NOW()),
             frozen_at        = NOW(),
             revision         = revision + 1,
@@ -319,6 +323,7 @@ async function freezeCampaignAtHandoff(id, {
       templateVersion || null,
       audienceRef ? JSON.stringify(audienceRef) : null,
       hashAudience(customerIds),
+      handoffMode || null,
     ]
   );
   if (rows.length) return rowToCampaign(rows[0]);
@@ -465,6 +470,37 @@ async function reserveCampaignForHandoff(id, expectedRevision) {
     throw new CampaignHandoffInProgress(current);
   }
   throw new CampaignRevisionConflict(current, expected);
+}
+
+/**
+ * Record what this handoff attempt is about to hand to the provider: its mode and
+ * the copy it carries. Written by the route that holds the reservation, AFTER
+ * everything knowable locally has passed and BEFORE the provider is contacted.
+ *
+ * Written first because the outcome may never be seen. If the provider creates a
+ * draft and the response is lost, the campaign is left uncertain and only
+ * reconciliation can adopt it — which recovers the provider id, not how the
+ * draft was made. Without this, a template-free draft could later be described
+ * as a rendered email. Reconciliation never touches these columns, so they
+ * survive it. A later attempt after a proven failure overwrites them.
+ *
+ * Bookkeeping on a reserved row, so it does not move `revision` (like the
+ * provider campaign name). Refuses unless the row is reserved and not frozen.
+ */
+async function recordHandoffAttempt(id, { handoffMode, suggestedCopy }) {
+  const { rows } = await query(
+    `UPDATE clean.campaigns
+        SET handoff_mode  = $2,
+            approved_copy = $3::jsonb,
+            updated_at    = NOW()
+      WHERE id = $1 AND handoff_reserved_at IS NOT NULL AND frozen_at IS NULL
+      RETURNING *`,
+    [id, handoffMode, JSON.stringify(suggestedCopy || null)]
+  );
+  if (!rows.length) {
+    throw new Error(`Campaign ${id} is not reserved for handoff; nothing was sent to the provider.`);
+  }
+  return rowToCampaign(rows[0]);
 }
 
 /**
@@ -729,6 +765,7 @@ module.exports = {
   CampaignHandoffInProgress,
   CampaignRevisionRequired,
   releaseHandoffReservation,
+  recordHandoffAttempt,
   reserveCampaignForHandoff,
   findCampaign,
   freezeCampaignAtHandoff,

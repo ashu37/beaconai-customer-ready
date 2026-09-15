@@ -22,6 +22,9 @@ export function usePreview({
   fetchPreview,
   onPreviewRendered,
   debounceMs = 600,
+  // False when the campaign is finished in Klaviyo: there is no BeaconAI email
+  // to render, so nothing is requested.
+  enabled = true,
 }) {
   const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(false);
@@ -38,12 +41,12 @@ export function usePreview({
   // Refreshed every render. `refresh` keeps a stable identity — the effects
   // below depend on it — while always seeing current values.
   const latest = useRef({});
-  latest.current = { draft, campaignSignature, campaignKey, brandContext, fetchPreview, onPreviewRendered };
+  latest.current = { draft, campaignSignature, campaignKey, brandContext, fetchPreview, onPreviewRendered, enabled };
 
   const refresh = useCallback(async (overrideDraft) => {
     const bound = latest.current;
     const currentDraft = overrideDraft || bound.draft;
-    if (!currentDraft) return null;
+    if (!currentDraft || !bound.enabled) return null;
 
     // Captured up front so the response is recorded against the request that
     // produced it, not against whatever the component has moved on to.
@@ -105,14 +108,14 @@ export function usePreview({
   // Immediate on campaign or template change.
   useEffect(() => {
     if (latest.current.draft) refresh();
-  }, [campaignKey, refresh]);
+  }, [campaignKey, enabled, refresh]);
 
   // Debounced while the merchant types. Keyed on the campaign signature, which
   // covers the destination as well as the copy — the previous field list did
   // not, so typing a destination never refreshed the preview.
   const debounce = useRef(null);
   useEffect(() => {
-    if (!draft) return undefined;
+    if (!draft || !enabled) return undefined;
     clearTimeout(debounce.current);
     debounce.current = setTimeout(() => refresh(), debounceMs);
     return () => clearTimeout(debounce.current);
@@ -121,7 +124,7 @@ export function usePreview({
     // parent state, which rebuilt the draft, which scheduled another request —
     // a preview that refreshed forever without anyone editing anything. The
     // VALUES that change what gets rendered are listed instead.
-  }, [campaignSignature, draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta, debounceMs, refresh]);
+  }, [campaignSignature, draft?.subject, draft?.previewText, draft?.bodyH2, draft?.bodyP1, draft?.bodyP2, draft?.cta, debounceMs, enabled, refresh]);
 
   const flush = useCallback(() => {
     clearTimeout(debounce.current);

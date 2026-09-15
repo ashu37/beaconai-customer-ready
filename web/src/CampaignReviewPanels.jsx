@@ -7,7 +7,93 @@
 // These render presenter output and nothing else. Every judgement about what is
 // known, unknown or merely planned lives in audienceSummary.js; this decides how
 // it looks, not what it claims.
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  FINISH_IN_KLAVIYO_STEPS,
+  HANDOFF_SUGGESTION_NOTE,
+  SUGGESTED_MESSAGING_NOTE,
+  finishesInKlaviyo,
+} from "./handoffMode";
+
+// The fields a merchant copies into their own Klaviyo template, in the order
+// they would use them. Empty ones are left out rather than shown blank.
+const MESSAGING_FIELDS = [
+  { key: "subject", label: "Subject" },
+  { key: "previewText", label: "Preview text" },
+  { key: "bodyH2", label: "Headline" },
+  { key: "bodyP1", label: "Body" },
+  { key: "bodyP2", label: "Support paragraph" },
+  { key: "cta", label: "Button text" },
+  { key: "destinationUrl", label: "Button link" },
+];
+
+function CopyButton({ text, label }) {
+  const [state, setState] = useState("idle");
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState("copied");
+    } catch (_) {
+      // Clipboard access can be refused (permissions, an insecure page). Say so;
+      // the text is on screen to select by hand.
+      setState("failed");
+    }
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), 2000);
+  };
+  return (
+    <button type="button" className="btn small copy-btn" onClick={copy} aria-label={`Copy ${label}`}>
+      {state === "copied" ? "Copied" : state === "failed" ? "Select to copy" : "Copy"}
+    </button>
+  );
+}
+
+/**
+ * Suggested messaging for a campaign finished in Klaviyo.
+ *
+ * Never called "the email": the merchant chooses the template and finishes the
+ * content in Klaviyo. After handoff it is the suggestion that was handed over,
+ * and says so — nothing here reads back what Klaviyo finally sent.
+ */
+export function SuggestedMessaging({ copy, destinationUrl = null, handedOffAt = null, headingLevel = "section" }) {
+  const values = { ...(copy || {}), destinationUrl: destinationUrl || copy?.destinationUrl || null };
+  const rows = MESSAGING_FIELDS
+    .map((field) => ({ ...field, value: String(values[field.key] ?? "").trim() }))
+    .filter((row) => row.value);
+  const handedOff = Boolean(handedOffAt);
+  return (
+    <div className="suggested-messaging" aria-label={handedOff ? "Handoff suggestion" : "Suggested messaging"}>
+      <span className={headingLevel === "section" ? "section-kicker" : "section-meta"}>
+        {handedOff ? "Handoff suggestion" : "Suggested messaging"}
+      </span>
+      <p className="suggested-messaging-note">
+        {handedOff
+          ? `${HANDOFF_SUGGESTION_NOTE}${typeof handedOffAt === "string" ? ` Handed off ${handedOffAt}.` : ""}`
+          : SUGGESTED_MESSAGING_NOTE}
+      </p>
+      {rows.length ? (
+        <dl className="suggested-messaging-rows">
+          {rows.map((row) => (
+            <div key={row.key} className="suggested-messaging-row">
+              <dt>{row.label}</dt>
+              <dd>
+                <span className="suggested-messaging-value">{row.value}</span>
+                <CopyButton text={row.value} label={row.label.toLowerCase()} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="final-review-meta">No messaging was suggested for this campaign.</p>
+      )}
+      {!handedOff ? (
+        <p className="final-review-meta">The subject and preview text are added to the Klaviyo draft when it's created.</p>
+      ) : null}
+    </div>
+  );
+}
 
 export function AudiencePanel({ summary }) {
   if (!summary.available) {
@@ -44,15 +130,17 @@ export function AudiencePanel({ summary }) {
 export function FinalReviewPanel({
   campaign, summary, sender, design, effectiveDestination,
   previewHtml, frozenHtml, frozenAt, onEditStep,
+  handoffMode = "rendered_email", handoffCopy = null, handedOff = false,
 }) {
   const frozen = Boolean(frozenHtml || frozenAt);
+  const inKlaviyo = finishesInKlaviyo(handoffMode);
   return (
     <div className="final-review">
       <div className="final-review-block">
         <div className="final-review-head">
-          <span className="section-kicker">Email</span>
+          <span className="section-kicker">{inKlaviyo ? "Suggested messaging" : "Email"}</span>
           {onEditStep ? (
-            <button type="button" className="link-btn" onClick={() => onEditStep("copy")}>Edit email</button>
+            <button type="button" className="link-btn" onClick={() => onEditStep("copy")}>{inKlaviyo ? "Edit messaging" : "Edit email"}</button>
           ) : null}
         </div>
         <p><strong>{campaign.subject}</strong></p>
@@ -83,6 +171,32 @@ export function FinalReviewPanel({
         ) : <p className="final-review-meta">{summary.message}</p>}
       </div>
 
+      {inKlaviyo ? (
+        <div className="final-review-block final-review-klaviyo">
+          {frozen || handedOff ? (
+            <SuggestedMessaging
+              copy={handoffCopy || campaign}
+              destinationUrl={handoffCopy ? handoffCopy.destinationUrl : effectiveDestination}
+              handedOffAt={frozenAt || true}
+            />
+          ) : (
+            <>
+              <span className="section-kicker">Finish in Klaviyo</span>
+              <p className="final-review-meta">
+                Creating the draft adds this audience, the subject, the preview text and your Klaviyo sender. It has no
+                design yet. In Klaviyo:
+              </p>
+              <ol className="finish-steps">
+                {FINISH_IN_KLAVIYO_STEPS.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+              <p className="final-review-meta">
+                BeaconAI never sends email. Changes you make in Klaviyo stay there; BeaconAI doesn't change the draft after
+                creating it.
+              </p>
+            </>
+          )}
+        </div>
+      ) : (
       <div className="final-review-block final-review-preview">
         <span className="section-kicker">{frozen ? "Handoff email" : "Current email preview"}</span>
         {/* The spec requires the actual email here, not only its subject.
@@ -111,6 +225,7 @@ export function FinalReviewPanel({
           </p>
         )}
       </div>
+      )}
 
       <div className="final-review-block">
         <span className="section-kicker">Sender</span>

@@ -74,7 +74,8 @@ Object.assign(apiModule.api, {
   testShopify: record("testShopify", () => ({ ok: true })),
   testKlaviyo: record("testKlaviyo", () => ({ ok: true })),
   brandContext: record("brandContext", () => ({ ok: true, brandContext: null })),
-  brandEmailTemplate: record("brandEmailTemplate", () => ({ ok: true, configured: false })),
+  // A store with a BeaconAI design: these tests cover the rendered-email handoff.
+  brandEmailTemplate: record("brandEmailTemplate", () => ({ ok: true, configured: true, active: { version: 1 } })),
   klaviyoSender: record("klaviyoSender", () => ({ ok: true, sender: null })),
   getEngineInput: record("getEngineInput", () => ({ ok: true, input: null })),
   getLatestEngineRun: record("getLatestEngineRun", () => ({ ok: true, found: true, presentedRun: RUN_B })),

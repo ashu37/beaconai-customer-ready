@@ -116,3 +116,27 @@ test("unloaded and unavailable are not 'nothing has happened yet'", () => {
   assert.equal(unavailable.allowsCreate, false);
   assert.match(unavailable.message, /Reload before creating/);
 });
+
+test("a campaign finished in Klaviyo is told what to do there, with the draft's name beside the link", () => {
+  const mode = { handoffMode: "klaviyo_design" };
+  const ready = presentDelivery(d("not_started"), mode);
+  assert.equal(ready.primary.label, "Create draft in Klaviyo");
+  assert.match(ready.caption, /You choose the template and send it in Klaviyo\. No email is sent\./);
+
+  const created = presentDelivery(d("created", {
+    providerCampaignUrl: "https://www.klaviyo.com/campaign/K1/wizard/1", campaignName: "BeaconAI - Win-back",
+  }), mode);
+  assert.equal(created.primary.action, "open");
+  assert.match(created.detail, /choose a template, finish the email, check the sender and recipients, then send it from Klaviyo/);
+  assert.equal(created.nameHint, "In Klaviyo it's named “BeaconAI - Win-back” (Campaigns).");
+  assert.equal(created.lastChecked, "Status updates when your pilot contact checks Klaviyo.");
+
+  // Refusals are the mode's too: an uncertain outcome still offers no retry.
+  const uncertain = presentDelivery(d("uncertain"), mode);
+  assert.equal(uncertain.primary, null);
+  assert.equal(uncertain.allowsCreate, false);
+
+  // The rendered-email wording is unchanged.
+  assert.equal(presentDelivery(d("not_started")).caption, "Creates a draft. No email is sent.");
+  assert.equal(presentDelivery(d("created", { providerCampaignUrl: "https://x" })).detail, "Finish reviewing the sender, recipients, links and footer in Klaviyo.");
+});

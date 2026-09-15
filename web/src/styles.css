@@ -853,3 +853,20 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 
 /* Holdout change in progress: the counts above are about to be replaced. */
 .holdout-updating { display: block; color: var(--muted); font-size: 12px; margin: 6px 0; }
+
+/* How a campaign is finished: the store's BeaconAI design, or in Klaviyo. */
+.handoff-mode-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-bottom: 16px; }
+.handoff-mode-choice > .section-meta { grid-column: 1 / -1; }
+
+/* Suggested messaging: copyable suggestions, never presented as the email. */
+.suggested-messaging { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-card); padding: 14px 16px; display: grid; gap: 10px; }
+.suggested-messaging .section-kicker { margin-bottom: 0; }
+.suggested-messaging-note { color: var(--muted); font-size: 12.5px; line-height: 1.5; margin: 0; }
+.suggested-messaging-rows { display: grid; gap: 10px; margin: 0; }
+.suggested-messaging-row { display: grid; gap: 3px; border-top: 1px solid var(--rule); padding-top: 10px; }
+.suggested-messaging-row dt { color: var(--muted-2); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.suggested-messaging-row dd { margin: 0; display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.suggested-messaging-value { color: var(--ink-strong); font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.copy-btn { flex: none; padding: 4px 10px; font-size: 12px; }
+.finish-steps { margin: 4px 0 8px; padding-left: 20px; display: grid; gap: 4px; color: var(--ink); font-size: 13px; line-height: 1.5; }
+.final-review-block .suggested-messaging { border: 0; padding: 0; background: transparent; }

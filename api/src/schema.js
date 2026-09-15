@@ -355,6 +355,9 @@ async function initSchema() {
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS approved_copy JSONB;`);
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS rendered_html TEXT;`);
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS template_version TEXT;`);
+  // How the campaign was handed off (rendered_email | klaviyo_design). Null until
+  // handoff, and for campaigns handed off before there was a choice.
+  await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS handoff_mode TEXT;`);
 
   // The audience as a REFERENCE — (run_id, audience_definition_id) plus counts —
   // not a re-derivation. audience_hash is over the member id list, so a later

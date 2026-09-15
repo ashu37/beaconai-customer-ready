@@ -29,6 +29,41 @@ function createKlaviyoClient(privateKey) {
   });
 }
 
+// How a campaign reaches Klaviyo. Two modes, chosen per handoff:
+//
+//   rendered_email  BeaconAI renders the store's approved design, the merchant
+//                   reviews that exact email, and it goes to Klaviyo as a template
+//                   attached to the draft.
+//   klaviyo_design  BeaconAI creates the draft with its audience, subject, preview
+//                   text and sender, and NO template. The merchant chooses one of
+//                   their own Klaviyo templates, finishes the email and sends it
+//                   in Klaviyo. BeaconAI's copy is a suggestion, not the email.
+//
+// Checked against a real account (docs/PILOT_BLOCKERS_PLAN.md, 2026-09-15): a
+// draft without a template is accepted, and choosing a saved template in
+// Klaviyo's editor keeps the campaign id, name, audience, subject and preview.
+const HANDOFF_MODES = Object.freeze({
+  RENDERED_EMAIL: "rendered_email",
+  KLAVIYO_DESIGN: "klaviyo_design",
+});
+
+// Absent means the original mode, so an older client keeps every safeguard it
+// had. Anything else that is not a known mode is refused by the caller.
+function parseHandoffMode(value) {
+  if (value === undefined || value === null || value === "") return HANDOFF_MODES.RENDERED_EMAIL;
+  return Object.values(HANDOFF_MODES).includes(value) ? value : null;
+}
+
+// The Klaviyo page for a campaign, built only from an id Klaviyo returned.
+// Checked against a real account: this address opens that draft and a wrong id
+// shows Klaviyo's "Not Found" page. It opens in a browser signed in to that
+// Klaviyo account, so the merchant is also given the campaign's exact name.
+function klaviyoCampaignUrl(campaignId) {
+  const id = String(campaignId || "").trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
+  return `https://www.klaviyo.com/campaign/${id}/wizard/1`;
+}
+
 async function testKlaviyo(privateKey) {
   const client = createKlaviyoClient(privateKey);
   const response = await client.get("/accounts");
@@ -318,7 +353,9 @@ function assertPackageSendable(privateKey, campaign, audience, options) {
   if (!privateKey) {
     throw new Error("Klaviyo is not connected for this store. Connect Klaviyo, then try again.");
   }
-  if (!options.html) {
+  // Only the rendered-email mode sends an email body. The Klaviyo-design mode
+  // deliberately has none: the merchant builds it in Klaviyo.
+  if ((options.mode || HANDOFF_MODES.RENDERED_EMAIL) === HANDOFF_MODES.RENDERED_EMAIL && !options.html) {
     throw new Error(
       "createCampaignSendPackage requires rendered html. Render the shop's approved brand shell first."
     );
@@ -363,11 +400,15 @@ async function createCampaignSendPackageInner(privateKey, campaign, audience, pr
   // The stage is advanced BEFORE each call, not after: a request that times out
   // may still have been executed by the provider, so "we were at the campaign
   // step" has to mean "a campaign may exist".
-  progress.stage = "template";
-  // The reviewed bytes. Dropping this argument once meant every handoff threw
-  // here — and, being past "not_started", locked the campaign as uncertain
-  // although nothing had been sent.
-  const template = await createTemplate(privateKey, campaign, options.html);
+  const rendered = (options.mode || HANDOFF_MODES.RENDERED_EMAIL) === HANDOFF_MODES.RENDERED_EMAIL;
+  let template = null;
+  if (rendered) {
+    progress.stage = "template";
+    // The reviewed bytes. Dropping this argument once meant every handoff threw
+    // here — and, being past "not_started", locked the campaign as uncertain
+    // although nothing had been sent.
+    template = await createTemplate(privateKey, campaign, options.html);
+  }
   const templateId = template?.data?.id;
   progress.stage = "list";
   const list = await createList(privateKey, `${campaignName(campaign)} - Audience`);
@@ -377,13 +418,19 @@ async function createCampaignSendPackageInner(privateKey, campaign, audience, pr
   progress.stage = "campaign";
   const klaviyoCampaign = await createCampaign(privateKey, campaign, listId, options.sender);
   const campaignId = klaviyoCampaign?.data?.id;
-  progress.stage = "message";
-  const messages = await getCampaignMessages(privateKey, campaignId);
-  const messageId = messages?.data?.[0]?.id;
-  progress.stage = "assignment";
-  const assignment = messageId && templateId
-    ? await assignTemplateToCampaignMessage(privateKey, messageId, templateId)
-    : null;
+  // Nothing to attach in the Klaviyo-design mode: the draft stays without a
+  // template until the merchant chooses one in Klaviyo.
+  let messages = null;
+  let assignment = null;
+  if (rendered) {
+    progress.stage = "message";
+    messages = await getCampaignMessages(privateKey, campaignId);
+    const messageId = messages?.data?.[0]?.id;
+    progress.stage = "assignment";
+    assignment = messageId && templateId
+      ? await assignTemplateToCampaignMessage(privateKey, messageId, templateId)
+      : null;
+  }
 
   return {
     template,
@@ -541,7 +588,10 @@ async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) 
 }
 
 module.exports = {
+  HANDOFF_MODES,
   PROVIDER_STAGES,
+  parseHandoffMode,
+  klaviyoCampaignUrl,
   authorizationFor,
   // Exported so the handoff route can RECORD the exact name it is about to send.
   // Re-deriving it later from a stored campaign row produced a different string,

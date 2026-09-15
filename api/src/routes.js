@@ -29,6 +29,9 @@ const {
   createCampaignSendPackage,
   saveKlaviyoAsset,
   campaignNameForProvider,
+  HANDOFF_MODES,
+  parseHandoffMode,
+  klaviyoCampaignUrl,
   getKlaviyoSender,
 } = require("./services/klaviyoClient");
 // Referenced through the module object rather than destructured, so the provider
@@ -120,6 +123,7 @@ const {
   ReplacementRefused,
   createReplacementDraft,
   releaseHandoffReservation,
+  recordHandoffAttempt,
   reserveCampaignForHandoff,
   upsertCampaign,
   recordRecipients,
@@ -975,6 +979,19 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       return;
     }
 
+    // Refused before anything is read or reserved: an unknown mode must not fall
+    // through to either path's rules.
+    const handoffMode = parseHandoffMode(req.body.handoffMode);
+    if (!handoffMode) {
+      res.status(400).json({
+        ok: false,
+        code: "invalid_handoff_mode",
+        error: `handoffMode must be one of: ${Object.values(HANDOFF_MODES).join(", ")}`,
+      });
+      return;
+    }
+    const rendersEmail = handoffMode === HANDOFF_MODES.RENDERED_EMAIL;
+
     const input = await getEngineInput(shopDomain);
     const brandContext = buildBrandContext(input);
     const campaign = finalizeCampaignForRender(req.body.campaign, brandContext);
@@ -1028,7 +1045,11 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // with no approval binding cannot succeed, so refusing it here leaves no
     // recipient rows or audience counts behind. Only the COMPARISON needs the
     // rendered bytes; the requirement itself does not.
-    if (req.body.expectedTemplateVersion == null || !req.body.expectedRenderFingerprint) {
+    //
+    // Scoped to the rendered-email mode. In the Klaviyo-design mode there is no
+    // BeaconAI email to preview: the merchant builds and checks the email in
+    // Klaviyo, and nothing BeaconAI renders is sent.
+    if (rendersEmail && (req.body.expectedTemplateVersion == null || !req.body.expectedRenderFingerprint)) {
       res.status(409).json({
         ok: false,
         code: "preview_required",
@@ -1105,60 +1126,79 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
       ).catch(() => {});
     }
 
-    let renderedHtml;
-    try {
-      const brandTemplate = await requireActiveBrandTemplate(shopDomain);
+    // Only the rendered-email mode renders. The Klaviyo-design mode sends no
+    // BeaconAI email, so it needs neither an approved design nor a preview match.
+    let renderedHtml = null;
+    if (rendersEmail) {
+      try {
+        const brandTemplate = await requireActiveBrandTemplate(shopDomain);
 
-      // The shell the merchant REVIEWED, not whichever is active now. A version
-      // activated between the preview and the send would otherwise change an
-      // already-approved email without anyone seeing it.
-      //
-      // REQUIRED, both of them. Skipping the check when a field was absent made
-      // the binding optional exactly where it mattered: a caller with no
-      // successful preview sent null and the send proceeded unverified. There is
-      // no such thing as approving an email nobody rendered.
-      const reviewedVersion = req.body.expectedTemplateVersion;
-      const expectedFingerprint = req.body.expectedRenderFingerprint;
-      if (Number(reviewedVersion) !== brandTemplate.version) {
-        throw Object.assign(
-          new Error(
-            `The email shell changed since this was previewed (you reviewed version ` +
-            `${reviewedVersion}, the store now uses ${brandTemplate.version}). ` +
-            `Refresh the preview and review it again before sending.`
-          ),
-          { code: "preview_out_of_date", statusCode: 409, reviewedVersion, activeVersion: brandTemplate.version }
-        );
+        // The shell the merchant REVIEWED, not whichever is active now. A version
+        // activated between the preview and the send would otherwise change an
+        // already-approved email without anyone seeing it.
+        //
+        // REQUIRED, both of them. Skipping the check when a field was absent made
+        // the binding optional exactly where it mattered: a caller with no
+        // successful preview sent null and the send proceeded unverified. There is
+        // no such thing as approving an email nobody rendered.
+        const reviewedVersion = req.body.expectedTemplateVersion;
+        const expectedFingerprint = req.body.expectedRenderFingerprint;
+        if (Number(reviewedVersion) !== brandTemplate.version) {
+          throw Object.assign(
+            new Error(
+              `The email shell changed since this was previewed (you reviewed version ` +
+              `${reviewedVersion}, the store now uses ${brandTemplate.version}). ` +
+              `Refresh the preview and review it again before sending.`
+            ),
+            { code: "preview_out_of_date", statusCode: 409, reviewedVersion, activeVersion: brandTemplate.version }
+          );
+        }
+
+        renderedHtml = renderBrandEmail(brandTemplate, slotValuesForCampaign(
+          campaign,
+          { ...(brandTemplate.brand || {}), brandName: brandContext?.brandName }
+        ));
+
+        // Byte-level binding. Whatever changed — copy, destination, shell — if the
+        // rendering is not the one that was approved, this refuses rather than
+        // sending something nobody reviewed.
+        const actualFingerprint = renderFingerprint(renderedHtml);
+        if (expectedFingerprint !== actualFingerprint) {
+          throw Object.assign(
+            new Error(
+              "This email is not the one that was previewed. Refresh the preview and review it again before sending."
+            ),
+            { code: "preview_out_of_date", statusCode: 409, expectedFingerprint, actualFingerprint }
+          );
+        }
+
+        templateVersionUsed = brandTemplate.version;
+      } catch (renderError) {
+        // A rendering failure blocks the handoff with something actionable, and
+        // hands the reservation back: nothing reached the provider.
+        if (campaignRow) await releaseHandoffReservation(campaignRow.id).catch(() => {});
+        throw renderError;
       }
+    }
 
-      renderedHtml = renderBrandEmail(brandTemplate, slotValuesForCampaign(
-        campaign,
-        { ...(brandTemplate.brand || {}), brandName: brandContext?.brandName }
-      ));
-
-      // Byte-level binding. Whatever changed — copy, destination, shell — if the
-      // rendering is not the one that was approved, this refuses rather than
-      // sending something nobody reviewed.
-      const actualFingerprint = renderFingerprint(renderedHtml);
-      if (expectedFingerprint !== actualFingerprint) {
-        throw Object.assign(
-          new Error(
-            "This email is not the one that was previewed. Refresh the preview and review it again before sending."
-          ),
-          { code: "preview_out_of_date", statusCode: 409, expectedFingerprint, actualFingerprint }
-        );
+    // The attempt's mode and copy, recorded before the provider is contacted so
+    // an outcome we never see still says how the draft was made. A failure here
+    // happens before anything external, so the reservation is handed back.
+    if (campaignRow) {
+      try {
+        campaignRow = await recordHandoffAttempt(campaignRow.id, { handoffMode, suggestedCopy: campaign });
+      } catch (recordError) {
+        await releaseHandoffReservation(campaignRow.id).catch(() => {});
+        throw recordError;
       }
-
-      templateVersionUsed = brandTemplate.version;
-    } catch (renderError) {
-      // A rendering failure blocks the handoff with something actionable, and
-      // hands the reservation back: nothing reached the provider.
-      if (campaignRow) await releaseHandoffReservation(campaignRow.id).catch(() => {});
-      throw renderError;
     }
 
     let packageResult;
     try {
-      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience, { html: renderedHtml });
+      packageResult = await createCampaignSendPackage(privateKey, campaign, sendAudience, {
+        html: renderedHtml,
+        mode: handoffMode,
+      });
     } catch (providerError) {
       // Hand the reservation back ONLY on a PROVEN pre-creation failure — the
       // request never left us, so nothing can exist at the provider and a retry
@@ -1190,7 +1230,11 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
     // From here the row records delivery state and nothing else changes.
     if (campaignRow) {
       campaignRow = await freezeCampaignAtHandoff(campaignRow.id, {
+        // In the Klaviyo-design mode this is the messaging SUGGESTED at handoff,
+        // not the email that was sent: that is finished in Klaviyo, and nothing
+        // here reads it back.
         approvedCopy: campaign,
+        handoffMode,
         // The exact bytes that went out, and the shell version that produced
         // them — so a later brand version cannot change what this email was.
         renderedHtml,
@@ -1214,10 +1258,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
           providerCampaignId: klaviyoCampaignId,
           // Only from a provider response. We do not build a link out of an id
           // and a guessed account path.
-          // Deliberately null. links.self is an API resource URL, not a page a
-          // merchant can open; storing it would put a dead "Open draft in
-          // Klaviyo" button in front of them.
-          providerCampaignUrl: null,
+          // Built from the id Klaviyo just returned, never from links.self (an
+          // API resource URL, not a page). The address was checked against a
+          // real account; see klaviyoCampaignUrl.
+          providerCampaignUrl: klaviyoCampaignUrl(klaviyoCampaignId),
         }, { fromProvider: true }).catch(() => {});
       } else {
         // The package call returned without a campaign id. That is not a
@@ -1235,6 +1279,7 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
 
     res.json({
       ok: true,
+      handoffMode,
       campaign,
       audience,
       // What the merchant is told at send time: who receives it, who is held
@@ -1245,7 +1290,10 @@ router.post("/klaviyo/campaigns/from-engine", async (req, res) => {
         pct: split.holdoutPct,
       },
       brandContext,
-      campaign_record: campaignRow,
+      // Re-read after the last write above (the delivery transition does not
+      // return the row), so the client can adopt the frozen campaign as it is
+      // rather than save over it with a revision the handoff already moved.
+      campaign_record: campaignRow ? await getCampaign(campaignRow.id) : null,
       inputProvenance: provenance.provenance,
       syncRunId: provenance.syncRunId,
       template: packageResult.template,
@@ -1664,6 +1712,7 @@ router.get("/campaigns/:id/original", async (req, res) => {
       displayName: campaign.displayName || null,
       approvedCopy: campaign.approvedCopy || null,
       renderedHtml: campaign.renderedHtml || null,
+      handoffMode: campaign.handoffMode || null,
       destinationUrl: campaign.destinationUrl || null,
       recommendation,
     });
