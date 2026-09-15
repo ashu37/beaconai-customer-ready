@@ -105,30 +105,37 @@ data. A focused hardening pass, not a rearchitecture.
 
 ### PR A deployment runbook (order matters)
 
-Production refuses to start with a missing, default, short or shared secret, and stays not-ready when
-the database boundary check fails. Render keeps the previous deploy live if the new one fails, but set
-everything first:
+Production refuses to start with a missing, default, short or shared secret, and stays not-ready while
+the database boundary check fails. Render keeps the previous deploy live if a new one fails to start.
 
-1. Supabase SQL editor (owner): create the application role with a password generated there.
+`DATABASE_URL` moves to the application role LAST, because the grants that role needs are applied by
+the new code at boot. Pointing the currently running code at it earlier would leave the live app with a
+role that cannot read anything.
+
+1. Supabase: create the application role, password generated locally and kept in a password manager.
    ```sql
-   CREATE ROLE beaconai_app WITH LOGIN PASSWORD '<generated in Supabase>' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+   CREATE ROLE beaconai_app WITH LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+   -- then set its password: psql \password beaconai_app, or ALTER ROLE ... WITH PASSWORD '…'
    ```
-   Through the Supabase pooler its user name is `beaconai_app.<project-ref>`.
-2. Render environment:
+   Through the Supabase pooler its user name is `beaconai_app.<project-ref>`; keep the host, port and
+   database of the existing `DATABASE_URL`. Verify before going further: the role logs in, is not a
+   superuser, does not bypass RLS, and cannot yet read `clean` (done 2026-09-15).
+2. Render, while the current code is still live (each of these is inert for it, so nothing breaks):
+   - Confirm `TOKEN_ENCRYPTION_SECRET` is already set. If it is NOT, stop: today's code falls back to
+     `SESSION_SECRET` for token encryption, so adding a new `SESSION_SECRET` would make every stored
+     integration token unreadable. Copy the effective value into `TOKEN_ENCRYPTION_SECRET` first.
    - `MIGRATION_DATABASE_URL` = today's `DATABASE_URL` (the owner connection).
-   - `DATABASE_URL` = the same host with user `beaconai_app.<project-ref>` and the new password.
-   - `TOKEN_ENCRYPTION_SECRET`: keep the value that encrypts today's tokens. If only `SESSION_SECRET`
-     was set before, copy that value here.
-   - `SESSION_SECRET` = a new random value (at least 32 characters), different from the token secret.
+   - `SESSION_SECRET` = a new random value, at least 32 characters, different from the token secret.
    - `BEACONAI_ADMIN_TOKEN` at least 32 characters.
-3. Merge and deploy. The owner connection applies grants, row-level security and policies; the
-   application connection runs the self-check.
-4. Verify with the founder token: `GET /api/ready` returns `security.database.problems: []` and
+3. Merge and deploy. The owner connection applies grants, row-level security and policies. The instance
+   serves normally but reports not-ready, because it is still connected as the owner.
+4. Now set `DATABASE_URL` to the `beaconai_app` connection string and let it redeploy.
+5. Verify with the founder token: `GET /api/ready` returns `security.database.problems: []` and
    `security.tokens` with every stored token under `current`. If any report `undecryptable`, set
    `TOKEN_ENCRYPTION_SECRET_PREVIOUS` to the old value and redeploy before anything else.
-5. Everyone signs in again once (old signature-only sessions are refused). Signing in to Shopify
-   subscribes the store to `app/uninstalled`.
-6. Remove production credentials from the local `api/.env`.
+6. Everyone signs in again once (old signature-only sessions are refused). Signing in to Shopify
+   subscribes that store to `app/uninstalled`.
+7. Remove production credentials from the local `api/.env`.
 
 ## PR B — data minimisation, deletion and privacy requests
 
