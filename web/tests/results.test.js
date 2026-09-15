@@ -238,7 +238,7 @@ test("an unconfirmed send is listed with its delivery state and no result", asyn
   const text = document.body.textContent;
   assert.match(text, /Remind customers to reorder/);
   assert.match(text, /Draft created/);
-  assert.match(text, /Results start once Klaviyo confirms the send\./);
+  assert.match(text, /Results start once the send is confirmed in Klaviyo\. Your pilot contact checks this\./);
   assert.equal(rowButton("Remind customers to reorder"), undefined, "nothing measured to expand");
 });
 

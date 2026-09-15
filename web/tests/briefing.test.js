@@ -89,7 +89,7 @@ async function mountBriefing() {
 test("the briefing labels store evidence as the store's, with units and no lift language", async () => {
   const text = await mountBriefing();
 
-  assert.match(text, /Your briefing is ready — 3 plays/);
+  assert.match(text, /Your briefing is ready — 3 recommendations/);
   assert.match(text, /Observed in your store/);
   // The reported defects, each of which is text that must no longer render.
   assert.doesNotMatch(text, /similar stores/i, "STORE_OBSERVED was labelled as other stores' data");

@@ -262,8 +262,27 @@ test("watching signals and a truncated held list reach the screen", () => {
   const presented = presentEngineRun(run({ considered_truncated_count: 4 }));
   assert.equal(presented.considered_truncated_count, 4);
   assert.deepEqual(presented.watching, [
-    { metric: "net_sales", metric_label: "Net sales", trend: "down", threshold_to_act: "+/- 10% to revisit revenue plays" },
+    { metric: "net_sales", metric_label: "Net sales", trend: "down", threshold_to_act: "A change of 10% either way would bring a fresh look at revenue recommendations." },
   ]);
+});
+
+test("engine shorthand reaches merchants in plain words, with the same conditions", () => {
+  const { plainAudienceDefinition, plainThreshold } = require("../src/services/engineRunPresenter");
+  assert.equal(
+    plainAudienceDefinition("last order 21-45d ago, >=2 prior orders, no order in last 28d"),
+    "last order 21–45 days ago, at least 2 prior orders, no order in last 28 days",
+  );
+  assert.equal(
+    plainAudienceDefinition("customers whose >=50% of historical orders carried a discount"),
+    "customers who used a discount on at least 50% of their past orders",
+  );
+  assert.equal(
+    plainAudienceDefinition("first-time buyers whose only order is 30-90 days before anchor"),
+    "first-time buyers whose only order is 30–90 days before this analysis",
+  );
+  assert.equal(plainThreshold("+/- 1pp to fire a retention play"), "A change of 1 percentage point either way could bring a retention recommendation.");
+  assert.equal(plainThreshold("+/- 10% to fire an orders-driven play"), "A change of 10% either way could bring an orders recommendation.");
+  assert.equal(plainThreshold("an unrecognised form"), null, "never shown as shorthand");
 });
 
 test("the analysis time comes from the stored run, never the sync", () => {

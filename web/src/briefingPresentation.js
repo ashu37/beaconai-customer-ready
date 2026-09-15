@@ -24,7 +24,9 @@ export function briefingHeadline({ decision, readyCount, heldCount, hasRun }) {
     return { title: decision.headline, detail: decision.detail || null };
   }
   if (readyCount > 0) {
-    return { title: `Your briefing is ready — ${readyCount} ${readyCount === 1 ? "play" : "plays"} for your review`, detail: null };
+    // Recommendations from this analysis, not campaign drafts: the counts beside
+    // it are of drafts, so the words say which is which (#12).
+    return { title: `Your briefing is ready — ${readyCount} ${readyCount === 1 ? "recommendation" : "recommendations"}`, detail: null };
   }
   if (heldCount > 0) {
     return { title: "No campaign is recommended from this analysis", detail: "Each held play below says what is holding it back." };
