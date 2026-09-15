@@ -50,10 +50,30 @@ created     → awaiting_send → scheduled → sent
 | `provider_campaign_url` | text, nullable | A deep link, stored **only** when derived from a provider response. |
 | `provider_account_url` | text, nullable | Fallback entry point. |
 
-We never construct a campaign URL from an id and a guessed account path. If no verified deep link
-exists, the UI shows "Draft created. Open Klaviyo and find [campaign name]" and may link to the
-account entry point if one is known. A link that 404s in front of a merchant mid-handoff is worse
-than no link.
+We never construct a campaign URL from an id and a guessed account path. The one address we do
+build is `https://www.klaviyo.com/campaign/{provider_campaign_id}/wizard/1`, from an id Klaviyo
+returned at handoff: it carries no account path, and it was checked against a real account
+(2026-09-15) — it opens that draft, and a wrong id shows Klaviyo's "Not Found" page. It only opens
+in a browser signed in to that Klaviyo account, so the campaign's exact name is always shown beside
+it. Without a stored link the UI shows "Draft created. In Klaviyo, open Campaigns and find the
+draft named [campaign name]". A link that 404s in front of a merchant mid-handoff is worse than no
+link.
+
+## 2a. Handoff modes
+
+`handoff_mode` records how a campaign reached Klaviyo. Null until handoff, and for campaigns handed
+off before modes existed (those were all rendered emails).
+
+| Mode | What BeaconAI creates | Preview binding | Recorded at freeze |
+| --- | --- | --- | --- |
+| `rendered_email` (default when absent) | Template from the store's approved design, list, campaign, template assigned | Required: `expectedTemplateVersion` and `expectedRenderFingerprint` must match the render | Approved copy, rendered HTML, template version |
+| `klaviyo_design` | List and campaign with subject, preview text and sender. No template. | None: nothing BeaconAI renders is sent | The suggested copy (the handoff suggestion), no HTML |
+
+Everything else is shared and unchanged by mode: store authorization, verified input provenance, the
+revision reservation, the saved holdout split and recorded recipients, duplicate protection, the
+`uncertain` state after a possible creation, and the provider campaign id. In `klaviyo_design` the
+merchant chooses a template, finishes the email and sends it in Klaviyo; BeaconAI never updates the
+draft after creating it, and its stored copy describes what was suggested, not what was sent.
 
 ## 3. Status checks
 

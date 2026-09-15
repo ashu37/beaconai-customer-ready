@@ -69,6 +69,20 @@ export const DELIVERY_PRESENTATION = {
   },
 };
 
+// The Klaviyo-design mode's own wording, where it differs. The states, their
+// actions and every refusal are shared: only what the merchant does next changes.
+const FINISH_IN_KLAVIYO = {
+  not_started: {
+    caption: "Creates a Klaviyo draft with this audience, subject and preview text. You choose the template and send it in Klaviyo. No email is sent.",
+  },
+  created: {
+    detail: "Next, in Klaviyo: choose a template, finish the email, check the sender and recipients, then send it from Klaviyo.",
+  },
+  failed: {
+    message: "The draft wasn't created. Your saved messaging is unchanged.",
+  },
+};
+
 function formatWhen(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -84,7 +98,7 @@ function formatWhen(value) {
  * @param {boolean} options.isFounder      founder-only actions are hidden otherwise
  * @param {boolean} options.klaviyoConnected
  */
-export function presentDelivery(delivery, { isFounder = false, klaviyoConnected = true, loading = false } = {}) {
+export function presentDelivery(delivery, { isFounder = false, klaviyoConnected = true, loading = false, handoffMode = "rendered_email" } = {}) {
   // "We have not loaded this yet" is not "nothing has happened yet". Treating
   // an unloaded campaign as not_started would show "Create draft" for one that
   // has already been handed off.
@@ -93,7 +107,7 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
       state: "loading", label: "Checking status…", message: null, primary: null,
       caption: null, editable: false, allowsCreate: false, findHint: null, detail: null,
       lastChecked: null, lastCheckError: null, sentSummary: null,
-      founderAction: null, merchantNote: null,
+      founderAction: null, merchantNote: null, nameHint: null,
     };
   }
   if (delivery === null) {
@@ -103,12 +117,15 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
       message: "We couldn't load this campaign's status. Reload before creating a draft.",
       primary: null, caption: null, editable: false, allowsCreate: false,
       findHint: null, detail: null, lastChecked: null, lastCheckError: null,
-      sentSummary: null, founderAction: null, merchantNote: null,
+      sentSummary: null, founderAction: null, merchantNote: null, nameHint: null,
     };
   }
 
   const state = delivery?.state || "not_started";
-  const base = DELIVERY_PRESENTATION[state] || DELIVERY_PRESENTATION.not_started;
+  const base = {
+    ...(DELIVERY_PRESENTATION[state] || DELIVERY_PRESENTATION.not_started),
+    ...(handoffMode === "klaviyo_design" ? FINISH_IN_KLAVIYO[state] || {} : {}),
+  };
 
   // Nothing can be created without a provider connection, and offering the
   // button anyway produces a dead action.
@@ -119,7 +136,7 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
       primary: { action: "connect", label: "Connect Klaviyo" },
       caption: null, editable: base.editable, lastChecked: null,
       allowsCreate: false, findHint: null, detail: null,
-      lastCheckError: null, sentSummary: null, founderAction: null, merchantNote: null,
+      lastCheckError: null, sentSummary: null, founderAction: null, merchantNote: null, nameHint: null,
     };
   }
 
@@ -135,6 +152,11 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
   // Say exactly where to look instead (#22).
   const findHint = primary?.action === "find"
     ? `Draft created. In Klaviyo, open Campaigns and find the draft named “${delivery?.campaignName || "this campaign"}”.`
+    : null;
+  // With a link, the name still goes alongside it: the link opens only in a
+  // browser signed in to the right Klaviyo account.
+  const nameHint = primary?.action === "open" && delivery?.campaignName
+    ? `In Klaviyo it's named “${delivery.campaignName}” (Campaigns).`
     : null;
 
   // "When did we last look" — distinct from when the provider last confirmed
@@ -163,6 +185,7 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
     detail: base.detail || null,
     primary,
     findHint,
+    nameHint,
     caption: base.caption || null,
     editable: base.editable,
     lastChecked,

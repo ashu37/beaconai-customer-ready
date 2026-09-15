@@ -134,6 +134,9 @@ function rowToCampaign(row) {
     approvedCopy: row.approved_copy,
     renderedHtml: row.rendered_html,
     templateVersion: row.template_version,
+    // How it was handed off: "rendered_email", "klaviyo_design", or null for a
+    // campaign not handed off yet (or handed off before modes existed).
+    handoffMode: row.handoff_mode ?? null,
     providerCampaignName: row.provider_campaign_name,
     audienceRef: row.audience_ref,
     audienceHash: row.audience_hash,
@@ -294,7 +297,7 @@ async function findCampaign({ shopDomain, runId, playId }) {
  * who it went to cannot change.
  */
 async function freezeCampaignAtHandoff(id, {
-  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds,
+  approvedCopy, renderedHtml, templateVersion, audienceRef, customerIds, handoffMode = null,
 }) {
   const { rows } = await query(
     `UPDATE clean.campaigns
@@ -303,6 +306,7 @@ async function freezeCampaignAtHandoff(id, {
             template_version = COALESCE($4, template_version),
             audience_ref     = COALESCE($5::jsonb, audience_ref),
             audience_hash    = COALESCE($6, audience_hash),
+            handoff_mode     = COALESCE($7, handoff_mode),
             reviewed_at      = COALESCE(reviewed_at, NOW()),
             frozen_at        = NOW(),
             revision         = revision + 1,
@@ -319,6 +323,7 @@ async function freezeCampaignAtHandoff(id, {
       templateVersion || null,
       audienceRef ? JSON.stringify(audienceRef) : null,
       hashAudience(customerIds),
+      handoffMode || null,
     ]
   );
   if (rows.length) return rowToCampaign(rows[0]);

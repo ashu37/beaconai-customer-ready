@@ -127,11 +127,13 @@ export const api = {
   // `campaign.campaignId`, when present, tells the server which existing
   // campaign this is — so the audience is resolved from that campaign's origin
   // run rather than the latest one.
-  createSendPackage: ({ campaignId, expectedRevision, expectedTemplateVersion, expectedRenderFingerprint, ...campaign } = {}) =>
+  // `handoffMode`: "rendered_email" sends the previewed BeaconAI email and must
+  // carry its preview binding; "klaviyo_design" creates the draft without one.
+  createSendPackage: ({ campaignId, expectedRevision, expectedTemplateVersion, expectedRenderFingerprint, handoffMode, ...campaign } = {}) =>
     request("/klaviyo/campaigns/from-engine", {
       method: "POST",
       body: JSON.stringify({
-        shopDomain, campaignId, expectedRevision,
+        shopDomain, campaignId, expectedRevision, handoffMode,
         expectedTemplateVersion, expectedRenderFingerprint, campaign,
       }),
     }),

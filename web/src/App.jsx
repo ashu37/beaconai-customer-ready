@@ -13,7 +13,8 @@ import {
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
 import { usePreview } from "./usePreview";
 import { useStoreSync } from "./useStoreSync";
-import { AudiencePanel, FinalReviewPanel } from "./CampaignReviewPanels";
+import { AudiencePanel, FinalReviewPanel, SuggestedMessaging } from "./CampaignReviewPanels";
+import { HANDOFF_MODE, finishesInKlaviyo, resolveHandoffMode } from "./handoffMode";
 import { signInState } from "./signInState";
 import {
   BASELINE_REVENUE_NOTE, briefingHeadline, dataStatusItems, evidenceChipItems, formatChange,
@@ -693,7 +694,14 @@ export function CampaignReviewPane({
   lockedReason = null,
   // Re-read this campaign from the server after a conflict.
   onLoadLatest,
+  // How this campaign will be finished: "rendered_email" (the store's BeaconAI
+  // design, previewed here) or "klaviyo_design" (suggested messaging; the
+  // merchant finishes the email in Klaviyo).
+  handoffMode = HANDOFF_MODE.RENDERED_EMAIL,
+  // Offered only when the store has a BeaconAI design to choose instead.
+  onChooseHandoffMode = null,
 }) {
+  const inKlaviyo = finishesInKlaviyo(handoffMode);
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   // Default to the branded EMAIL. A merchant has to recognise the email they
   // would send; the inbox row shows a subject line, which is not that.
@@ -714,6 +722,7 @@ export function CampaignReviewPane({
     activeBrandTemplateVersion,
     fetchPreview: (payload) => api.previewCampaignHtml(payload),
     onPreviewRendered,
+    enabled: !inKlaviyo,
   });
 
   const handleBlur = () => flushPreview();
@@ -758,14 +767,21 @@ export function CampaignReviewPane({
           merchant has no controls over the second — it is stated, not offered. */}
       <div className="voice-chip">
         <button type="button" className="voice-chip-line" onClick={() => setDesignOpen((p) => !p)}>
-          Email design: {brandDesign?.configured
-            ? `${brandContext?.brandName || "Your store"} approved design`
-            : "not set up yet"}
+          Email design: {inKlaviyo
+            ? "finish in Klaviyo"
+            : brandDesign?.configured
+              ? `${brandContext?.brandName || "Your store"} approved design`
+              : "not set up yet"}
           <span className="voice-chip-toggle">{designOpen ? "Hide" : "Design details"}</span>
         </button>
         {designOpen ? (
           <div className="voice-chip-body">
-            {brandDesign?.configured ? (
+            {inKlaviyo ? (
+              <p>
+                You'll choose one of your Klaviyo templates and finish the email there. BeaconAI suggests the messaging
+                and creates the draft with this audience.
+              </p>
+            ) : brandDesign?.configured ? (
               <p>
                 Configured for your store
                 {brandDesign.active?.version ? `, version ${brandDesign.active.version}` : ""}
@@ -780,6 +796,35 @@ export function CampaignReviewPane({
           </div>
         ) : null}
       </div>
+
+      {/* The two ways to finish. Offered only when the store has a BeaconAI
+          design; without one, finishing in Klaviyo needs no setup and is the
+          only option. */}
+      {onChooseHandoffMode && !lockedReason ? (
+        <div className="handoff-mode-choice" role="radiogroup" aria-label="How you'll finish this email">
+          <span className="section-meta">How you'll finish this email</span>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!inKlaviyo}
+            className={`radio-card ${!inKlaviyo ? "selected" : ""}`}
+            onClick={() => onChooseHandoffMode(HANDOFF_MODE.RENDERED_EMAIL)}
+          >
+            <strong>Use the {brandContext?.brandName || "store"} design</strong>
+            <small>Preview the finished email here. It goes to Klaviyo as a draft for you to send.</small>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={inKlaviyo}
+            className={`radio-card ${inKlaviyo ? "selected" : ""}`}
+            onClick={() => onChooseHandoffMode(HANDOFF_MODE.KLAVIYO_DESIGN)}
+          >
+            <strong>Finish design in Klaviyo</strong>
+            <small>Copy the suggested messaging into one of your Klaviyo templates.</small>
+          </button>
+        </div>
+      ) : null}
 
       {/* C4d: brand voice collapsed to a single line, expandable inline. */}
       {brandContext ? (
@@ -854,7 +899,7 @@ export function CampaignReviewPane({
             {/* Narrow screens only: the preview sits below the fields, so give
                 keyboard and touch users a way to it without scrolling past
                 every input. */}
-            <a className="preview-jump link-btn" href="#campaign-email-preview">View preview</a>
+            <a className="preview-jump link-btn" href="#campaign-email-preview">{inKlaviyo ? "View suggested messaging" : "View preview"}</a>
             {/* adopt #3: one merchant-facing "why" line above the fields. LLM-authored
                 + guarded server-side; shown only when present. */}
             {agentCopy?.rationale ? (
@@ -982,7 +1027,9 @@ export function CampaignReviewPane({
                 <span className="review-field-help" id="destination-help">
                   {destinationInvalid
                     ? "Enter a valid http:// or https:// link."
-                    : effectiveDestination
+                    : inKlaviyo
+                      ? "Suggested link for the button in your Klaviyo template."
+                      : effectiveDestination
                       ? <>Where the email button takes customers. Currently: <code>{effectiveDestination}</code></>
                       : "Add a destination for this button."}
                 </span>
@@ -996,6 +1043,11 @@ export function CampaignReviewPane({
                 different things — words and branding — were the same control. */}
           </div>
 
+          {inKlaviyo ? (
+            <div className="review-preview-pane" id="campaign-email-preview">
+              <SuggestedMessaging copy={draft} destinationUrl={destinationUrl} />
+            </div>
+          ) : (
           <div className="review-preview-pane" id="campaign-email-preview">
             {/* Wireframe order: [Email] [Inbox], then [Desktop] [Mobile]. Email
                 is first because it is the default and the thing the merchant has
@@ -1123,6 +1175,7 @@ export function CampaignReviewPane({
               )}
             </div>
           </div>
+          )}
         </div>
       ) : null}
     </div>
@@ -1527,11 +1580,24 @@ function OriginalCampaign({ campaignId }) {
       {state.status === "ready" ? (
         <>
           {!data.approvedCopy && !data.renderedHtml ? <p>The original email wasn't stored for this campaign.</p> : null}
+          {finishesInKlaviyo(data.handoffMode) && data.approvedCopy ? (
+            // Finished in Klaviyo: BeaconAI holds the suggestion it handed over,
+            // not the email that was sent.
+            <SuggestedMessaging
+              copy={data.approvedCopy}
+              destinationUrl={data.destinationUrl}
+              handedOffAt={data.frozenAt ? formatDay(data.frozenAt, { time: true }) : true}
+              headingLevel="meta"
+            />
+          ) : (
+          <>
           {copy.subject ? <p><strong>Subject</strong> · {copy.subject}</p> : null}
           {copy.previewText ? <p><strong>Preview text</strong> · {copy.previewText}</p> : null}
           {data.destinationUrl ? (
             <p><strong>Button link</strong> · <a href={data.destinationUrl} target="_blank" rel="noopener noreferrer">{data.destinationUrl}</a></p>
           ) : null}
+          </>
+          )}
           {data.renderedHtml ? (
             <>
               {/* C-UI's wording: this is the handoff snapshot. The merchant can
@@ -1996,6 +2062,9 @@ function StoreWorkspace({ onStoreChange }) {
   // approved version makes every existing preview out of date.
   const [brandTemplateVersion, setBrandTemplateVersion] = useState(null);
   const [brandDesign, setBrandDesign] = useState(null);
+  // The merchant's choice of how to finish each campaign, before handoff. After
+  // handoff the server's record decides (resolveHandoffMode).
+  const [handoffModeByKey, setHandoffModeByKey] = useState({});
   // Which shop, if any, this browser is actually signed in as. Independent of
   // whether the integration is connected.
   const [signedInShop, setSignedInShop] = useState(null);
@@ -2062,6 +2131,18 @@ function StoreWorkspace({ onStoreChange }) {
   const knownRevisionRef = useRef({});
   // Earlier-run campaigns the merchant reopened, kept in the rail across reads.
   const openedKeysRef = useRef(new Set());
+
+  // How this campaign is (or was) handed off. Read at call time from the ref,
+  // like the rest of a handoff's identity.
+  function handoffModeFor(key) {
+    const row = campaignRowsRef.current[key] || campaignRowsByKey[key] || null;
+    return resolveHandoffMode({
+      storedMode: row?.handoffMode || null,
+      handedOff: Boolean(row?.frozenAt || row?.frozen),
+      chosenMode: handoffModeByKey[key] || null,
+      designConfigured: Boolean(brandDesign?.configured),
+    });
+  }
   // (run:play) pairs being created, so a double click cannot open two.
   const creatingRef = useRef(new Set());
   // The earlier draft an updated draft is being created from, for the button.
@@ -2893,6 +2974,8 @@ function StoreWorkspace({ onStoreChange }) {
   useEffect(() => {
     if (workspaceStep !== "send" || !reviewPlay?.id || !selectedDraft) return;
     const key = reviewPlay.id;
+    // Nothing to render when the email is finished in Klaviyo.
+    if (finishesInKlaviyo(handoffModeFor(key))) return;
     const currentSignature = campaignSignature({
       edits: draftEditsByKey[key], destinationUrl: destinationByKey[key],
     });
@@ -2930,7 +3013,7 @@ function StoreWorkspace({ onStoreChange }) {
         if (reviewRenderRequestedRef.current === requestKey) reviewRenderRequestedRef.current = "";
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceStep, reviewPlay?.id, selectedDraft, brandTemplateVersion]);
+  }, [workspaceStep, reviewPlay?.id, selectedDraft, brandTemplateVersion, brandDesign?.configured, handoffModeByKey]);
 
   async function runStep(label, fn) {
     setLoading(true);
@@ -3453,7 +3536,12 @@ function StoreWorkspace({ onStoreChange }) {
     const key = campaignDraft.id;
     await flushPendingEdits(key);
 
-    const rendered = approvedRender.current[key] || null;
+    // Decided once, here. Finishing in Klaviyo has no BeaconAI email to preview,
+    // so only the rendered-email mode is bound to a preview; every other check
+    // below applies to both.
+    const handoffMode = handoffModeFor(key);
+    const rendersEmail = !finishesInKlaviyo(handoffMode);
+    const rendered = rendersEmail ? approvedRender.current[key] || null : null;
     const currentSignature = campaignSignature({
       edits: draftEditsByKey[key], destinationUrl: destinationByKey[key],
     });
@@ -3468,6 +3556,7 @@ function StoreWorkspace({ onStoreChange }) {
       // The rendering the merchant actually looked at. The server refuses a
       // handoff without it, and it should never be attempted without one.
       approvedRenderSignature: rendered?.campaignSignature ?? null,
+      requireApprovedPreview: rendersEmail,
       // Approval binds to this campaign's rendering and the design it used.
       campaignKey: key,
       approvedRenderCampaignKey: rendered?.campaignKey ? String(rendered.campaignKey).split(":")[0] : null,
@@ -3487,6 +3576,7 @@ function StoreWorkspace({ onStoreChange }) {
         // Identify the campaign so the server resolves the audience from its
         // ORIGIN run rather than whatever the latest run happens to be.
         campaignId: key,
+        handoffMode,
         // Bind the send to the email that was actually reviewed. If the shell
         // was re-approved or the copy moved since, the server refuses rather
         // than sending something nobody looked at.
@@ -3519,7 +3609,11 @@ function StoreWorkspace({ onStoreChange }) {
       // Re-read the DURABLE state. Without this the screen kept showing "Create
       // draft" after a successful creation, and the next click made a second one.
       await loadDelivery(key);
-      showToast({ message: "Draft created in Klaviyo" });
+      showToast({
+        message: rendersEmail
+          ? "Draft created in Klaviyo"
+          : "Draft created in Klaviyo. Choose a template and finish the email there.",
+      });
       return result;
     } catch (err) {
       // The server has already recorded whether this failed safely or ended
@@ -4201,6 +4295,10 @@ function StoreWorkspace({ onStoreChange }) {
                                 play={reviewPlay}
                                 lockedReason={lockedReason}
                                 onLoadLatest={() => loadLatestCampaign(reviewPlay.id)}
+                                handoffMode={handoffModeFor(reviewPlay.id)}
+                                onChooseHandoffMode={brandDesign?.configured
+                                  ? (mode) => setHandoffModeByKey((prev) => ({ ...prev, [reviewPlay.id]: mode }))
+                                  : null}
                                 brandContext={brandContext}
                                 beaconTemplates={beaconTemplates}
                                 klaviyoTemplates={klaviyoOnlyTemplates}
@@ -4412,12 +4510,17 @@ function StoreWorkspace({ onStoreChange }) {
                             const storedRow = campaignRowsByKey[reviewPlay.id] || null;
                             const frozenHtml = storedRow?.renderedHtml || null;
                             const previewHtmlForReview = reviewPreviewHtmlByKey[reviewPlay.id] || null;
+                            const reviewMode = handoffModeFor(reviewPlay.id);
                             return (
                               <FinalReviewPanel
                                 campaign={selectedCampaign}
                                 summary={summary}
                                 sender={sender}
-                                design={brandDesign?.configured
+                                handoffMode={reviewMode}
+                                handoffCopy={storedRow?.approvedCopy || null}
+                                design={finishesInKlaviyo(reviewMode)
+                                  ? "you choose a template in Klaviyo"
+                                  : brandDesign?.configured
                                   ? `${brandContext?.brandName || "Your store"} approved design${brandDesign.active?.version ? `, v${brandDesign.active.version}` : ""}`
                                   : "not set up yet"}
                                 effectiveDestination={rendered?.effectiveDestinationUrl || destinationByKey[reviewPlay.id]}
@@ -4469,7 +4572,7 @@ function StoreWorkspace({ onStoreChange }) {
                               : { state: "not_started" };
                             const view = presentDelivery(
                               delivery ? { ...delivery, campaignName: storedName } : delivery,
-                              { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                              { isFounder: false, klaviyoConnected: Boolean(status.klaviyo), handoffMode: handoffModeFor(reviewPlay.id) }
                             );
 
                             if (view.primary?.action === "connect") {
@@ -4512,7 +4615,7 @@ function StoreWorkspace({ onStoreChange }) {
                             : { state: "not_started" };
                           const view = presentDelivery(
                             delivery ? { ...delivery, campaignName: storedName } : delivery,
-                            { isFounder: false, klaviyoConnected: Boolean(status.klaviyo) }
+                            { isFounder: false, klaviyoConnected: Boolean(status.klaviyo), handoffMode: handoffModeFor(reviewPlay.id) }
                           );
                           return (
                             <div className={`delivery-panel ${view.state}`} role="status" aria-live="polite">
@@ -4520,6 +4623,7 @@ function StoreWorkspace({ onStoreChange }) {
                               {view.sentSummary ? <strong>{view.sentSummary}</strong> : null}
                               {view.detail ? <p>{view.detail}</p> : null}
                               {view.findHint ? <p>{view.findHint}</p> : null}
+                              {view.nameHint ? <p>{view.nameHint}</p> : null}
                               {view.caption ? <p className="delivery-caption">{view.caption}</p> : null}
                               {view.lastChecked ? <p className="delivery-checked">{view.lastChecked}</p> : null}
                               {view.lastCheckError ? (
