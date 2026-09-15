@@ -131,15 +131,19 @@ export function presentDelivery(delivery, { isFounder = false, klaviyoConnected 
     primary.label = null;
   }
 
+  // Klaviyo does not return a page link for a new draft, and none is guessed.
+  // Say exactly where to look instead (#22).
   const findHint = primary?.action === "find"
-    ? `Draft created. Open Klaviyo and find “${delivery?.campaignName || "this campaign"}”.`
+    ? `Draft created. In Klaviyo, open Campaigns and find the draft named “${delivery?.campaignName || "this campaign"}”.`
     : null;
 
   // "When did we last look" — distinct from when the provider last confirmed
   // anything, and null renders as "not checked yet", never "just now".
   const checkedAt = formatWhen(delivery?.lastCheckedAt);
   const lastChecked = ["created", "awaiting_send", "scheduled", "uncertain"].includes(state)
-    ? (checkedAt ? `Last checked ${checkedAt}` : "Not checked yet")
+    // Nothing checks Klaviyo automatically yet: the status moves when your pilot
+    // contact checks it. Said plainly, so nobody waits on automation (#25).
+    ? (checkedAt ? `Last checked ${checkedAt}` : "Status updates when your pilot contact checks Klaviyo.")
     : null;
 
   let sentSummary = null;

@@ -416,9 +416,40 @@ function compactSentence(value, fallback) {
   return text || fallback;
 }
 
+// The engine writes audience definitions as shorthand for itself ("last order
+// 21-45d ago, >=2 prior orders, no order in last 28d", "30-90 days before
+// anchor"). Merchants read them, so they are put into plain words — the same
+// conditions, nothing added or dropped (merchant walkthrough #14).
+//
+// Every day window the audience builders use ("30-90 days before anchor",
+// "21-45d ago", "in last 28d") is counted back from the newest order date in the
+// analysed data, not from the day the analysis ran; a re-run days later keeps
+// the same reference. No date is printed: the run's anchor_date comes from the
+// KPI snapshot, which leaves out cancelled and refunded orders, so it can differ
+// from the date the audiences were actually counted from.
+const ORDER_DATE_REFERENCE = "the latest order date in the analysed data";
+
+function plainAudienceDefinition(definition) {
+  const text = String(definition || "").trim();
+  if (!text) return text;
+  const plain = text
+    .replace(/\bwhose\s*>=\s*(\d+)%\s*of historical orders carried a discount\b/gi, "who used a discount on at least $1% of their past orders")
+    .replace(/(\d+)\s*-\s*(\d+)\s*d\s+ago\b/gi, "$1–$2 days ago")
+    .replace(/\blast\s+(\d+)\s*d\b/gi, "last $1 days")
+    .replace(/(\d+)\s*d\b/gi, "$1 days")
+    .replace(/(\d+)\s*-\s*(\d+)\s+days/gi, "$1–$2 days")
+    .replace(/>=\s*(\d+)/g, "at least $1")
+    .replace(/<=\s*(\d+)/g, "at most $1")
+    .replace(/\bhistorical\b/gi, "past");
+  if (/\bbefore anchor\b/i.test(plain)) return plain.replace(/\bbefore anchor\b/gi, `before ${ORDER_DATE_REFERENCE}`);
+  // "ago" and "last N days" are counted from the same reference.
+  if (/\bdays ago\b|\blast \d+ days\b/i.test(plain)) return `${plain} (counted back from ${ORDER_DATE_REFERENCE})`;
+  return plain;
+}
+
 function audienceText(audience) {
   if (!audience) return "Recommended audience";
-  return compactSentence(audience.definition, "Recommended audience");
+  return compactSentence(plainAudienceDefinition(audience.definition), "Recommended audience");
 }
 
 function roundMoney(value) {
@@ -635,7 +666,7 @@ function normalizeRejectedCard(card, index, narrationMap) {
     reason: heldReason(card.reason_code, card),
     reason_display: reasonDisplay(card.reason_code, card),
     audience_size: card.audience_size ?? 0,
-    audience_archetype: card.audience_definition || "Held for more evidence",
+    audience_archetype: plainAudienceDefinition(card.audience_definition) || "Held for more evidence",
     // Prose only when the LLM authored it; null otherwise. The held-reason is
     // surfaced via `reason_display`, so no templated sentence is needed here.
     mechanism: guardedNarration?.play_thesis || null,
@@ -747,12 +778,29 @@ function decisionFor(engineRun) {
 
 // Watching entries carry no measurement claim — the engine is only saying which
 // metric it is keeping an eye on and what would make it act.
+// "+/- 1pp to fire a retention play" → "A change of 1 percentage point either
+// way could bring a retention recommendation." Same threshold, plain words. An
+// unrecognised form is omitted rather than shown as engine shorthand.
+function plainThreshold(threshold) {
+  const text = String(threshold || "").trim();
+  const match = /^\+\/-\s*(\d+(?:\.\d+)?)\s*(%|pp)\s+to\s+(fire|revisit)\s+(?:an?\s+)?([a-z-]+?)(?:-driven)?\s+plays?$/i.exec(text);
+  if (!match) return null;
+  const [, amount, unit, verb, kind] = match;
+  const size = unit.toLowerCase() === "pp"
+    ? `${amount} percentage point${Number(amount) === 1 ? "" : "s"}`
+    : `${amount}%`;
+  const topic = kind.toLowerCase();
+  return verb.toLowerCase() === "fire"
+    ? `A change of ${size} either way could bring ${/^[aeiou]/.test(topic) ? "an" : "a"} ${topic} recommendation.`
+    : `A change of ${size} either way would bring a fresh look at ${topic} recommendations.`;
+}
+
 function watchingFor(engineRun) {
   return (engineRun?.watching || []).map((signal) => ({
     metric: signal.metric || null,
     metric_label: metricLabel(signal.metric) || "Metric",
     trend: ["up", "down", "flat"].includes(signal.trend) ? signal.trend : null,
-    threshold_to_act: signal.threshold_to_act || null,
+    threshold_to_act: plainThreshold(signal.threshold_to_act),
   }));
 }
 
@@ -804,6 +852,9 @@ function presentEngineRun(engineRun, manifest = null, narration = null, options 
 
 module.exports = {
   presentEngineRun,
+  playDisplayName,
+  plainAudienceDefinition,
+  plainThreshold,
   // Exported for the presenter fixtures.
   REASON_DISPLAY,
   EVIDENCE_SOURCE_DISPLAY,

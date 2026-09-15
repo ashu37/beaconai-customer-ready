@@ -241,7 +241,7 @@ test("approval waits for pending saves and stays in review if one fails", async 
   await openCampaigns();
   await type("Typed just before approving");
   await click(button((t) => t === "Continue to audience"), 50);
-  await click(button((t) => t === "Continue to send"), 900);
+  await click(button((t) => t === "Review draft"), 900);
   const order = saves().map((p) => (p.status ? `status:${p.status}` : `edit:${p.draftEdits?.subject}`));
   assert.deepEqual(order, ["edit:Typed just before approving", "status:approved"], "the edit saved before the approval");
   assert.equal(rows[0].status, "approved");
@@ -254,7 +254,7 @@ test("approval waits for pending saves and stays in review if one fails", async 
   hooks.beforeSave = (payload) => { if (payload.draftEdits) throw new Error("Server unavailable"); };
   await type("This will not save");
   await click(button((t) => t === "Continue to audience"), 50);
-  await click(button((t) => t === "Continue to send"), 900);
+  await click(button((t) => t === "Review draft"), 900);
   assert.equal(rows[0].status, "draft", "not approved");
   assert.match(document.querySelector(".step.current")?.textContent || "", /Review audience/);
   assert.match(text(), /haven't saved yet/);
@@ -319,9 +319,9 @@ test("the audience headline states assignment, not delivery; counts wait for cam
   apiModule.api.listCampaigns = record("listCampaigns", () => new Promise((resolve) => { release = () => resolve({ ok: true, campaigns: clone(rows) }); }));
   await mount();
   const tile = (label) => [...document.querySelectorAll(".metric-tile")].find((t) => t.textContent.startsWith(label))?.textContent;
-  assert.match(tile("Needs review") || "", /—/, "unknown, not zero");
+  assert.match(tile("Drafts to review") || "", /—/, "unknown, not zero");
   await act(async () => { release(); await sleep(300); });
-  assert.match(tile("Needs review") || "", /1/);
+  assert.match(tile("Drafts to review") || "", /1/);
   apiModule.api.listCampaigns = record("listCampaigns", () => ({ ok: true, campaigns: clone(rows) }));
 });
 
@@ -347,7 +347,7 @@ test("loading the latest version re-reads the audience and holds the campaign un
   await settle(900);
   assert.equal(select().value, "0", "the latest version's holdout");
   assert.match(text(), /413 of 413 customers are assigned to the email group/);
-  assert.equal(button((t) => t === "Continue to send")?.disabled, false);
+  assert.equal(button((t) => t === "Review draft")?.disabled, false);
 
   // And if the re-read fails, the campaign stays held until one succeeds.
   Object.assign(rows[0], { holdoutPct: 0.05, revision: 9 });
@@ -357,8 +357,8 @@ test("loading the latest version re-reads the audience and holds the campaign un
   assert.match(text(), /Couldn't reload the audience for the latest version/);
   assert.equal(button((t) => t === "Updating…")?.disabled, true);
   hooks.beforeAudience = null;
-  await click(button((t) => t === "Show emails"), 600);
-  assert.equal(button((t) => t === "Continue to send")?.disabled, false);
+  await click(button((t) => t === "Refresh list"), 600);
+  assert.equal(button((t) => t === "Review draft")?.disabled, false);
   assert.equal(select().value, "0.05");
 });
 
@@ -382,7 +382,7 @@ test("a later successful save does not hide an earlier failed one", async () => 
   assert.ok(button((t) => t === "Retry save"), "and can still be retried");
 
   await click(button((t) => t === "Continue to audience"), 400);
-  await click(button((t) => t === "Continue to send"), 900);
+  await click(button((t) => t === "Review draft"), 900);
   assert.equal(rows[0].status, "draft", "approval waits for the failed change");
 
   hooks.beforeSave = null;
@@ -391,4 +391,48 @@ test("a later successful save does not hide an earlier failed one", async () => 
   assert.equal(rows[0].destinationUrl, "https://shop.example/new");
   assert.match(document.querySelector(".save-state")?.textContent || "", /Saved/);
   assert.ok(!button((t) => t === "Retry save"));
+});
+
+test("counts stay stable while browsing, and earlier campaigns carry their date and stage", async () => {
+  rows = [
+    campaignRow(),
+    { id: 9, runId: "run-a", playId: WINBACK, status: "approved", revision: 7, templateId: "beacon-winback-clean", draftEdits: { subject: "Handed off" }, displayName: "Bring back lapsed customers", frozen: true, klaviyoCampaignId: "K1", deliveryState: "awaiting_send", runAnalysedAt: "2026-09-10T12:00:00.000Z" },
+  ];
+  await mount();
+  const badge = () => button((t) => t.startsWith("Campaigns"))?.textContent;
+  assert.match(badge() || "", /Campaigns1/, "one unfinished campaign");
+  const tile = (label) => [...document.querySelectorAll(".metric-tile")].find((t) => t.textContent.startsWith(label))?.textContent;
+  assert.match(tile("Drafts to review") || "", /1/);
+  assert.match(tile("Ready for Klaviyo") || "", /0/);
+
+  await openCampaigns();
+  const earlier = document.querySelector(".earlier-campaigns")?.textContent || "";
+  assert.match(earlier, /Sep 10 analysis · handed off to Klaviyo/);
+  assert.doesNotMatch(earlier, /locked/);
+  await openEarlier(/Bring back lapsed customers/);
+  assert.match(badge() || "", /Campaigns1/, "opening an earlier campaign to look at it changes no count");
+  assert.match(document.querySelector("button.rail-row.selected")?.textContent || "", /Earlier analysis, Sep 10/);
+});
+
+test("preview and audience wording use the merchant's terms", async () => {
+  rows = [campaignRow()];
+  hooks.beforePreview = () => { throw Object.assign(new Error('The "cta_url" value was rejected: it is not a valid absolute URL'), { code: "slot_value_rejected", slot: "cta_url" }); };
+  await mount();
+  await openCampaigns();
+  await settle(900);
+  const status = document.querySelector(".preview-status")?.textContent || "";
+  assert.match(status, /Enter a valid http:\/\/ or https:\/\/ link\./);
+  assert.doesNotMatch(status, /cta_url/);
+
+  hooks.beforePreview = null;
+  hooks.beforeAudience = null;
+  apiModule.api.previewCampaignAudience = record("previewCampaignAudience", () => ({
+    ok: true, audience: { count: 2, recipients: [{ customerId: "c1", email: "a@example.com" }, { customerId: "c2", email: "b@example.com" }], materialized: true },
+    holdout: { treated: 2, held: 0, pct: 0 },
+  }));
+  await click(button((t) => t === "Continue to audience"), 600);
+  assert.match(text(), /Matched customers/);
+  assert.match(text(), /before the comparison group is held back/);
+  assert.ok(button((t) => t === "Refresh list"));
+  apiModule.api.previewCampaignAudience = record("previewCampaignAudience", () => ({ ok: true, audience: { count: 413, recipients: [], materialized: true }, holdout: { treated: 372, held: 41, pct: 0.1 } }));
 });

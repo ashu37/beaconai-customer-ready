@@ -262,8 +262,57 @@ test("watching signals and a truncated held list reach the screen", () => {
   const presented = presentEngineRun(run({ considered_truncated_count: 4 }));
   assert.equal(presented.considered_truncated_count, 4);
   assert.deepEqual(presented.watching, [
-    { metric: "net_sales", metric_label: "Net sales", trend: "down", threshold_to_act: "+/- 10% to revisit revenue plays" },
+    { metric: "net_sales", metric_label: "Net sales", trend: "down", threshold_to_act: "A change of 10% either way would bring a fresh look at revenue recommendations." },
   ]);
+});
+
+test("engine shorthand reaches merchants in plain words, with the same conditions", () => {
+  const { plainAudienceDefinition, plainThreshold } = require("../src/services/engineRunPresenter");
+  assert.equal(
+    plainAudienceDefinition("last order 21-45d ago, >=2 prior orders, no order in last 28d"),
+    "last order 21–45 days ago, at least 2 prior orders, no order in last 28 days (counted back from the latest order date in the analysed data)",
+  );
+  assert.equal(
+    plainAudienceDefinition("customers whose >=50% of historical orders carried a discount"),
+    "customers who used a discount on at least 50% of their past orders",
+  );
+  assert.equal(
+    plainAudienceDefinition("first-time buyers whose only order is 30-90 days before anchor"),
+    "first-time buyers whose only order is 30–90 days before the latest order date in the analysed data",
+  );
+  assert.equal(plainThreshold("+/- 1pp to fire a retention play"), "A change of 1 percentage point either way could bring a retention recommendation.");
+  assert.equal(plainThreshold("+/- 10% to fire an orders-driven play"), "A change of 10% either way could bring an orders recommendation.");
+  assert.equal(plainThreshold("an unrecognised form"), null, "never shown as shorthand");
+});
+
+test("audience day windows are counted from the newest order date, not the analysis date", () => {
+  // Newest order Sep 11; the analysis re-ran on Sep 15. A first order on Jun 13
+  // is 90 days before Sep 11 and qualifies, though it is 94 days before Sep 15,
+  // so the wording must not say the window is counted from the analysis.
+  const presented = presentEngineRun(run({
+    anchor_date: "2026-09-11T23:40:00",
+    recommendations: [
+      card({ play_id: "cohort_journey_first_to_second", audience: { size: 413, definition: "first-time buyers whose only order is 30-90 days before anchor" } }),
+      card({ play_id: "winback_dormant_cohort", audience: { size: 120, definition: "last order 21-45d ago, >=2 prior orders, no order in last 28d" } }),
+    ],
+    considered: [
+      { play_id: "winback_21_45", reason_code: "no_measured_signal", audience_size: 90, audience_definition: "last purchase 21-45 days before anchor" },
+      { play_id: "bestseller_amplify", reason_code: "no_measured_signal", audience_size: 90, audience_definition: "buyers of top-revenue product" },
+    ],
+  }), null, null, { analysedAt: "2026-09-15T10:00:00.000Z" });
+  assert.equal(presented.generated_at, "2026-09-15T10:00:00.000Z", "the analysis date differs from the reference");
+
+  const archetype = (id, lane = presented.recommendations) => lane.find((c) => c.play_id === id).audience_archetype;
+  assert.equal(archetype("cohort_journey_first_to_second"),
+    "first-time buyers whose only order is 30–90 days before the latest order date in the analysed data");
+  assert.equal(archetype("winback_dormant_cohort"),
+    "last order 21–45 days ago, at least 2 prior orders, no order in last 28 days (counted back from the latest order date in the analysed data)");
+  assert.equal(archetype("winback_21_45", presented.considered),
+    "last purchase 21–45 days before the latest order date in the analysed data");
+  assert.equal(archetype("bestseller_amplify", presented.considered), "buyers of top-revenue product", "no reference where there is no day window");
+  for (const text of [...presented.recommendations, ...presented.considered].map((c) => c.audience_archetype)) {
+    assert.doesNotMatch(text, /this analysis|Sep 1[15]|anchor/);
+  }
 });
 
 test("the analysis time comes from the stored run, never the sync", () => {

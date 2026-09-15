@@ -15,6 +15,9 @@
 //      a sequence, follow-ups or a discount describes something that won't exist.
 //   4. Sample units. `measurement.n` means different things per metric; for the
 //      discount play it is revenue, so "Across 60,528 orders" is false.
+//   5. Internal vocabulary. "a prior-anchored estimate", "a considered play",
+//      "No revenue figure to state" and play ids are the engine talking to
+//      itself, not an explanation a merchant can use (walkthrough #14).
 //
 // A field that fails is dropped, not repaired. The briefing then shows the
 // card's factual evidence for that tab instead of prose (Pivot 2: prose is the
@@ -207,6 +210,24 @@ function checkSampleUnits(text, card) {
   return violations;
 }
 
+// --- 5. Internal vocabulary -------------------------------------------------
+
+const INTERNAL_VOCABULARY = [
+  /\bposterior\b/i,
+  /\bprior[- ]anchored\b/i,
+  /\bbefore (?:the )?anchor\b|\banchor date\b/i,
+  /\bconsidered play\b/i,
+  /\bno (?:revenue|dollar) figure (?:to state|is stated)\b/i,
+  /\bpseudo[- ]?n\b|\bbayesian\b|\bp[- ]value\b/i,
+  /\b\d+(?:\.\d+)?\s*pp\b/i,
+  /\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/, // play ids such as winback_dormant_cohort
+];
+
+function checkVocabulary(text) {
+  const hit = INTERNAL_VOCABULARY.find((re) => re.test(text));
+  return hit ? [{ rule: "internal_vocabulary", figure: text.match(hit)[0] }] : [];
+}
+
 // ---------------------------------------------------------------------------
 
 function checkNarrationText(text, { card, observedChange }) {
@@ -217,6 +238,7 @@ function checkNarrationText(text, { card, observedChange }) {
     ...checkDays(value, card),
     ...checkCreates(value),
     ...checkSampleUnits(value, card),
+    ...checkVocabulary(value),
   ];
 }
 

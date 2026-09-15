@@ -10,7 +10,7 @@ const {
 } = require("./services/shopifyRepository");
 const { narrateAtulRun, readLatestRun, readRunById, runAtulEngine } = require("./services/atulEngineService");
 const { AnalysisInProgress, getLatestAnalysisJob, startAnalysisJob } = require("./services/analysisJobService");
-const { presentEngineRun } = require("./services/engineRunPresenter");
+const { playDisplayName, presentEngineRun } = require("./services/engineRunPresenter");
 
 // What the presenter needs from the stored run row: when the analysis ran, and
 // the currency its dollar figures are in.
@@ -1392,9 +1392,11 @@ router.get("/campaigns/:shopDomain", async (req, res) => {
       const { rows } = await query(`SELECT id, title FROM clean.products WHERE shop_domain = $1`, [shopDomain]);
       products = rows;
     }
-    const campaigns = listed.map((c) => (c.copy?.copy
-      ? { ...c, copy: sanitizeStoredCopy(c.copy, { playId: c.playId, products }) }
-      : c));
+    const campaigns = listed
+      .map((c) => (c.copy?.copy ? { ...c, copy: sanitizeStoredCopy(c.copy, { playId: c.playId, products }) } : c))
+      // Campaigns saved before names were stored showed their play id
+      // ("winback dormant cohort"); give them the play's merchant-facing name.
+      .map((c) => (c.displayName ? c : { ...c, displayName: playDisplayName(c.playId) }));
     res.json({ ok: true, campaigns });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -1591,7 +1593,9 @@ router.get("/results/:shopDomain", async (req, res) => {
         ...summary,
         campaignId: campaign.id,
         playId: campaign.playId,
-        displayName: campaign.displayName || null,
+        displayName: campaign.displayName || playDisplayName(campaign.playId),
+        // When it left BeaconAI, so repeated names can be told apart.
+        handedOffAt: campaign.frozenAt || null,
         // Only a confirmed send has a send time. Never a local stamp.
         sentAt: summary.measurable ? campaign.providerSentAt : null,
         delivery: delivery ? { ...delivery, campaignName: campaign.providerCampaignName || campaign.displayName || null } : null,

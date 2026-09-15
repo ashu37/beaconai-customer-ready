@@ -108,8 +108,8 @@ test("control: a campaign on the run on screen shows as approved", async () => {
     campaigns: () => ({ ok: true, campaigns: [{ id: 1, runId: "run-a", playId: WINBACK, status: "approved", revision: 4, templateId: "beacon-winback-clean" }] }),
   };
   await mount();
-  assert.match(text(), /3 plays for your review/);
-  assert.match(winbackRow()?.textContent || "", /Approved/, "the badge appears for this run's own campaign");
+  assert.match(text(), /3 recommendations/);
+  assert.match(winbackRow()?.textContent || "", /In Campaigns/, "the badge appears for this run's own campaign");
 });
 
 test("a reload that paints a cached older briefing re-binds campaigns when the server's run arrives", async () => {
@@ -122,8 +122,8 @@ test("a reload that paints a cached older briefing re-binds campaigns when the s
   await mount();
   await settle(300);
 
-  assert.match(text(), /2 plays for your review/, "the server's newer run replaced the cached paint");
-  assert.doesNotMatch(winbackRow()?.textContent || "", /Approved/, "run A's approval is not shown on run B's play");
+  assert.match(text(), /2 recommendations/, "the server's newer run replaced the cached paint");
+  assert.doesNotMatch(winbackRow()?.textContent || "", /In Campaigns/, "run A's approval is not shown on run B's play");
   assert.ok(calls.filter((c) => c.name === "listCampaigns").length >= 2, "campaigns were re-read for the new run");
 });
 
@@ -144,12 +144,12 @@ test("a slow campaign read for an older run cannot re-bind the newer briefing", 
   };
   await mount();
   await settle(200);
-  assert.match(text(), /2 plays for your review/, "run B is on screen");
-  assert.doesNotMatch(winbackRow()?.textContent || "", /Approved/);
+  assert.match(text(), /2 recommendations/, "run B is on screen");
+  assert.doesNotMatch(winbackRow()?.textContent || "", /In Campaigns/);
 
   await settle(900); // run A's slow read has now landed
   assert.equal(campaignReads, 2, "one read per run");
-  assert.doesNotMatch(winbackRow()?.textContent || "", /Approved/, "the late read for run A was ignored");
+  assert.doesNotMatch(winbackRow()?.textContent || "", /In Campaigns/, "the late read for run A was ignored");
 });
 
 test("a same-tab re-run keeps an edit waiting to save attached to its original campaign", async () => {
@@ -176,7 +176,7 @@ test("a same-tab re-run keeps an edit waiting to save attached to its original c
   server.latest = () => ({ ok: true, found: true, presentedRun: RUN_B });
   await act(async () => { button((t) => t.startsWith("Briefing")).click(); await sleep(50); });
   await act(async () => { button((t) => t === "Re-run analysis").click(); await sleep(150); });
-  assert.match(text(), /2 plays for your review/, "run B is on screen");
+  assert.match(text(), /2 recommendations/, "run B is on screen");
 
   await settle(900); // the debounced save has fired
   const saves = calls.filter((c) => c.name === "saveCampaign").map((c) => c.args[0]);

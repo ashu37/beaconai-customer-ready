@@ -120,3 +120,17 @@ test("the briefing drops only the prose that contradicts the evidence", () => {
   // The evidence itself is still there for the tab.
   assert.equal(journey.evidence_facts.observed_change.unit, "percentage_points");
 });
+
+test("the engine's internal vocabulary is not shown as an explanation", () => {
+  for (const text of [
+    "Figures that reflect a prior-anchored estimate of baseline activity.",
+    "A posterior estimate of baseline activity.",
+    "This is a considered play currently held due to no measured signal.",
+    "This play is currently held. No revenue figure to state.",
+    "The winback_dormant_cohort play targets lapsed buyers.",
+    "Watch for a move of 1pp.",
+  ]) {
+    assert.ok(rules(text, WINBACK, points(-20.6)).includes("internal_vocabulary"), text);
+  }
+  assert.deepEqual(rules("They've ordered at least twice but nothing in the last 28 days.", WINBACK, points(-20.6)), []);
+});

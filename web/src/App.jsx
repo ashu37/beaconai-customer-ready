@@ -290,7 +290,7 @@ function RecommendationRow({ play, selected, approved = false, onSelect }) {
               {confidenceLabel} confidence
             </span>
           ) : null}
-          {approved ? <span className="approved-pill"><Icon name="check" size={12} /> Approved</span> : null}
+          {approved ? <span className="approved-pill"><Icon name="check" size={12} /> In Campaigns</span> : null}
         </span>
         {evidenceLine ? <span className="recommendation-evidence-line">{evidenceLine}</span> : null}
       </span>
@@ -508,7 +508,7 @@ function RecommendationDetail({
               <span>At send</span>
               <strong>{STANDARD_SUPPRESSIONS_NOTE}</strong>
             </div>
-            <div className="evidence-fineprint">{play.play_id || play.id}</div>
+            {showAdvanced ? <div className="evidence-fineprint">{play.play_id || play.id}</div> : null}
           </>
         ) : null}
 
@@ -538,10 +538,10 @@ function RecommendationDetail({
         <div className="recommendation-approve-block">
           <p className="approve-note">
             {approved
-              ? "Approved — it's in your campaign pipeline. Review the copy and pick a template in Campaigns."
+              ? "In Campaigns. Review and edit the email there."
               : existing
                 ? "This recommendation comes from your latest analysis."
-                : "Approving moves this to your campaign pipeline. Nothing is sent to customers until you approve the final email."}
+                : "Adding this creates a draft in Campaigns. BeaconAI never sends email: you create the draft in Klaviyo and send it from there."}
           </p>
           <p className="approve-note measurement">We'll track what these customers do for 30 days after send and report it in Results.</p>
           {approved ? (
@@ -629,7 +629,7 @@ function RecommendationDetail({
             </div>
           ) : (
             <div className="recommendation-detail-footer">
-              <button className="btn primary" onClick={() => onSendToReview(play)}>Approve &amp; pick template</button>
+              <button className="btn primary" onClick={() => onSendToReview(play)}>Add to Campaigns</button>
             </div>
           )}
         </div>
@@ -1051,10 +1051,15 @@ export function CampaignReviewPane({
               {/* A field-specific refusal names the field. "We couldn't update
                   the preview" would send the merchant looking for a network
                   problem when the answer is a missing link. */}
+              {/* The field's own wording, never the renderer's ("The "cta_url"
+                  value was rejected…"), and a preview still on screen is named
+                  as the last valid one. */}
               {previewProblem
                 ? (previewProblem.code === "missing_destination"
                     ? "Add a destination for this button."
-                    : previewProblem.message)
+                    : previewProblem.slot === "cta_url"
+                      ? `Enter a valid http:// or https:// link.${previewHtml ? " The preview shows the last valid version." : ""}`
+                      : `This preview couldn't be updated.${previewHtml ? " It shows the last valid version." : ""}`)
                 : freshness.message}
               {!previewProblem && freshness.action ? (
                 <button type="button" className="link-btn" onClick={() => refreshPreview(draft)}>
@@ -1130,8 +1135,8 @@ function BriefingStatStrip({ products, customers, orders, reviewPending, campaig
     { label: "Products", value: products },
     { label: "Customers", value: customers, series: customersSeries, seriesTone: "muted" },
     { label: "Orders", value: orders, series: ordersSeries, seriesTone: "accent" },
-    { label: "Needs review", value: reviewPending, accentWhenPositive: true },
-    { label: "In pipeline", value: campaignsPending, accentWhenPositive: true },
+    { label: "Drafts to review", value: reviewPending, accentWhenPositive: true },
+    { label: "Ready for Klaviyo", value: campaignsPending, accentWhenPositive: true },
   ];
   return (
     <div className="briefing-stat-strip">
@@ -1261,7 +1266,7 @@ function OnboardingBanner({ status, hasStoreSnapshot, approvedCount, readyToFini
   if (!status.shopify) nextAction = { label: "Connect Shopify", onClick: onConnectShopify };
   else if (!hasStoreSnapshot) nextAction = { label: "Sync Shopify", onClick: onSyncShopify };
   else if (!status.klaviyo) nextAction = { label: "Connect Klaviyo", onClick: onConnectKlaviyo };
-  else if (!approvedCount) nextAction = { label: "Approve a play below", onClick: null };
+  else if (!approvedCount) nextAction = { label: "Add a recommendation to Campaigns below", onClick: null };
 
   return (
     <div className="onboarding-strip">
@@ -1347,7 +1352,7 @@ const UNKNOWN_CHIP = { label: "Comparison unavailable", tone: "null" };
 // Why a handed-off campaign has no results yet. The delivery label itself comes
 // from presentDelivery, so Results and Campaigns say the same thing.
 const UNMEASURED_NOTE = {
-  send_not_confirmed: "Results start once Klaviyo confirms the send.",
+  send_not_confirmed: "Results start once the send is confirmed in Klaviyo. Your pilot contact checks this.",
   send_time_unknown: "Klaviyo reports this as sent but not when, so results can't start yet.",
   no_provider_record: "Marked sent in BeaconAI, but Klaviyo hasn't confirmed a send, so results can't be measured.",
 };
@@ -1695,7 +1700,8 @@ function ResultRow({ result, title, open, onToggle, onRetry }) {
         <div className="result-row result-row-pending">
           <span className="result-name">
             <strong>{title}</strong>
-            <span>{note}</span>
+            {/* Repeated names are told apart by when each was handed off (#24). */}
+            <span>{formatDay(result.handedOffAt) ? `Handed off ${formatDay(result.handedOffAt)}. ` : ""}{note}</span>
           </span>
           <Chip label={delivery.label} tone="warn" />
           <span className="result-30">
@@ -2192,8 +2198,13 @@ function StoreWorkspace({ onStoreChange }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reviewPlay?.id, selectedTemplate?.id]);
 
-  // Counts reflect only campaigns in the workspace: those still needing review sign-off.
-  const reviewPendingCount = workspacePlays.filter((play) => !approvedForSend.includes(play.id)).length;
+  // Counts are of the merchant's unfinished campaigns — drafts not yet handed off
+  // to Klaviyo, not replaced or removed — read from the campaigns themselves, so
+  // opening an earlier campaign to look at it never changes them (#12).
+  const unfinishedCampaigns = Object.values(campaignRowsByKey)
+    .filter((row) => row.status !== "dismissed" && !row.supersededById && campaignStage(row) === "draft");
+  const reviewPendingCount = unfinishedCampaigns.filter((row) => !approvedForSend.includes(campaignKey(row))).length;
+  const readyForKlaviyoCount = unfinishedCampaigns.filter((row) => approvedForSend.includes(campaignKey(row))).length;
   const sentCampaigns = finalCampaigns.filter((item) => item.klaviyoSendJobId);
   const readyToSendCampaigns = finalCampaigns.filter((item) => (item.status === "approved" || item.status === "created") && !item.klaviyoSendJobId);
   const approvedCount = readyToSendCampaigns.length;
@@ -2215,7 +2226,7 @@ function StoreWorkspace({ onStoreChange }) {
   }));
   const campaignGroups = [
     { key: "review", label: "Needs review", rows: campaignItems.filter((c) => c.group === "review") },
-    { key: "ready", label: "Ready to send", rows: campaignItems.filter((c) => c.group === "ready") },
+    { key: "ready", label: "Ready for Klaviyo", rows: campaignItems.filter((c) => c.group === "ready") },
     { key: "sent", label: "Sent", rows: campaignItems.filter((c) => c.group === "sent") },
   ].filter((g) => g.rows.length);
   const selectedCampaign = finalCampaignById.get(reviewPlay?.id) || null;
@@ -3709,7 +3720,8 @@ function StoreWorkspace({ onStoreChange }) {
 
   // Campaigns needing merchant action: approved in Briefing but not yet sent
   // (in review + ready to send). Was double-counting reviewPendingCount twice.
-  const campaignsBadgeCount = workspacePlays.length - sentCampaigns.length;
+  // The same count as the tiles: unfinished campaigns, stable while browsing.
+  const campaignsBadgeCount = unfinishedCampaigns.length;
 
   const nav = [
     ["briefing", "Briefing"],
@@ -3883,7 +3895,7 @@ function StoreWorkspace({ onStoreChange }) {
                 orders={orderCount}
                 // Unknown until this store's campaigns are read: "—", not a false 0.
                 reviewPending={campaignsLoad === "loaded" || !currentRunId ? reviewPendingCount : "—"}
-                campaignsPending={campaignsLoad === "loaded" || !currentRunId ? readyToSendCampaigns.length : "—"}
+                campaignsPending={campaignsLoad === "loaded" || !currentRunId ? readyForKlaviyoCount : "—"}
                 ordersSeries={statsSeries ? statsSeries.map((w) => w.orders) : null}
                 customersSeries={statsSeries ? statsSeries.map((w) => w.newCustomers) : null}
               />
@@ -4057,13 +4069,16 @@ function StoreWorkspace({ onStoreChange }) {
                 {historicalCampaigns.map((c) => (
                   <li key={c.id}>
                     <button type="button" className="link-btn" onClick={() => openHistoricalCampaign(c)}>
-                      {c.displayName || c.playId}
+                      {c.displayName || titleizeId(c.playId)}
                     </button>
+                    {/* Repeated names are told apart by their analysis date and
+                        where each one is, in words (#24). */}
                     <span className="earlier-campaign-meta">
+                      {shortDate(c.runAnalysedAt) ? `${shortDate(c.runAnalysedAt)} analysis · ` : ""}
                       {c.supersededById ? "replaced by an updated draft · " : ""}
-                      {c.status}
+                      {c.deliveryState === "sent" ? "sent" : campaignStage(c) !== "draft" ? "handed off to Klaviyo" : c.status}
                       {c.sentAt ? ` · sent ${new Date(c.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}` : ""}
-                      {c.frozen ? " · locked" : ""}
+
                     </span>
                   </li>
                 ))}
@@ -4088,9 +4103,11 @@ function StoreWorkspace({ onStoreChange }) {
                           <span className="rail-row-body">
                             <strong>{play.play_name || titleizeId(play.play_id)}</strong>
                             <small>
-                              {formatAudience(play.audience_size)} customers
-                              {/* Two entries can share a play; say which is which. */}
-                              {play.fromEarlierRun ? " · Earlier analysis" : ""}
+                              {play.audience_size != null ? `${formatAudience(play.audience_size)} customers` : null}
+                              {/* Two entries can share a play; say which is which, with its date. */}
+                              {play.fromEarlierRun
+                                ? `${play.audience_size != null ? " · " : ""}Earlier analysis${shortDate(campaignRowsByKey[play.id]?.runAnalysedAt) ? `, ${shortDate(campaignRowsByKey[play.id].runAnalysedAt)}` : ""}`
+                                : ""}
                               {play.notInLatestAnalysis ? " · Not included in the latest analysis" : ""}
                             </small>
                           </span>
@@ -4244,7 +4261,7 @@ function StoreWorkspace({ onStoreChange }) {
                               {audienceReload[reviewPlay.id] === "loading" ? (
                                 <p className="notice-line" role="status">Reloading the audience for the latest version…</p>
                               ) : audienceReload[reviewPlay.id] === "failed" ? (
-                                <p className="notice-line" role="alert">Couldn't reload the audience for the latest version. Use Show emails to try again before continuing.</p>
+                                <p className="notice-line" role="alert">Couldn't reload the audience for the latest version. Use Refresh list to try again before continuing.</p>
                               ) : null}
                               <div className="segment-spec">
                                 <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
@@ -4348,11 +4365,11 @@ function StoreWorkspace({ onStoreChange }) {
                               <div className="recipient-preview">
                                 <div className="recipient-preview-head">
                                   <div>
-                                    <span className="section-meta">Recipient preview</span>
+                                    <span className="section-meta">Matched customers</span>
                                     <strong>{preview ? (preview.materialized === false ? "Held this run" : `${preview.count} matched emails`) : "Not loaded"}</strong>
                                   </div>
                                   <button className="btn" onClick={() => previewCampaignAudience(selectedCampaign)} disabled={previewingCampaignId === selectedCampaign.id}>
-                                    {previewingCampaignId === selectedCampaign.id ? "Loading..." : "Show emails"}
+                                    {previewingCampaignId === selectedCampaign.id ? "Refreshing…" : "Refresh list"}
                                   </button>
                                 </div>
                                 {/* R1: the engine deliberately did not materialize an auditable audience
@@ -4363,12 +4380,19 @@ function StoreWorkspace({ onStoreChange }) {
                                   </div>
                                 ) : preview?.recipients?.length ? (
                                   <div className="recipient-list">
+                                    {/* Not the email group: this list is before the holdout,
+                                        and which customers are held back is decided when the
+                                        draft is created (#20). */}
+                                    <small className="recipient-scope">
+                                      Everyone matched who has an email on file, before the comparison group is held back.
+                                      Which customers go in each group is decided when the draft is created in Klaviyo.
+                                    </small>
                                     {preview.recipients.slice(0, 25).map((recipient) => (
                                       <div key={`${recipient.customerId || recipient.email}-${recipient.email}`} className="recipient-row">
                                         <strong>{recipient.email}</strong>
                                       </div>
                                     ))}
-                                    {preview.suppressedCount ? <small>{preview.recipients.length} of {preview.memberCount} have an email on file{preview.recipients.length > 25 ? ` · showing first 25` : ""}.</small> : preview.recipients.length > 25 ? <small>Showing first 25 of {preview.recipients.length} recipients.</small> : null}
+                                    {preview.suppressedCount ? <small>{preview.recipients.length} of {preview.memberCount} have an email on file{preview.recipients.length > 25 ? ` · showing first 25` : ""}.</small> : preview.recipients.length > 25 ? <small>Showing the first 25 of {preview.recipients.length} matched customers.</small> : null}
                                   </div>
                                 ) : preview ? (
                                   <div className="empty-panel inline">No recipient emails on file for this audience yet.</div>
@@ -4422,9 +4446,9 @@ function StoreWorkspace({ onStoreChange }) {
 
                           {workspaceStep === "audience" ? (
                             isApproved ? (
-                              <button className="btn primary" disabled={campaignBusy} onClick={() => setWorkspaceStep("send")}>{campaignBusy ? "Updating…" : "Continue to send"}</button>
+                              <button className="btn primary" disabled={campaignBusy} onClick={() => setWorkspaceStep("send")}>{campaignBusy ? "Updating…" : "Review draft"}</button>
                             ) : (
-                              <button className="btn primary" disabled={campaignBusy} onClick={() => approveForSend(reviewPlay.id)}>{campaignBusy ? "Updating…" : "Continue to send"}</button>
+                              <button className="btn primary" disabled={campaignBusy} onClick={() => approveForSend(reviewPlay.id)}>{campaignBusy ? "Updating…" : "Review draft"}</button>
                             )
                           ) : null}
 
@@ -4513,7 +4537,7 @@ function StoreWorkspace({ onStoreChange }) {
                 </section>
               </div>
             ) : campaignsLoad === "loaded" || (latestRunChecked && !currentRunId && !latestRunErrored) ? (
-              <div className="empty-panel">Approve a play in Briefing to start your first campaign.</div>
+              <div className="empty-panel">Add a recommendation to Campaigns from Briefing to start your first campaign.</div>
             ) : campaignsLoad === "failed" || (latestRunChecked && !currentRunId && latestRunErrored) ? (
               <div className="empty-panel" role="alert">Couldn't load your campaigns. Reload the page to try again.</div>
             ) : (

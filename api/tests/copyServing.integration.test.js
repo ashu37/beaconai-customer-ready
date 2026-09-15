@@ -65,6 +65,8 @@ suite("the campaign list serves stored copy through the claim rules, leaving mer
   assert.equal(campaign.copy.copy.body, "", "blanked, so the draft uses its starting template");
   assert.equal(campaign.copy.copy.headline, "Explore Niacinamide Pore Serum");
   assert.deepEqual(campaign.draftEdits, { cta: "You picked up something great" }, "the merchant's own words are theirs");
+  // Saved without a name: served with the play's merchant-facing name, not its id.
+  assert.equal(campaign.displayName, "Turn first-time buyers into repeat buyers");
   // A real product of this store stays featured, image and all.
   assert.equal(campaign.copy.copy.featured_product_id, "p1");
   assert.deepEqual(campaign.copy.copy.featured_product, { title: "Hyaluronic Daily Moisturizer", imageUrl: "https://cdn.example/moisturizer.png" });

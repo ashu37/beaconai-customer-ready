@@ -184,12 +184,12 @@ test("two campaigns for one play: editing and approving one never touches the ot
   // Approve the OLDER campaign only.
   await click(earlierRail());
   await click(button((t) => t === "Continue to audience"));
-  await click(button((t) => t === "Continue to send"), 400);
+  await click(button((t) => t === "Review draft"), 400);
   const approval = saves().find((p) => p.status === "approved");
   assert.equal(approval?.runId, "run-a");
   assert.equal(rows.find((r) => r.id === 4).status, "draft", "the current campaign was not approved");
 
-  const readyGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Ready to send/.test(g.textContent));
+  const readyGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Ready for Klaviyo/.test(g.textContent));
   const reviewGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Needs review/.test(g.textContent));
   assert.match(readyGroup?.textContent || "", /Earlier analysis/, "the older campaign is ready to send");
   assert.doesNotMatch(reviewGroup?.textContent || "", /Earlier analysis/);
@@ -269,7 +269,7 @@ test("a preview that resolves after switching campaigns is never shown or approv
 
   // Approve and hand off B. Its handoff must bind to B's own rendering.
   await click(button((t) => t === "Continue to audience"));
-  await click(button((t) => t === "Continue to send"), 500);
+  await click(button((t) => t === "Review draft"), 500);
   await settle(300);
   await click(button((t) => t.startsWith("Create draft in Klaviyo")), 500);
   const handoff = calls.find((c) => c.name === "createSendPackage")?.args[0];
@@ -298,7 +298,7 @@ test("a conflict on one campaign leaves the other's saving and handoff unaffecte
   assert.match(document.querySelector(".review-pane")?.textContent || "", /Saved/);
 
   await click(button((t) => t === "Continue to audience"));
-  await click(button((t) => t === "Continue to send"), 500);
+  await click(button((t) => t === "Review draft"), 500);
   await settle(300);
   const approvedRevision = rows.find((r) => r.id === 4).revision;
   await click(button((t) => t.startsWith("Create draft in Klaviyo")), 500);
@@ -319,7 +319,7 @@ test("the handoff and audience use the selected campaign's own run", async () =>
   assert.equal(audience?.run_id, "run-a", "the older campaign's audience, not the latest analysis's");
   assert.equal(audience?.play_id, WINBACK);
 
-  await click(button((t) => t === "Continue to send"), 500);
+  await click(button((t) => t === "Review draft"), 500);
   await settle(300);
   await click(button((t) => t.startsWith("Create draft in Klaviyo")), 500);
   const handoff = calls.find((c) => c.name === "createSendPackage")?.args[0];
@@ -337,15 +337,15 @@ test("a reload after a re-run shows the right badges, and older approvals are ke
   localStorage.setItem(`beaconai:${SHOP}:latest-briefing`, JSON.stringify({ presentedRun: RUN_B }));
   await mount();
 
-  assert.doesNotMatch(briefingRow(/Bring back lapsed customers/)?.textContent || "", /Approved/, "last week's approval is not this analysis's");
-  assert.match(briefingRow(/discount/i)?.textContent || "", /Approved/, "this analysis's campaign is linked");
+  assert.doesNotMatch(briefingRow(/Bring back lapsed customers/)?.textContent || "", /In Campaigns/, "last week's approval is not this analysis's");
+  assert.match(briefingRow(/discount/i)?.textContent || "", /In Campaigns/, "this analysis's campaign is linked");
 
   await openCampaigns();
   assert.equal(railRows().length, 2, "this analysis's campaign and the older approved one, not yet handed off");
   assert.equal(subject()?.value, "Discount draft");
 
   await openEarlier(/Winback \(Sep 10\)/);
-  const readyGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Ready to send/.test(g.textContent));
+  const readyGroup = [...document.querySelectorAll(".rail-group")].find((g) => /Ready for Klaviyo/.test(g.textContent));
   assert.match(readyGroup?.textContent || "", /Earlier analysis/, "its approval was kept, not reset");
   assert.equal(saves().length, 0, "nothing was written just by loading");
 });

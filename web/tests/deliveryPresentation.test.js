@@ -53,12 +53,12 @@ test("a link is offered only when the provider gave us one", () => {
   // them to a URL we made up.
   const without = presentDelivery(d("created", { campaignName: "Win-back" }));
   assert.equal(without.primary.action, "find");
-  assert.match(without.findHint, /Open Klaviyo and find/);
+  assert.match(without.findHint, /In Klaviyo, open Campaigns and find the draft named/);
   assert.match(without.findHint, /Win-back/);
 });
 
 test("an unchecked campaign says so rather than implying freshness", () => {
-  assert.equal(presentDelivery(d("awaiting_send")).lastChecked, "Not checked yet");
+  assert.equal(presentDelivery(d("awaiting_send")).lastChecked, "Status updates when your pilot contact checks Klaviyo.");
   const checked = presentDelivery(d("awaiting_send", { lastCheckedAt: "2026-09-09T12:00:00Z" }));
   assert.match(checked.lastChecked, /^Last checked /);
 });

@@ -154,9 +154,9 @@ test("an older draft is linked, never shown as approved, and nothing is copied u
   rows = [olderWinbackDraft({ status: "approved" })];
   await mount();
 
-  assert.doesNotMatch(briefingRow(/Bring back lapsed customers/)?.textContent || "", /Approved/);
+  assert.doesNotMatch(briefingRow(/Bring back lapsed customers/)?.textContent || "", /In Campaigns/);
   assert.match(detail(), /You already have a draft for this play from your Sep 10 analysis/);
-  assert.ok(!button((t) => t === "Approve & pick template"), "no second, duplicate campaign by default");
+  assert.ok(!button((t) => t === "Add to Campaigns"), "no second, duplicate campaign by default");
   assert.equal(named("createReplacementDraft").length, 0, "loading the briefing copies nothing");
   assert.equal(named("saveCampaign").length, 0, "and changes nothing");
 
@@ -202,12 +202,12 @@ test("Create updated draft saves pending edits first, then opens an unapproved c
   const groups = [...document.querySelectorAll(".rail-group")].map((g) => g.textContent);
   assert.equal(railRows().length, 1, "the replaced draft left the rail");
   assert.match(groups.join("|"), /Needs review/, "the updated draft must be reviewed and approved again");
-  assert.doesNotMatch(groups.join("|"), /Ready to send/);
+  assert.doesNotMatch(groups.join("|"), /Ready for Klaviyo/);
   assert.match(document.querySelector(".earlier-campaigns")?.textContent || "", /replaced by an updated draft/);
 
   // The briefing now links the latest analysis's own campaign.
   await goTo("Briefing");
-  assert.match(briefingRow(/Bring back lapsed customers/)?.textContent || "", /Approved/);
+  assert.match(briefingRow(/Bring back lapsed customers/)?.textContent || "", /In Campaigns/);
 });
 
 test("a failed update leaves the existing draft exactly where it was", async () => {
@@ -234,7 +234,7 @@ test("a campaign in Klaviyo shows its status and link, with no way to duplicate 
   assert.match(detail(), /Draft created · from your Sep 10 analysis/);
   const link = [...document.querySelectorAll(".recommendation-detail a")].find((a) => /Open in Klaviyo/.test(a.textContent));
   assert.equal(link?.getAttribute("href"), "https://www.klaviyo.com/campaign/K1/edit");
-  assert.ok(!button((t) => t === "Approve & pick template" || t === "Create updated draft" || t === "Continue draft"));
+  assert.ok(!button((t) => t === "Add to Campaigns" || t === "Create updated draft" || t === "Continue draft"));
   await goTo("Campaigns");
   assert.equal(railRows().length, 0, "a handed-off campaign is listed under Earlier campaigns, not reopened as work");
 });
@@ -286,6 +286,6 @@ test("a draft whose play left the briefing stays in Campaigns, labelled", async 
 test("with no existing campaign the card offers the normal approve action", async () => {
   rows = [];
   await mount();
-  assert.ok(button((t) => t === "Approve & pick template"));
+  assert.ok(button((t) => t === "Add to Campaigns"));
   assert.doesNotMatch(detail(), /You already have a draft/);
 });
