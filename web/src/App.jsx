@@ -7,7 +7,7 @@ import { STANDARD_SUPPRESSIONS_NOTE, agentCopyToDraftFields, buildCampaignFromSe
 import { PREVIEW_STATE } from "./previewFreshness";
 import { presentDelivery } from "./deliveryPresentation";
 import {
-  briefingCampaignKeyByPlay, briefingOrder, campaignKey, earlierCampaigns, existingCampaignForPlay, mergeByKey, mergeKeyList,
+  briefingCampaignKeyByPlay, briefingOrder, campaignKey, campaignStage, earlierCampaigns, existingCampaignForPlay, mergeByKey, mergeKeyList,
   railCampaignKeys, shouldApplyBriefing, workspaceMapsFromCampaigns, workspacePlay,
 } from "./campaignReconciliation";
 import { summarizeAudience, summarizeSender } from "./audienceSummary";
@@ -687,6 +687,12 @@ export function CampaignReviewPane({
   onChangeDestination,
   campaignSignature: currentCampaignSignature,
   brandDesign,
+  // Why this campaign can't be edited here (handed off or sent), or null. Every
+  // editing control is removed or disabled, not just the look of it; the server
+  // refuses content changes to a handed-off campaign as well.
+  lockedReason = null,
+  // Re-read this campaign from the server after a conflict.
+  onLoadLatest,
 }) {
   // Phone preview mode: "inbox" = iOS-Mail list row, "email" = opened message.
   // Default to the branded EMAIL. A merchant has to recognise the email they
@@ -805,19 +811,27 @@ export function CampaignReviewPane({
       <div className="starting-copy">
         <span className="starting-copy-line">
           Starting copy: <strong>{startingName}</strong>
-          <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>
-            Change starting copy
-          </button>
-          {saveLabel ? (
+          {lockedReason ? null : (
+            <button type="button" className="link-btn" onClick={() => setChangeOpen((p) => !p)}>
+              Change starting copy
+            </button>
+          )}
+          {saveLabel && !lockedReason ? (
             <span className={`save-state ${saveState}`} role="status">
               {saveLabel}
               {saveState === "failed" && onRetrySave ? (
                 <button type="button" className="link-btn" onClick={onRetrySave}>Retry save</button>
               ) : null}
+              {/* A conflict needs a way forward, not only a message: load the
+                  version that was saved elsewhere, then continue from it. */}
+              {saveState === "conflict" && onLoadLatest ? (
+                <button type="button" className="link-btn" onClick={onLoadLatest}>Load the latest version</button>
+              ) : null}
             </span>
           ) : null}
         </span>
-        {changeOpen ? (
+        {lockedReason ? <p className="notice-line" role="status">{lockedReason}</p> : null}
+        {changeOpen && !lockedReason ? (
           <div className="starting-copy-options">
             {beaconTemplates.map((item) => (
               <button
@@ -849,7 +863,7 @@ export function CampaignReviewPane({
 
             {/* adopt #1/#4: rewrite regenerates only agent-written (Suggested) fields,
                 never a merchant edit. Optional steer chips nudge the rewrite. */}
-            {onRewrite ? (() => {
+            {onRewrite && !lockedReason ? (() => {
               const allEdited = editFields.every(
                 ({ field }) => (draft[field] || "") !== (suggestedValueForField(play, field, agentCopy) || "")
               );
@@ -889,7 +903,7 @@ export function CampaignReviewPane({
 
             {/* adopt #5: subject variant chips, pre-selected to variant 1 (already
                 in the subject field). Tapping swaps; a hand-edited subject deselects. */}
-            {subjectVariants.length > 1 ? (
+            {subjectVariants.length > 1 && !lockedReason ? (
               <div className="subject-variants" role="group" aria-label="Subject options">
                 {subjectVariants.map((variant) => (
                   <button
@@ -916,7 +930,7 @@ export function CampaignReviewPane({
                     {label}
                     {edited ? <span className="edited-chip">Edited</span> : null}
                   </span>
-                  {edited ? (
+                  {edited && !lockedReason ? (
                     <button type="button" className="restore-link" onClick={() => onRestoreField(field)}>
                       Restore suggested
                     </button>
@@ -925,6 +939,8 @@ export function CampaignReviewPane({
                 {type === "textarea" ? (
                   <textarea
                     value={draft[field] || ""}
+                    readOnly={Boolean(lockedReason)}
+                    disabled={Boolean(lockedReason)}
                     rows={field === "bodyP1" ? 4 : 3}
                     onChange={(event) => onChange(field, event.target.value)}
                     onBlur={handleBlur}
@@ -932,6 +948,8 @@ export function CampaignReviewPane({
                 ) : (
                   <input
                     value={draft[field] || ""}
+                    readOnly={Boolean(lockedReason)}
+                    disabled={Boolean(lockedReason)}
                     onChange={(event) => onChange(field, event.target.value)}
                     onBlur={handleBlur}
                   />
@@ -954,6 +972,8 @@ export function CampaignReviewPane({
                   inputMode="url"
                   placeholder="https://yourstore.example/collections/..."
                   value={destinationUrl || ""}
+                  readOnly={Boolean(lockedReason)}
+                  disabled={Boolean(lockedReason)}
                   aria-invalid={destinationInvalid ? "true" : undefined}
                   aria-describedby="destination-help"
                   onChange={(event) => onChangeDestination(event.target.value)}
@@ -2501,7 +2521,24 @@ function StoreWorkspace({ onStoreChange }) {
   // a settled failure from looking like "nothing pending".
   const saveStatusRef = useRef({});
   const savedSignatureRef = useRef({});
-  const saveCampaignState = useCallback(async (key, fields) => {
+  // Saves are QUEUED per campaign: copy, template, destination, holdout and
+  // status alike. Each one runs after the previous save for the same campaign has
+  // settled and quotes the revision that save returned. Firing them concurrently
+  // made two saves quote the same revision, so the second was refused as "changed
+  // elsewhere" in a single tab (merchant walkthrough #3). A genuine edit from
+  // another session still conflicts, and once one does, the saves queued behind
+  // it do not write: they would overwrite that edit with the revision the
+  // conflict reported. The merchant loads the latest version first.
+  const saveQueueRef = useRef({});
+  const queuedSavesRef = useRef({});
+  // Fields whose save FAILED and has not been superseded, per campaign. A later
+  // save that succeeds for OTHER fields does not resolve them: showing "Saved"
+  // then hid an unpersisted destination and removed its Retry. They clear only
+  // when a successful save carries those same fields (or the merchant loads the
+  // latest version). Status changes are not kept here: they have their own action.
+  const unresolvedFieldsRef = useRef({});
+  const statusAfterSuccess = (key) => (Object.keys(unresolvedFieldsRef.current[key] || {}).length ? "failed" : "saved");
+  const saveCampaignState = useCallback(async (key, fields, { afterConflict = false } = {}) => {
     // Identity is read ONCE, from the campaign record, when the save starts. A
     // campaign belongs to the run it was created in; writing it against
     // whatever run is current would open a second campaign for the same play.
@@ -2510,75 +2547,137 @@ function StoreWorkspace({ onStoreChange }) {
     const identity = key ? campaignRowsRef.current[key] : null;
     if (!identity?.runId || !identity?.playId) return { ok: false, reason: "no_campaign", key };
     const { runId, playId } = identity;
+    queuedSavesRef.current[key] = (queuedSavesRef.current[key] || 0) + 1;
     setSaveStateByKey((prev) => ({ ...prev, [key]: "saving" }));
-    const tracked = (async () => {
-    try {
-      const { campaign } = await api.saveCampaign({
-        runId, playId,
-        // Optimistic check: the server refuses the write if the row moved on
-        // since we last read it, rather than overwriting someone else's edit.
-        expectedRevision: knownRevisionRef.current[key],
-        ...fields,
-      });
-      if (campaignKey(campaign) !== key) {
-        // (shop, run, play) is unique, so this cannot happen — but if it ever
-        // did, recording it here would attach one campaign's save to another.
-        setSaveStateByKey((prev) => ({ ...prev, [key]: "failed" }));
+
+    const run = async () => {
+      if (saveStatusRef.current[key] === "conflict" && !afterConflict) {
+        return { ok: false, reason: "conflict", key, skipped: true };
+      }
+      try {
+        const { campaign } = await api.saveCampaign({
+          runId, playId,
+          // Optimistic check, read when this save RUNS: the revision the previous
+          // save returned. The server still refuses it if another session moved
+          // the row on in between.
+          expectedRevision: knownRevisionRef.current[key],
+          ...fields,
+        });
+        if (campaignKey(campaign) !== key) {
+          // (shop, run, play) is unique, so this cannot happen — but if it ever
+          // did, recording it here would attach one campaign's save to another.
+          saveStatusRef.current[key] = "failed";
+          return { ok: false, reason: "failed", key };
+        }
+        campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...campaignRowsRef.current[key], ...campaign } };
+        setCampaignRowsByKey(campaignRowsRef.current);
+        knownRevisionRef.current[key] = campaign.revision;
+        const unresolved = { ...(unresolvedFieldsRef.current[key] || {}) };
+        for (const name of Object.keys(fields || {})) delete unresolved[name];
+        unresolvedFieldsRef.current[key] = unresolved;
+        saveStatusRef.current[key] = statusAfterSuccess(key);
+        // Record WHAT was persisted, from the row the server returned. The
+        // handoff compares the draft on screen against this.
+        savedSignatureRef.current[key] = campaignSignature({
+          edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
+        });
+        // Kept in a ref as well as state: a handoff started in the same tick as a
+        // save needs the revision the server just returned.
+        latestRevision.current[key] = campaign.revision;
+        return { ok: true, campaign, revision: campaign.revision, key };
+      } catch (error) {
+        if (error.conflict && error.campaign) {
+          // The server's revision is recorded, but NOT adopted as the reviewed
+          // revision: the merchant's copy has not been resolved against it.
+          knownRevisionRef.current[key] = error.campaign.revision;
+          saveStatusRef.current[key] = "conflict";
+          showToast({
+            message: error.conflict === "frozen"
+              ? "This campaign was handed off to Klaviyo, so its content is locked here."
+              : "This campaign changed elsewhere. Load the latest version before editing further.",
+            error: true,
+          });
+          return { ok: false, reason: error.conflict, campaign: error.campaign, key };
+        }
+        // A real write failure. Surfaced, not swallowed, and remembered until
+        // these fields are saved successfully.
+        const { status: _status, ...kept } = fields || {};
+        unresolvedFieldsRef.current[key] = { ...(unresolvedFieldsRef.current[key] || {}), ...kept };
         saveStatusRef.current[key] = "failed";
         return { ok: false, reason: "failed", key };
       }
-      campaignRowsRef.current = { ...campaignRowsRef.current, [key]: { ...campaignRowsRef.current[key], ...campaign } };
-      setCampaignRowsByKey(campaignRowsRef.current);
-      knownRevisionRef.current[key] = campaign.revision;
-      setSaveStateByKey((prev) => ({ ...prev, [key]: "saved" }));
-      saveStatusRef.current[key] = "saved";
-      // Record WHAT was persisted, not merely that something was. The handoff
-      // compares the draft on screen against this.
-      // Recorded from the row the server returned, so it reflects what was
-      // actually persisted rather than what was sent.
-      savedSignatureRef.current[key] = campaignSignature({
-        edits: campaign.draftEdits, destinationUrl: campaign.destinationUrl,
-      });
-      // Kept in a ref as well as state: a handoff started in the same tick as a
-      // save needs the revision the server just returned, and setState has not
-      // landed yet.
-      latestRevision.current[key] = campaign.revision;
-      return { ok: true, campaign, revision: campaign.revision, key };
-    } catch (error) {
-      // A conflict is not a failure to save — it is a save that would have
-      // destroyed a newer edit. Take the server's version as the new baseline so
-      // a retry is against reality, and tell the merchant rather than silently
-      // dropping either copy.
-      if (error.conflict && error.campaign) {
-        // The server's revision is recorded for the next save, but NOT adopted
-        // as the reviewed revision: the merchant's copy has not been resolved
-        // against it, so handing off would freeze one of the two arbitrarily.
-        knownRevisionRef.current[key] = error.campaign.revision;
-        saveStatusRef.current[key] = "conflict";
-        setSaveStateByKey((prev) => ({ ...prev, [key]: "conflict" }));
-        showToast({
-          message: error.conflict === "frozen"
-            ? "This campaign has already been sent, so its content can't be changed."
-            : "This campaign changed elsewhere. Reload before editing further.",
-          error: true,
-        });
-        return { ok: false, reason: error.conflict, campaign: error.campaign, key };
-      }
-      // Anything else is a real write failure. Surfaced, not swallowed: the
-      // merchant is otherwise editing a draft that is no longer being stored.
-      setSaveStateByKey((prev) => ({ ...prev, [key]: "failed" }));
-      saveStatusRef.current[key] = "failed";
-      return { ok: false, reason: "failed", key };
-    }
-    })();
+    };
 
+    const previous = saveQueueRef.current[key] || Promise.resolve();
+    const tracked = previous.then(run, run).then((result) => {
+      queuedSavesRef.current[key] -= 1;
+      // "Saved" only when nothing else is queued for this campaign; a failure or
+      // conflict shows at once.
+      const status = saveStatusRef.current[key];
+      if (status !== "saved" || queuedSavesRef.current[key] === 0) {
+        setSaveStateByKey((prev) => ({ ...prev, [key]: status }));
+      }
+      return result;
+    });
+    saveQueueRef.current[key] = tracked;
+    // The LAST queued save: waiting for it waits for every save before it.
     inFlightSaves.current[key] = tracked;
     try {
       return await tracked;
     } finally {
       if (inFlightSaves.current[key] === tracked) delete inFlightSaves.current[key];
+      if (saveQueueRef.current[key] === tracked) delete saveQueueRef.current[key];
     }
     // Everything it reads is a ref or a setter, so it never goes stale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // After a conflict: read this campaign as it now is on the server and continue
+  // from that version. Local text for it is replaced; that is the choice the
+  // merchant made by asking for the latest version.
+  const loadLatestCampaign = useCallback(async (key) => {
+    const { campaigns = [] } = await api.listCampaigns();
+    const row = campaigns.find((c) => campaignKey(c) === key);
+    if (!row) return;
+    clearTimeout(editSaveTimers.current[key]);
+    delete editSaveTimers.current[key];
+    delete pendingEdits.current[key];
+    campaignRowsRef.current = { ...campaignRowsRef.current, [key]: row };
+    setCampaignRowsByKey(campaignRowsRef.current);
+    knownRevisionRef.current[key] = row.revision;
+    latestRevision.current[key] = row.revision;
+    savedSignatureRef.current[key] = campaignSignature({ edits: row.draftEdits, destinationUrl: row.destinationUrl });
+    saveStatusRef.current[key] = "saved";
+    delete unresolvedFieldsRef.current[key];
+    delete approvedRender.current[key];
+    const put = (setter, value) => setter((prev) => {
+      const next = { ...prev };
+      if (value == null) delete next[key]; else next[key] = value;
+      return next;
+    });
+    put(setDraftEditsByKey, row.draftEdits || {});
+    put(setDestinationByKey, row.destinationUrl || null);
+    put(setSelectedTemplateByKey, row.templateId || null);
+    put(setAgentCopyByKey, row.copy?.copy || null);
+    setApprovedForSend((prev) => (row.status === "approved" || row.status === "sent"
+      ? (prev.includes(key) ? prev : [...prev, key])
+      : prev.filter((id) => id !== key)));
+    setSaveStateByKey((prev) => ({ ...prev, [key]: "saved" }));
+    // The audience on screen was computed for the version just replaced (its
+    // holdout may have changed elsewhere). Discard it, read it again for the
+    // latest version, and keep the campaign from moving on until that read lands.
+    setAudiencePreviewsByCampaign((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    if (audienceRequestedRef.current === key) audienceRequestedRef.current = "";
+    setAudienceReload((prev) => ({ ...prev, [key]: "loading" }));
+    try {
+      await previewCampaignAudience({ id: key, play_id: row.playId, run_id: row.runId });
+    } catch (_) {
+      setAudienceReload((prev) => ({ ...prev, [key]: "failed" }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -3432,16 +3531,35 @@ function StoreWorkspace({ onStoreChange }) {
 
   // The merchant's holdout choice. Persisted on the campaign, then the preview
   // is re-run so the counts on screen are the ones the send will actually use.
+  // The audience split changes with the holdout, so its controls, the counts and
+  // the step's Continue button wait until the save and the re-read audience
+  // have both landed. A merchant should not have to guess a safe pause.
+  const [holdoutUpdatingKey, setHoldoutUpdatingKey] = useState("");
+  // Campaigns whose audience must be read again before they can move on:
+  // "loading" while it is re-read, "failed" until a read succeeds.
+  const [audienceReload, setAudienceReload] = useState({});
   async function changeHoldout(key, pct) {
-    await saveCampaignState(key, { holdoutPct: pct });
-    const draft = finalCampaignById.get(key);
-    if (draft) await previewCampaignAudience(draft).catch(() => {});
+    setHoldoutUpdatingKey(key);
+    try {
+      const result = await saveCampaignState(key, { holdoutPct: pct });
+      const draft = finalCampaignById.get(key);
+      if (result?.ok && draft) await previewCampaignAudience(draft).catch(() => {});
+    } finally {
+      setHoldoutUpdatingKey((current) => (current === key ? "" : current));
+    }
   }
 
   async function previewCampaignAudience(campaignDraft) {
     setPreviewingCampaignId(campaignDraft.id);
     try {
       const result = await runStep("Campaign audience preview", () => api.previewCampaignAudience(campaignDraft));
+      // A successful read settles any reload the campaign was waiting on.
+      setAudienceReload((prev) => {
+        if (!(campaignDraft.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[campaignDraft.id];
+        return next;
+      });
       setAudiencePreviewsByCampaign((prev) => ({
         ...prev,
         [campaignDraft.id]: {
@@ -3470,8 +3588,12 @@ function StoreWorkspace({ onStoreChange }) {
     setRailKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
     setReviewKey(key);
     setActivePage("campaigns");
-    if (campaign.frozen) {
-      showToast({ message: "This campaign was already sent — its content is read-only." });
+    // Handed off is not sent: whether customers received an email is a fact the
+    // merchant acts on, and a draft awaiting send in Klaviyo has reached nobody.
+    if (campaign.deliveryState === "sent") {
+      showToast({ message: "This campaign was sent. Its content can't be changed." });
+    } else if (campaignStage(campaign) !== "draft") {
+      showToast({ message: "This campaign was handed off to Klaviyo, so its content is locked here." });
     }
   }
 
@@ -3483,6 +3605,9 @@ function StoreWorkspace({ onStoreChange }) {
   // handoff would go on refusing, with the UI insisting the campaign was saved.
   function retrySave(key) {
     return saveCampaignState(key, {
+      // Whatever failed and is still unresolved (template, holdout, …), with the
+      // copy and destination as they are on screen now.
+      ...(unresolvedFieldsRef.current[key] || {}),
       draftEdits: draftEditsByKey[key] || {},
       destinationUrl: destinationByKey[key] ?? null,
     });
@@ -3519,6 +3644,14 @@ function StoreWorkspace({ onStoreChange }) {
   // left a refused approval (a conflict) showing as "Ready to send" while the
   // row stayed a draft, and the only sign was a toast that disappeared.
   async function approveForSend(key) {
+    // Approval moves the merchant to final review, so every edit must be saved
+    // first — and saved successfully. A queued save that fails or conflicts keeps
+    // them on this step with its own message.
+    const flushed = await flushPendingEdits(key);
+    if (!flushed.ok || ["failed", "conflict"].includes(saveStatusRef.current[key])) {
+      showToast({ message: "Your latest changes haven't saved yet, so this campaign stays in review.", error: true });
+      return;
+    }
     const result = await saveCampaignState(key, { status: "approved" });
     if (!result?.ok) return; // saveCampaignState already said why; stay on this step
     setApprovedForSend((prev) => (prev.includes(key) ? prev : [...prev, key]));
@@ -3748,8 +3881,9 @@ function StoreWorkspace({ onStoreChange }) {
                 products={productCount}
                 customers={customerCount}
                 orders={orderCount}
-                reviewPending={reviewPendingCount}
-                campaignsPending={readyToSendCampaigns.length}
+                // Unknown until this store's campaigns are read: "—", not a false 0.
+                reviewPending={campaignsLoad === "loaded" || !currentRunId ? reviewPendingCount : "—"}
+                campaignsPending={campaignsLoad === "loaded" || !currentRunId ? readyToSendCampaigns.length : "—"}
                 ordersSeries={statsSeries ? statsSeries.map((w) => w.orders) : null}
                 customersSeries={statsSeries ? statsSeries.map((w) => w.newCustomers) : null}
               />
@@ -3972,6 +4106,19 @@ function StoreWorkspace({ onStoreChange }) {
                     const hasTemplate = Boolean(selectedTemplateByKey[reviewPlay.id]);
                     const isApproved = approvedForSend.includes(reviewPlay.id);
                     const isSent = selectedCampaignGroup === "sent";
+                    // Handed off (reserved, frozen, created in Klaviyo) or sent:
+                    // nothing here may change its content, and the wording says
+                    // which of the two it is.
+                    const reviewRow = campaignRowsByKey[reviewPlay.id] || null;
+                    const campaignLocked = Boolean(reviewRow && campaignStage(reviewRow) !== "draft");
+                    const lockedReason = !campaignLocked ? null : reviewRow.deliveryState === "sent"
+                      ? "This campaign was sent. Its content can't be changed."
+                      : "This campaign was handed off to Klaviyo, so its content is locked here. Make any further changes in Klaviyo.";
+                    // Saves still queued, or the audience still updating: the next
+                    // step would start from a campaign that isn't settled.
+                    const campaignBusy = saveStateByKey[reviewPlay.id] === "saving"
+                      || holdoutUpdatingKey === reviewPlay.id
+                      || Boolean(audienceReload[reviewPlay.id]);
                     // Send unlocks only after explicit approval — this is the gate
                     // that separates "reviewing" from "ready to send".
                     // P-A2: numbered steps. A step is "done" if a later step is
@@ -4035,6 +4182,8 @@ function StoreWorkspace({ onStoreChange }) {
                             beaconTemplates.length ? (
                               <CampaignReviewPane
                                 play={reviewPlay}
+                                lockedReason={lockedReason}
+                                onLoadLatest={() => loadLatestCampaign(reviewPlay.id)}
                                 brandContext={brandContext}
                                 beaconTemplates={beaconTemplates}
                                 klaviyoTemplates={klaviyoOnlyTemplates}
@@ -4083,6 +4232,20 @@ function StoreWorkspace({ onStoreChange }) {
 
                           {workspaceStep === "audience" && selectedCampaign ? (
                             <div className="audience-step">
+                              {/* Recovery from a conflict raised on this step
+                                  (a holdout change), and the audience reload that
+                                  follows it. Continue stays disabled meanwhile. */}
+                              {saveStateByKey[reviewPlay.id] === "conflict" ? (
+                                <p className="notice-line" role="alert">
+                                  This campaign changed elsewhere.{" "}
+                                  <button type="button" className="link-btn" onClick={() => loadLatestCampaign(reviewPlay.id)}>Load the latest version</button>
+                                </p>
+                              ) : null}
+                              {audienceReload[reviewPlay.id] === "loading" ? (
+                                <p className="notice-line" role="status">Reloading the audience for the latest version…</p>
+                              ) : audienceReload[reviewPlay.id] === "failed" ? (
+                                <p className="notice-line" role="alert">Couldn't reload the audience for the latest version. Use Show emails to try again before continuing.</p>
+                              ) : null}
                               <div className="segment-spec">
                                 <div><span>Audience</span><strong>{selectedCampaign.segment || reviewPlay.audience_archetype}</strong></div>
                                 <div><span>Suppression</span><strong>{selectedCampaign.suppression || "Standard unsubscribe + recent-send suppression"}</strong></div>
@@ -4094,7 +4257,7 @@ function StoreWorkspace({ onStoreChange }) {
                               {preview?.holdout ? (
                                 <div className="holdout-note">
                                   <strong>
-                                    {formatAudience(preview.holdout.treated)} of {formatAudience(preview.holdout.treated + preview.holdout.held)} customers will receive this.
+                                    {formatAudience(preview.holdout.treated)} of {formatAudience(preview.holdout.treated + preview.holdout.held)} customers are assigned to the email group. Klaviyo confirms actual delivery.
                                   </strong>
                                   {preview.holdout.held > 0 ? (
                                     <span>
@@ -4108,28 +4271,36 @@ function StoreWorkspace({ onStoreChange }) {
                                       customers did afterwards, but not how much of it this campaign caused.
                                     </span>
                                   )}
+                                  {holdoutUpdatingKey === selectedCampaign.id ? (
+                                    <span className="holdout-updating" role="status">Updating the audience…</span>
+                                  ) : null}
+                                  {campaignLocked ? null : (
                                   <div className="holdout-controls">
                                     <label>
                                       Hold back
                                       <select
-                                        value={String(preview.holdout.pct)}
+                                        value={String(Number(preview.holdout.pct))}
+                                        disabled={holdoutUpdatingKey === selectedCampaign.id}
                                         onChange={(event) => changeHoldout(selectedCampaign.id, Number(event.target.value))}
                                       >
+                                        {/* "Send to everyone" is a real choice; the dropdown shows it. */}
+                                        <option value="0">None (send to everyone)</option>
                                         <option value="0.05">5%</option>
                                         <option value="0.1">10%</option>
                                         <option value="0.15">15%</option>
                                       </select>
                                     </label>
                                     {preview.holdout.pct > 0 ? (
-                                      <button type="button" className="link-btn" onClick={() => changeHoldout(selectedCampaign.id, 0)}>
+                                      <button type="button" className="link-btn" disabled={holdoutUpdatingKey === selectedCampaign.id} onClick={() => changeHoldout(selectedCampaign.id, 0)}>
                                         Send to everyone
                                       </button>
                                     ) : (
-                                      <button type="button" className="link-btn" onClick={() => changeHoldout(selectedCampaign.id, 0.1)}>
+                                      <button type="button" className="link-btn" disabled={holdoutUpdatingKey === selectedCampaign.id} onClick={() => changeHoldout(selectedCampaign.id, 0.1)}>
                                         Hold back 10% so this can be measured
                                       </button>
                                     )}
                                   </div>
+                                  )}
                                 </div>
                               ) : null}
                               {(() => {
@@ -4239,21 +4410,21 @@ function StoreWorkspace({ onStoreChange }) {
 
                         {/* P-A3: sticky action bar — current step's primary action, right-aligned */}
                         <div className="workspace-actionbar">
-                          {workspaceStep === "send" && isApproved && !isSent && !created ? (
+                          {workspaceStep === "send" && isApproved && !isSent && !created && !campaignLocked ? (
                             <button type="button" className="link-btn" onClick={() => unapproveForSend(reviewPlay.id)}>Back to review</button>
                           ) : currentIndex > 0 ? (
                             <button type="button" className="link-btn" onClick={() => setWorkspaceStep(stepOrder[currentIndex - 1])}>Back</button>
                           ) : <span />}
 
                           {workspaceStep === "copy" ? (
-                            <button className="btn primary" disabled={!hasTemplate} onClick={() => setWorkspaceStep("audience")}>Continue to audience</button>
+                            <button className="btn primary" disabled={!hasTemplate || campaignBusy} onClick={() => setWorkspaceStep("audience")}>{campaignBusy ? "Saving…" : "Continue to audience"}</button>
                           ) : null}
 
                           {workspaceStep === "audience" ? (
                             isApproved ? (
-                              <button className="btn primary" onClick={() => setWorkspaceStep("send")}>Continue to send</button>
+                              <button className="btn primary" disabled={campaignBusy} onClick={() => setWorkspaceStep("send")}>{campaignBusy ? "Updating…" : "Continue to send"}</button>
                             ) : (
-                              <button className="btn primary" onClick={() => approveForSend(reviewPlay.id)}>Continue to send</button>
+                              <button className="btn primary" disabled={campaignBusy} onClick={() => approveForSend(reviewPlay.id)}>{campaignBusy ? "Updating…" : "Continue to send"}</button>
                             )
                           ) : null}
 
