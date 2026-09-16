@@ -1,6 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 
 const db = require("./helpers/db");
 const suite = db.available ? test : test.skip;
@@ -11,7 +14,9 @@ const { handleShopifyWebhook } = require("../src/services/shopifyWebhookService"
 const {
   exportCustomerData,
   pendingPrivacyRequests,
+  recordDelivery,
   redactCustomer,
+  writeCustomerExport,
 } = require("../src/services/privacyRequestService");
 const { upsertAllShopifyData } = require("../src/services/shopifyRepository");
 
@@ -246,4 +251,75 @@ suite("an unsigned privacy webhook does nothing at all", async () => {
   assert.equal(customer.rows[0].email, SUBJECT, "an unsigned request redacted a customer");
   const requests = await query(`SELECT count(*)::int AS n FROM clean.privacy_requests`);
   assert.equal(requests.rows[0].n, 0);
+});
+
+// --- Review findings on PR #63 ----------------------------------------------
+
+suite("a later order sync does not put a redacted customer's details back", async () => {
+  await db.resetDatabase();
+  await populate();
+  await redactCustomer(SHOP, { email: SUBJECT });
+
+  // Shopify keeps returning the order in full after a customers/redact request.
+  await upsertAllShopifyData(SHOP, { orders: [shopifyOrder("o1", "cust-1", SUBJECT)] });
+
+  const order = await query(`SELECT email, raw, total_price FROM clean.orders WHERE id = 'o1'`);
+  assert.equal(order.rows[0].email, null, "the resync restored the order's email column");
+  const raw = JSON.stringify(order.rows[0].raw);
+  for (const leaked of ["Vasquez", "Harbour Road", "+353-21-000", SUBJECT]) {
+    assert.ok(!raw.includes(leaked), `the resync restored ${leaked} in clean.orders.raw`);
+  }
+  // The order is still the merchant's record, and still attributed.
+  assert.equal(order.rows[0].total_price, "42.00");
+  const attributed = await query(`SELECT customer_id FROM clean.orders WHERE id = 'o1'`);
+  assert.equal(attributed.rows[0].customer_id, "cust-1");
+
+  // An un-redacted customer's order syncs normally.
+  const other = await query(`SELECT email, raw FROM clean.orders WHERE id = 'o2'`);
+  assert.equal(other.rows[0].email, OTHER);
+  assert.ok(JSON.stringify(other.rows[0].raw).includes("Harbour Road"));
+});
+
+suite("a data request stays outstanding until an export exists and delivery is recorded", async () => {
+  await db.resetDatabase();
+  await populate();
+
+  const response = await handleShopifyWebhook(
+    signed("customers/data_request", { shop_id: 1, customer: { id: "cust-1", email: SUBJECT } })
+  );
+  assert.equal(response.status, 200);
+
+  // Not completed by the webhook: nothing has reached the merchant yet.
+  const pending = await pendingPrivacyRequests(SHOP);
+  assert.equal(pending.length, 1, "the request was closed before anyone had the data");
+  const id = pending[0].id;
+  assert.equal(pending[0].payload.customer_email, SUBJECT, "the subject is still there to act on");
+
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "beaconai-privacy-"));
+  try {
+    const { file, found } = await writeCustomerExport(id, outDir);
+    assert.equal(found, true);
+    const written = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.deepEqual(written.customers.map((c) => c.id), ["cust-1"]);
+    assert.deepEqual(written.orders.map((o) => o.id), ["o1"]);
+    assert.ok(!JSON.stringify(written).includes(OTHER));
+
+    // Producing the file is not delivering it.
+    assert.equal((await pendingPrivacyRequests(SHOP)).length, 1);
+
+    // Delivery has to say how.
+    await assert.rejects(() => recordDelivery(id, ""), /how it was delivered/);
+
+    const done = await recordDelivery(id, "emailed the merchant 2026-09-16");
+    assert.ok(done.completed_at instanceof Date);
+    assert.deepEqual(await pendingPrivacyRequests(SHOP), []);
+
+    const row = await query(`SELECT payload FROM clean.privacy_requests WHERE id = $1`, [id]);
+    assert.equal(row.rows[0].payload.result.delivered, "emailed the merchant 2026-09-16");
+    assert.ok(!JSON.stringify(row.rows[0].payload).includes(SUBJECT), "identifiers survive delivery");
+
+    await assert.rejects(() => recordDelivery(id, "again"), /already complete/);
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
+  }
 });

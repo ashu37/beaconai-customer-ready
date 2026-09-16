@@ -76,4 +76,48 @@ function minimiseKlaviyoAssetPayload(payload = {}) {
   return minimal;
 }
 
-module.exports = { minimiseKlaviyoAssetPayload };
+// Keys in a Shopify order payload that name or reach a person. Everything else
+// — the money, the dates, the line items — is the merchant's business record.
+//
+// Applied in two places, and it has to be both: redactCustomer scrubs the
+// payloads already stored, and upsertOrders scrubs the ones a later sync brings
+// back. Shopify keeps returning a redacted customer's orders in full, so
+// without the second the first undoes itself on the next sync.
+const PERSONAL_ORDER_KEYS = new Set([
+  "customer",
+  "email",
+  "contact_email",
+  "phone",
+  "billing_address",
+  "shipping_address",
+  "customer_locale",
+  "note",
+  "note_attributes",
+  "client_details",
+  "browser_ip",
+  "landing_site",
+  "referring_site",
+  "checkout_id",
+  "checkout_token",
+  "order_status_url",
+]);
+
+/**
+ * An order payload with nothing personal in it.
+ *
+ * `customer` goes entirely rather than being reduced to its id: the id is
+ * already its own column (`clean.orders.customer_id`), which is what the engine
+ * and the measurement read, so keeping a second copy inside the payload would
+ * buy nothing and risk carrying a sibling field along with it.
+ */
+function scrubOrderPayload(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (PERSONAL_ORDER_KEYS.has(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+module.exports = { PERSONAL_ORDER_KEYS, minimiseKlaviyoAssetPayload, scrubOrderPayload };

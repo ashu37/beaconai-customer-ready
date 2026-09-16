@@ -18,13 +18,8 @@ const ENGINE_FLAGS = {
   OUTCOME_LOG_ENABLED: "false",
 };
 
-function repoRoot() {
-  return path.resolve(__dirname, "../../..");
-}
-
-function defaultEngineDir() {
-  return path.join(repoRoot(), "engine");
-}
+// Shared with store deletion, so both agree on where the engine writes.
+const { engineDir: resolveEngineDir } = require("./enginePaths");
 
 function defaultPythonPath(engineDir) {
   return path.join(engineDir, ".venv", "bin", "python");
@@ -241,7 +236,7 @@ async function persistRunSnapshot({ shopDomain, storeId, engineRun, manifest, ma
 }
 
 async function runAtulEngine(input, options = {}) {
-  const engineDir = path.resolve(options.engineDir || process.env.BEACONAI_ENGINE_DIR || defaultEngineDir());
+  const engineDir = resolveEngineDir(options.engineDir);
   const pythonPath = process.env.BEACONAI_ENGINE_PYTHON || defaultPythonPath(engineDir);
   const runRoot = await fs.mkdtemp(path.join(os.tmpdir(), "beaconai-atul-engine-"));
 
@@ -399,7 +394,7 @@ async function narrateAtulRun(result, options = {}) {
     return null;
   }
 
-  const engineDir = path.resolve(options.engineDir || process.env.BEACONAI_ENGINE_DIR || defaultEngineDir());
+  const engineDir = resolveEngineDir(options.engineDir);
   const pythonPath = process.env.BEACONAI_ENGINE_PYTHON || defaultPythonPath(engineDir);
   const storeDir = result?.storeId || path.basename(path.dirname(path.dirname(path.dirname(manifestPath))));
   const dataRoot = path.join(engineDir, "data");

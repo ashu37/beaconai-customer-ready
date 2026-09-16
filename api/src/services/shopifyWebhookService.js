@@ -21,7 +21,7 @@ const { config } = require("../config");
 const { query } = require("../db");
 const { uninstallStore } = require("./storeAccessService");
 const { deleteStoreData } = require("./storeDataService");
-const { completePrivacyRequest, exportCustomerData, redactCustomer } = require("./privacyRequestService");
+const { completePrivacyRequest, redactCustomer } = require("./privacyRequestService");
 
 const SHOP_RE = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
 const PRIVACY_TOPICS = new Set(["customers/data_request", "customers/redact", "shop/redact"]);
@@ -61,10 +61,10 @@ function subjectOf(topic, payload) {
 /**
  * Do what a recorded privacy request asks.
  *
- *   customers/data_request  gathered and attached to the request row, for the
- *                           founder to pass to the merchant. Producing it is
- *                           not the same as sending it: it goes to the
- *                           merchant, who answers their own customer.
+ *   customers/data_request  left open. Producing an export is not the same as
+ *                           delivering it, and delivery is the founder's, by
+ *                           hand, to the merchant — who answers their own
+ *                           customer. `privacy:pending` keeps reporting it.
  *   customers/redact        everything personal about that customer removed.
  *   shop/redact             the whole store erased.
  *
@@ -75,15 +75,16 @@ function subjectOf(topic, payload) {
 async function carryOut({ id, topic, shopDomain, subject }) {
   try {
     if (topic === "customers/data_request") {
-      const data = await exportCustomerData(shopDomain, {
-        customerId: subject.customer_id,
-        email: subject.customer_email,
-      });
-      await completePrivacyRequest(id, { found: data.found, counts: {
-        customers: data.customers.length,
-        orders: (data.orders || []).length,
-        campaignMemberships: (data.campaignMemberships || []).length,
-      } });
+      // Deliberately NOT completed here. A data request is only finished when
+      // the merchant has the data, and nothing in this process can deliver it —
+      // so building the export here and marking the row done would drop the
+      // export on the floor and hide the request from `privacy:pending` at the
+      // same time. The row stays open, with the subject it needs, until the
+      // founder produces the export and records the delivery:
+      //
+      //   npm run privacy:export  -- --request <id> --out <dir>
+      //   npm run privacy:deliver -- --request <id> --note "..."
+      console.log(`[webhook] customers/data_request #${id} is waiting for delivery to ${shopDomain}`);
     } else if (topic === "customers/redact") {
       const result = await redactCustomer(shopDomain, {
         customerId: subject.customer_id,

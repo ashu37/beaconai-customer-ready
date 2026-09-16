@@ -34,6 +34,7 @@ const TABLES = [
   "clean.sessions",
   "clean.store_access",
   "clean.privacy_requests",
+  "clean.pending_file_cleanup",
   "clean.oauth_states",
   "raw.shopify_events",
 ];

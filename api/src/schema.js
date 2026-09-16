@@ -95,6 +95,27 @@ async function initSchema() {
   `);
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS privacy_requests_webhook_idx ON clean.privacy_requests (webhook_id) WHERE webhook_id IS NOT NULL;`);
 
+  // Files a deletion still has to remove.
+  //
+  // The engine's directories are named by store_id, which only the snapshot
+  // rows know — and the deletion erases those rows. So the paths are written
+  // here inside the same transaction, BEFORE the rows go, and cleared once the
+  // directory is actually gone. A removal that fails after the commit leaves a
+  // row behind, which is what `npm run privacy:pending` reports; without it the
+  // paths would be unrecoverable and deletion would report success over files
+  // still on disk.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.pending_file_cleanup (
+      id BIGSERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      removed_at TIMESTAMPTZ,
+      last_error TEXT,
+      UNIQUE (shop_domain, store_id)
+    );
+  `);
+
   // One analysis per store at a time, enforced by the database rather than by
   // process memory: the partial unique index admits a single 'running' row per
   // shop, so a double click, a second tab or a second instance cannot start an

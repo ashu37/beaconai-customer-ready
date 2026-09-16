@@ -11,38 +11,11 @@
 // A redacted customer is marked, so a later sync cannot quietly refill the
 // fields this cleared — see shopifyRepository.upsertCustomers.
 
+const fs = require("node:fs/promises");
+const path = require("node:path");
+
 const { pool, query } = require("../db");
-
-// Keys in an order payload that name or reach a person. Everything else — the
-// money, the dates, the line items — is the merchant's business record.
-const PERSONAL_ORDER_KEYS = new Set([
-  "customer",
-  "email",
-  "contact_email",
-  "phone",
-  "billing_address",
-  "shipping_address",
-  "customer_locale",
-  "note",
-  "note_attributes",
-  "client_details",
-  "browser_ip",
-  "landing_site",
-  "referring_site",
-  "checkout_id",
-  "checkout_token",
-  "order_status_url",
-]);
-
-function scrubOrderPayload(raw) {
-  if (!raw || typeof raw !== "object") return raw;
-  const out = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (PERSONAL_ORDER_KEYS.has(key)) continue;
-    out[key] = value;
-  }
-  return out;
-}
+const { scrubOrderPayload } = require("./dataMinimisation");
 
 /** Resolve the subject Shopify named to the customer rows we hold. */
 async function findCustomer(shopDomain, { customerId = null, email = null } = {}, run = query) {
@@ -192,6 +165,55 @@ async function completePrivacyRequest(id, result = null) {
   return rows[0] || null;
 }
 
+/** One recorded request, with the subject it was received with. */
+async function privacyRequest(id) {
+  const { rows } = await query(
+    `SELECT id, shop_domain, topic, webhook_id, payload, received_at, completed_at
+       FROM clean.privacy_requests WHERE id = $1`,
+    [id]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Write the export for a recorded data request to a file, without completing
+ * it. Producing the export is not delivering it; `recordDelivery` is.
+ */
+async function writeCustomerExport(id, outDir) {
+  const request = await privacyRequest(id);
+  if (!request) throw new Error(`No privacy request #${id}.`);
+  if (request.topic !== "customers/data_request") {
+    throw new Error(`Request #${id} is ${request.topic}, not a data request.`);
+  }
+  if (request.completed_at) {
+    throw new Error(`Request #${id} was already delivered on ${request.completed_at.toISOString()}.`);
+  }
+
+  const data = await exportCustomerData(request.shop_domain, {
+    customerId: request.payload?.customer_id ?? null,
+    email: request.payload?.customer_email ?? null,
+  });
+  await fs.mkdir(outDir, { recursive: true });
+  const file = path.join(outDir, `privacy-request-${id}.json`);
+  await fs.writeFile(file, JSON.stringify(data, null, 2) + "\n");
+  return { file, found: data.found, request };
+}
+
+/**
+ * Mark a data request delivered. The note is the record of HOW — this is the
+ * only step that says the merchant actually has the data, so it is deliberately
+ * separate from producing the file and cannot be inferred from it.
+ */
+async function recordDelivery(id, note) {
+  if (!note || !String(note).trim()) {
+    throw new Error("Say how it was delivered: --note \"emailed the merchant 2026-09-16\"");
+  }
+  const request = await privacyRequest(id);
+  if (!request) throw new Error(`No privacy request #${id}.`);
+  if (request.completed_at) throw new Error(`Request #${id} is already complete.`);
+  return completePrivacyRequest(id, { delivered: String(note).trim() });
+}
+
 async function pendingPrivacyRequests(shopDomain = null) {
   const { rows } = await query(
     `SELECT id, shop_domain, topic, webhook_id, payload, received_at
@@ -207,6 +229,8 @@ module.exports = {
   completePrivacyRequest,
   exportCustomerData,
   pendingPrivacyRequests,
+  privacyRequest,
+  recordDelivery,
   redactCustomer,
-  scrubOrderPayload,
+  writeCustomerExport,
 };

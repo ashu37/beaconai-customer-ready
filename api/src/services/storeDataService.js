@@ -17,6 +17,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const { pool, query } = require("../db");
+const { engineStoreDir } = require("./enginePaths");
 
 const DIRECT = "shop_domain = $1";
 const VIA_CAMPAIGN = "campaign_id IN (SELECT id FROM clean.campaigns WHERE shop_domain = $1)";
@@ -80,6 +81,18 @@ const STORE_TABLES = [
     table: "clean.privacy_requests",
     scope: DIRECT,
     retain: "the record that a request was received and completed",
+  },
+  // Also kept, and for the same reason in reverse: this is what says the
+  // deletion is not finished yet. Erasing it as part of the deletion would
+  // throw away the only record of the files still on disk.
+  {
+    table: "clean.pending_file_cleanup",
+    scope: DIRECT,
+    retain: "the record of engine files a deletion still has to remove",
+    // Written BY the deletion, so unlike every other entry it is empty
+    // beforehand. Flagged so the completeness test can tell "nothing to delete
+    // here" from "this table was forgotten".
+    writtenByDeletion: true,
   },
 ];
 
@@ -182,13 +195,22 @@ async function deleteStoreData(shopDomain, { engineDir = null } = {}) {
     await assertEveryTableIsAccountedFor(run);
     await run("BEGIN");
 
-    // Read before deleting: the engine's directories are named by store_id,
-    // which only the snapshot rows know.
+    // Recorded before deleting, inside the same transaction: the engine's
+    // directories are named by store_id, which only the snapshot rows know, and
+    // those rows are about to go. If the removal then fails, the paths are
+    // still recoverable and the deletion is not silently incomplete.
     const ids = await run(
       `SELECT DISTINCT store_id FROM clean.engine_run_snapshots WHERE shop_domain = $1 AND store_id IS NOT NULL`,
       [shopDomain]
     );
     storeIds = ids.rows.map((r) => r.store_id);
+    for (const storeId of storeIds) {
+      await run(
+        `INSERT INTO clean.pending_file_cleanup (shop_domain, store_id) VALUES ($1, $2)
+         ON CONFLICT (shop_domain, store_id) DO UPDATE SET removed_at = NULL, recorded_at = NOW()`,
+        [shopDomain, storeId]
+      );
+    }
 
     for (const { table, scope, retain } of STORE_TABLES) {
       if (retain) continue;
@@ -205,21 +227,9 @@ async function deleteStoreData(shopDomain, { engineDir = null } = {}) {
 
   // Outside the transaction: a filesystem removal cannot be rolled back, so it
   // follows the commit rather than risking files removed for a store still in
-  // the database.
-  const engineFiles = [];
-  const root = engineDir || process.env.BEACONAI_ENGINE_DIR;
-  if (root) {
-    for (const storeId of storeIds) {
-      // storeId comes from our own column, but it becomes a path here, so it is
-      // resolved and checked rather than trusted.
-      const dir = path.resolve(root, "data", storeId);
-      const base = path.resolve(root, "data");
-      if (dir !== base && dir.startsWith(base + path.sep)) {
-        await fs.rm(dir, { recursive: true, force: true });
-        engineFiles.push(dir);
-      }
-    }
-  }
+  // the database. Each target is already recorded, so a failure here is
+  // retryable rather than lost.
+  const { removed: engineFiles, failed: engineFileFailures } = await runFileCleanup(shopDomain, { engineDir });
 
   const retained = {};
   for (const { table, scope, retain } of STORE_TABLES) {
@@ -228,7 +238,58 @@ async function deleteStoreData(shopDomain, { engineDir = null } = {}) {
     retained[table] = { rows: rows[0].n, reason: retain };
   }
 
-  return { shopDomain, deleted, retained, engineFiles };
+  return { shopDomain, deleted, retained, engineFiles, engineFileFailures };
+}
+
+/**
+ * Remove the engine directories recorded for a store, and mark each one done.
+ *
+ * Separate from the deletion so it can be run again: a removal that failed —
+ * a busy file, a permission, a full disk — leaves its row, and this is what
+ * clears it once the cause is fixed.
+ */
+async function runFileCleanup(shopDomain = null, { engineDir = null } = {}) {
+  const { rows } = await query(
+    `SELECT id, shop_domain, store_id FROM clean.pending_file_cleanup
+      WHERE removed_at IS NULL AND ($1::text IS NULL OR shop_domain = $1)
+      ORDER BY recorded_at`,
+    [shopDomain]
+  );
+
+  const removed = [];
+  const failed = [];
+  for (const row of rows) {
+    const dir = engineStoreDir(row.store_id, engineDir);
+    if (!dir) {
+      // A store_id that does not resolve inside the data root is not a path we
+      // will remove; it is also not something to retry for ever.
+      await query(
+        `UPDATE clean.pending_file_cleanup SET removed_at = NOW(), last_error = $2 WHERE id = $1`,
+        [row.id, `store_id ${row.store_id} does not resolve inside the engine data directory`]
+      );
+      continue;
+    }
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      await query(`UPDATE clean.pending_file_cleanup SET removed_at = NOW(), last_error = NULL WHERE id = $1`, [row.id]);
+      removed.push(dir);
+    } catch (error) {
+      await query(`UPDATE clean.pending_file_cleanup SET last_error = $2 WHERE id = $1`, [row.id, error.message]);
+      failed.push({ dir, error: error.message });
+    }
+  }
+  return { removed, failed };
+}
+
+/** Deletions whose files are still on disk. */
+async function pendingFileCleanup(shopDomain = null) {
+  const { rows } = await query(
+    `SELECT shop_domain, store_id, recorded_at, last_error FROM clean.pending_file_cleanup
+      WHERE removed_at IS NULL AND ($1::text IS NULL OR shop_domain = $1)
+      ORDER BY recorded_at`,
+    [shopDomain]
+  );
+  return rows;
 }
 
 module.exports = {
@@ -237,4 +298,6 @@ module.exports = {
   countStoreData,
   deleteStoreData,
   exportStoreData,
+  pendingFileCleanup,
+  runFileCleanup,
 };

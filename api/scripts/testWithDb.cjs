@@ -66,7 +66,17 @@ async function main() {
         {
           cwd: path.resolve(__dirname, ".."),
           stdio: "inherit",
-          env: { ...process.env, TEST_DATABASE_URL: url, PGSSLMODE: "disable" },
+          // DATABASE_URL as well as TEST_DATABASE_URL. A test file that loads
+          // src/config without going through tests/helpers/db was otherwise
+          // reading whatever sat in the developer's api/.env — so the suite
+          // passed or failed on a file that is not in the repository, and
+          // pointed at a real database on the machines that had one.
+          env: {
+            ...process.env,
+            TEST_DATABASE_URL: url,
+            DATABASE_URL: url,
+            PGSSLMODE: "disable",
+          },
         }
       );
       child.on("close", resolve);

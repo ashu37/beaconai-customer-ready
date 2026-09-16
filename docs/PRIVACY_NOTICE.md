@@ -14,15 +14,27 @@ From **Shopify**, once the merchant installs the app and authorises it:
 
 | Data | Why |
 | --- | --- |
-| Orders: dates, totals, discounts, taxes, currency, status, line items | The whole analysis. Purchase timing and value are what the audiences are built from. |
+| Orders: dates, totals, discounts, taxes, currency, status, line items — plus, for now, the rest of Shopify's order payload (see below) | The whole analysis. Purchase timing and value are what the audiences are built from. |
 | Customers: internal id, email address, marketing-consent state, tags, the date they were created | To build an audience and to hand a recipient list to Klaviyo. The email is the only contact detail stored. |
 | Products and variants: title, type, status, SKU, price | To describe what a campaign is about and to suggest a product to feature. |
 | Refunds | So refunded orders do not count as revenue. |
 | Shop: time zone, currency, plan | So a store's dates and money are read in its own terms. |
 
-Names, phone numbers, shipping and billing addresses, notes and IP addresses are
-**not** stored. They arrive in Shopify's payloads and are dropped before the
-record is written.
+For **customer records**, that list is exhaustive: the email address is the only
+contact detail kept, and the name, phone number, addresses and notes that arrive
+in Shopify's payload are dropped before the record is written.
+
+For **orders**, it is not. BeaconAI currently keeps each order's full Shopify
+payload, which includes the buyer's name, shipping and billing address, phone
+number and IP address, and a copy of the same details reaches the input snapshot
+each analysis is computed from. This is a known excess, not a need: the analysis
+uses the dates, amounts and line items. It is being removed, and until it is,
+this notice says so rather than claiming otherwise. Two things already limit it:
+
+- A **redacted customer's** order payloads are scrubbed of all of the above, and
+  a later sync cannot write them back.
+- None of it is sent to Anthropic, and none of it reaches Klaviyo beyond the
+  email address of a campaign's recipients.
 
 From **Klaviyo**, when the merchant connects it: the account's sender addresses
 and the identifiers of the lists and campaigns BeaconAI creates.

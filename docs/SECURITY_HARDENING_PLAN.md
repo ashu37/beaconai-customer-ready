@@ -262,3 +262,19 @@ window here once confirmed** (founder task 3).
   names and addresses. The engine derives a customer id from it (`order.raw.customer.id`), so it cannot
   simply be dropped the way the customer payload was. Minimising it is the next minimisation step.
 - The privacy notice needs a contact address before it is published.
+
+### Review fixes on PR B (2026-09-16)
+
+| Finding | Fix |
+|---|---|
+| **P1** A later order sync restored a redacted customer's email and order payload. The `redacted_at` guard only covered `clean.customers`; `upsertOrders` wrote both back unconditionally. | The same redaction policy is applied at the point of writing: `upsertOrders` resolves which of a batch's customers are redacted and writes a null email and a scrubbed payload for them. `scrubOrderPayload` moved to `dataMinimisation.js`, so the redaction path and the sync path share one definition of what is personal. |
+| **P1** `customers/data_request` built an export, stored only counts, and completed the request — discarding the export and hiding the request from `privacy:pending`. | The webhook no longer completes it. Producing an export is not delivering it, and nothing in the process can deliver it, so the row stays open with its subject until the founder runs `privacy:export` and then `privacy:deliver --note "…"`. Delivery requires the note: it is the only record that the merchant actually has the data. |
+| **P2** The privacy notice claimed names, addresses, phone numbers and IP addresses are never stored, while `clean.orders.raw` holds the full Shopify order payload. | Disclosed accurately instead of claimed away. The notice now separates customer records (where the claim holds) from orders (where it does not), says this is excess rather than need, and names the two limits that already apply. The same payload also reaches `sync_runs.input_snapshot` — found while fixing this, not in the review — and the notice covers that too. |
+| **P2** Deletion skipped filesystem cleanup entirely when `BEACONAI_ENGINE_DIR` was unset, although the engine runs against `<repo>/engine` in that case; and a removal failing after the commit lost the `store_id` values needed to retry. | One resolver (`services/enginePaths.js`) used by both the engine runner and deletion. Cleanup targets are recorded in `clean.pending_file_cleanup` inside the deletion's transaction, before the snapshot rows that name them are erased, and cleared only once the directory is gone. A failure is reported by the CLI, listed by `privacy:pending`, and retried with `store:cleanup-files`. |
+
+Also fixed while verifying: `npm run test:db` did not set `DATABASE_URL` for the child process, so any test file that loaded `src/config` without going through `tests/helpers/db` read the developer's own `api/.env` — the suite passed or failed on a file that is not in the repository, and pointed at a real database on machines that had one.
+
+**Next minimisation step** (not in this PR): `clean.orders.raw` and `sync_runs.input_snapshot`. The snapshot's
+`Billing Name`, `Shipping Province` and `Shipping Country` columns have no reader in the engine at all; `Customer
+Email` is read as an identity column but `customer_id` already carries the same identity. Removing them changes
+engine input, so it needs its own change and its own verification rather than riding along with a security fix.

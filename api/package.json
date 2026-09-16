@@ -12,7 +12,10 @@
     "store:report": "node src/scripts/storeData.js report",
     "store:export": "node src/scripts/storeData.js export",
     "store:delete": "node src/scripts/storeData.js delete",
-    "privacy:pending": "node src/scripts/storeData.js pending"
+    "privacy:pending": "node src/scripts/storeData.js pending",
+    "store:cleanup-files": "node src/scripts/storeData.js cleanup-files",
+    "privacy:export": "node src/scripts/storeData.js privacy-export",
+    "privacy:deliver": "node src/scripts/storeData.js privacy-deliver"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

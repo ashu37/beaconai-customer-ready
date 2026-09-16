@@ -14,7 +14,10 @@ const {
   countStoreData,
   deleteStoreData,
   exportStoreData,
+  pendingFileCleanup,
+  runFileCleanup,
 } = require("../src/services/storeDataService");
+const { engineDir, engineStoreDir } = require("../src/services/enginePaths");
 
 // PR B, B3: one store's data, exported and erased — derived rows included.
 
@@ -156,14 +159,19 @@ suite("deleting a store leaves zero rows for it in every table, and the next sto
   await populate(THEIRS);
 
   const before = await countStoreData(MINE);
-  for (const { table } of STORE_TABLES) {
+  for (const { table, writtenByDeletion } of STORE_TABLES) {
+    if (writtenByDeletion) continue;
     assert.ok(before[table] > 0, `${table} has no row to delete — the test proves nothing about it`);
   }
 
   const result = await deleteStoreData(MINE);
 
   const after = await countStoreData(MINE);
-  for (const { table, retain } of STORE_TABLES) {
+  for (const { table, retain, writtenByDeletion } of STORE_TABLES) {
+    if (writtenByDeletion) {
+      assert.equal(after[table], 1, `${table} should record the store's engine files`);
+      continue;
+    }
     if (retain) {
       assert.equal(after[table], 1, `${table} is kept deliberately: ${retain}`);
       assert.equal(result.retained[table].reason, retain);
@@ -191,7 +199,8 @@ suite("deleting a store leaves zero rows for it in every table, and the next sto
   assert.equal(leaked.rows[0].n, 0);
 
   const theirs = await countStoreData(THEIRS);
-  for (const { table } of STORE_TABLES) {
+  for (const { table, writtenByDeletion } of STORE_TABLES) {
+    if (writtenByDeletion) continue;
     assert.ok(theirs[table] > 0, `${table} lost the other store's rows`);
   }
 });
@@ -208,7 +217,11 @@ suite("deletion is all or nothing", async () => {
   try {
     await assert.rejects(() => deleteStoreData(MINE));
     const after = await countStoreData(MINE);
-    for (const { table } of STORE_TABLES) {
+    for (const { table, writtenByDeletion } of STORE_TABLES) {
+      if (writtenByDeletion) {
+        assert.equal(after[table], 0, `${table} kept a record of a deletion that never happened`);
+        continue;
+      }
       assert.ok(after[table] > 0, `${table} was deleted although the deletion failed`);
     }
   } finally {
@@ -247,8 +260,8 @@ suite("an export hands over the store's data without handing over its credential
   try {
     const manifest = await exportStoreData(MINE, outDir);
     assert.equal(manifest.shopDomain, MINE);
-    for (const { table } of STORE_TABLES) {
-      assert.equal(manifest.counts[table], 1, `${table} missing from the export`);
+    for (const { table, writtenByDeletion } of STORE_TABLES) {
+      assert.equal(manifest.counts[table], writtenByDeletion ? 0 : 1, `${table} missing from the export`);
     }
 
     const customers = JSON.parse(await fs.readFile(path.join(outDir, "clean_customers.json"), "utf8"));
@@ -266,5 +279,89 @@ suite("an export hands over the store's data without handing over its credential
     }
   } finally {
     await fs.rm(outDir, { recursive: true, force: true });
+  }
+});
+
+// --- Review findings on PR #63 ----------------------------------------------
+
+suite("deletion removes engine files in the default location too", async () => {
+  await db.resetDatabase();
+  await populate(MINE, { storeId: "mine-store" });
+
+  // The configuration the review found: BEACONAI_ENGINE_DIR unset, so the
+  // engine runs against <repo>/engine and deletion used to skip files entirely.
+  const saved = process.env.BEACONAI_ENGINE_DIR;
+  delete process.env.BEACONAI_ENGINE_DIR;
+  const dir = engineStoreDir("mine-store");
+  try {
+    assert.equal(dir, path.join(engineDir(), "data", "mine-store"));
+    assert.equal(dir, engineStoreDir("mine-store", null), "one resolver, both callers");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, "audience.csv"), "customer_id\nc1\n");
+
+    const result = await deleteStoreData(MINE);
+    assert.deepEqual(result.engineFiles, [dir], "the default engine directory was skipped");
+    await assert.rejects(() => fs.stat(dir));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    if (saved === undefined) delete process.env.BEACONAI_ENGINE_DIR;
+    else process.env.BEACONAI_ENGINE_DIR = saved;
+  }
+});
+
+suite("a file removal that fails after the commit stays findable and retryable", async () => {
+  await db.resetDatabase();
+  await populate(MINE, { storeId: "mine-store" });
+
+  const engineDirPath = await fs.mkdtemp(path.join(os.tmpdir(), "beaconai-engine-"));
+  const storeDir = path.join(engineDirPath, "data", "mine-store");
+  await fs.mkdir(storeDir, { recursive: true });
+  await fs.writeFile(path.join(storeDir, "audience.csv"), "customer_id\nc1\n");
+
+  // Make the removal fail: the parent is read-only, so the child cannot go.
+  const dataRoot = path.join(engineDirPath, "data");
+  await fs.chmod(dataRoot, 0o500);
+  try {
+    const result = await deleteStoreData(MINE, { engineDir: engineDirPath });
+    assert.deepEqual(result.engineFiles, []);
+    assert.equal(result.engineFileFailures.length, 1, "a failed removal was reported as success");
+
+    // The snapshot rows that named the path are gone, so the record has to be
+    // what makes the retry possible.
+    const snapshots = await query(`SELECT count(*)::int AS n FROM clean.engine_run_snapshots WHERE shop_domain = $1`, [MINE]);
+    assert.equal(snapshots.rows[0].n, 0);
+    const outstanding = await pendingFileCleanup(MINE);
+    assert.equal(outstanding.length, 1);
+    assert.equal(outstanding[0].store_id, "mine-store");
+    assert.ok(outstanding[0].last_error, "the reason it failed is recorded");
+
+    // Fix the cause, retry, and the record clears.
+    await fs.chmod(dataRoot, 0o700);
+    const retry = await runFileCleanup(MINE, { engineDir: engineDirPath });
+    assert.deepEqual(retry.removed, [storeDir]);
+    assert.deepEqual(retry.failed, []);
+    await assert.rejects(() => fs.stat(storeDir));
+    assert.deepEqual(await pendingFileCleanup(MINE), []);
+  } finally {
+    await fs.chmod(dataRoot, 0o700).catch(() => {});
+    await fs.rm(engineDirPath, { recursive: true, force: true });
+  }
+});
+
+suite("a store_id that would escape the engine data directory is never removed", async () => {
+  await db.resetDatabase();
+  await populate(MINE, { storeId: "../../etc" });
+
+  const engineDirPath = await fs.mkdtemp(path.join(os.tmpdir(), "beaconai-engine-"));
+  try {
+    const result = await deleteStoreData(MINE, { engineDir: engineDirPath });
+    assert.deepEqual(result.engineFiles, []);
+    assert.deepEqual(result.engineFileFailures, []);
+    // Closed rather than retried for ever, with the reason recorded.
+    assert.deepEqual(await pendingFileCleanup(MINE), []);
+    const row = await query(`SELECT last_error FROM clean.pending_file_cleanup WHERE shop_domain = $1`, [MINE]);
+    assert.match(row.rows[0].last_error, /does not resolve inside/);
+  } finally {
+    await fs.rm(engineDirPath, { recursive: true, force: true });
   }
 });
