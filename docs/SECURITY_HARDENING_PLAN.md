@@ -203,3 +203,25 @@ role that cannot read anything.
    - Compliance webhook URLs (PR B) point at `…/api/webhooks/shopify`.
 8. Merchant journey test after both: install → authorize → open from Shopify Apps → arrives at the
    correct store → close and reopen. Repeat in a fresh browser session.
+
+## PR A verified on Render (2026-09-16)
+
+| Check | Result |
+|---|---|
+| Runtime role | `beaconai_app`: not superuser, no BYPASSRLS, owns no tables |
+| Boundary self-check | No problems; RLS on all 28 tables, each with the application policy |
+| Supabase API roles | `anon`, `authenticated`: no schema usage, no table grants, no policies |
+| Stored integration tokens | 3 of 3 open with the current key; none previous, plaintext or undecryptable |
+| Reads under the new role | Campaigns, sync status, latest run and results all load |
+| Sign-in | Old signature-only sessions refused; Shopify sign-in issues a new server-side session |
+| Sign out | Session revoked server-side; the app returns to signed-out |
+| Unsigned webhook | 401 |
+
+Deployment notes: `beaconai_app` needed `GRANT CONNECT ON DATABASE postgres` (Supabase does not grant it
+by default), and `MIGRATION_DATABASE_URL` must hold the OWNER connection — unset, the schema step ran as
+the application role and failed with "permission denied for database postgres" (fixed in #62: production
+refuses that configuration and startup errors name the connection).
+
+Still to do from the founder list: MFA everywhere, Supabase Data API exposed-schemas check, a tested
+restore, Shopify app configuration (embedded off, App URL, callbacks), and removing production
+credentials from the local `api/.env`.

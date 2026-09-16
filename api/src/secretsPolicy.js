@@ -20,6 +20,26 @@ function secretProblems(name, value) {
 }
 
 /**
+ * Schema changes belong to the table owner, and requests to the least-privilege
+ * role. Unset, MIGRATION_DATABASE_URL falls back to DATABASE_URL — fine in
+ * development, wrong in production, where it silently runs CREATE SCHEMA as the
+ * application role and fails with "permission denied for database".
+ *
+ * @param {Record<string, string|undefined>} env
+ * @returns {string[]} problems
+ */
+function productionDatabaseProblems(env = process.env) {
+  if (env.NODE_ENV !== "production") return [];
+  const problems = [];
+  if (!env.MIGRATION_DATABASE_URL) {
+    problems.push("MIGRATION_DATABASE_URL is not set. It must be the owner connection used for schema changes, grants and policies.");
+  } else if (env.MIGRATION_DATABASE_URL === env.DATABASE_URL) {
+    problems.push("MIGRATION_DATABASE_URL must differ from DATABASE_URL: the owner makes schema changes, the application role serves requests.");
+  }
+  return problems;
+}
+
+/**
  * @param {Record<string, string|undefined>} env
  * @returns {string[]} problems; empty when the configuration may run
  */
@@ -45,4 +65,4 @@ function productionSecretProblems(env = process.env) {
   return problems;
 }
 
-module.exports = { MIN_SECRET_LENGTH, productionSecretProblems };
+module.exports = { MIN_SECRET_LENGTH, productionDatabaseProblems, productionSecretProblems };

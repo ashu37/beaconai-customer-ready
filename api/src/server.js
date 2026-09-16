@@ -5,7 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const { config } = require("./config");
-const { productionSecretProblems } = require("./secretsPolicy");
+const { productionDatabaseProblems, productionSecretProblems } = require("./secretsPolicy");
 const { requestLogger } = require("./requestLog");
 const { initSchema } = require("./schema");
 const { router } = require("./routes");
@@ -105,7 +105,7 @@ app.get("*", (req, res, next) => {
 async function start() {
   // Before listening: a production instance with a missing, default, short or
   // shared secret must not serve a single request.
-  const secretProblems = productionSecretProblems(process.env);
+  const secretProblems = [...productionSecretProblems(process.env), ...productionDatabaseProblems(process.env)];
   if (secretProblems.length) {
     for (const problem of secretProblems) console.error(`[config] ${problem}`);
     console.error("[config] Refusing to start. Fix the environment and redeploy.");
@@ -117,12 +117,22 @@ async function start() {
   });
 
   try {
-    await initSchema();
+    // Named connections: a failure here is the OWNER connection's, and saying so
+    // is the difference between checking the right variable and the wrong one.
+    try {
+      await initSchema();
+    } catch (error) {
+      throw Object.assign(
+        new Error(`Schema step failed on the owner connection (${config.migrationDatabaseUrl ? "MIGRATION_DATABASE_URL" : "DATABASE_URL, no MIGRATION_DATABASE_URL set"}): ${error.message}`),
+        { cause: error }
+      );
+    }
     // The boundary as the APPLICATION connection sees it. In production a
     // superuser, BYPASSRLS or owner runtime role, or any API-role access to
     // clean/raw, keeps the instance not-ready rather than serving customer data
     // over a boundary that isn't there.
-    const report = await inspectDatabaseSecurity(query, { appRole: config.appDbRole });
+    const report = await inspectDatabaseSecurity(query, { appRole: config.appDbRole })
+      .catch((error) => { throw Object.assign(new Error(`Security check failed on the application connection (DATABASE_URL): ${error.message}`), { cause: error }); });
     const problems = databaseSecurityProblems(report);
     recordDatabaseSecurity({ report, problems });
     if (problems.length) {

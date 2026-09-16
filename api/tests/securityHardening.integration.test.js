@@ -10,7 +10,7 @@ const axios = require("axios");
 const { query } = require("../src/db");
 const { config, DEV_SECRET } = require("../src/config");
 const { startApi } = require("./helpers/httpApp");
-const { productionSecretProblems } = require("../src/secretsPolicy");
+const { productionDatabaseProblems, productionSecretProblems } = require("../src/secretsPolicy");
 const { encryptToken, decryptToken, inspectToken, tokenKeyHealth } = require("../src/services/tokenCrypto");
 const { redactUrl, requestLogger } = require("../src/requestLog");
 const { safeReturnTo } = require("../src/services/oauthService");
@@ -86,6 +86,20 @@ test("production refuses missing, default, short, shared or weak secrets", () =>
   }
   // Development keeps its fallbacks.
   assert.deepEqual(productionSecretProblems({ NODE_ENV: "development" }), []);
+});
+
+test("production refuses to run schema changes as the application role", () => {
+  // The failure this prevents: unset, the owner connection falls back to
+  // DATABASE_URL and CREATE SCHEMA fails with "permission denied for database".
+  const base = { NODE_ENV: "production", DATABASE_URL: "postgres://beaconai_app:x@host/postgres" };
+  assert.match(productionDatabaseProblems(base)[0], /MIGRATION_DATABASE_URL is not set/);
+  assert.match(
+    productionDatabaseProblems({ ...base, MIGRATION_DATABASE_URL: base.DATABASE_URL })[0],
+    /must differ from DATABASE_URL/
+  );
+  assert.deepEqual(productionDatabaseProblems({ ...base, MIGRATION_DATABASE_URL: "postgres://postgres:y@host/postgres" }), []);
+  // Development runs from one connection.
+  assert.deepEqual(productionDatabaseProblems({ NODE_ENV: "development" }), []);
 });
 
 test("splitting the session secret leaves stored integration tokens readable", () => {
