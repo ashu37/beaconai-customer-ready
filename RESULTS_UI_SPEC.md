@@ -2,7 +2,7 @@
 
 **Status: revised September 10, 2026 with the founder's UX choices, and implemented in Ticket G (PR #42).** **Ticket G's UI is separate from program measurement**, which stays gated by Ticket F's draft protocol. No program figure appears until Ticket H.
 
-Scope authority: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), "Before Ticket G" and Ticket G. Design context: [SELLABILITY_UX_REVIEW.md](SELLABILITY_UX_REVIEW.md) §4, used for wording and hierarchy only. Excluded: tabs, search, date filters, a detail route, metric cards, charts, and an analytics framework.
+Scope: Ticket G (see [docs/HISTORY.md](docs/HISTORY.md) and PR #42). Excluded: tabs, search, date filters, a detail route, metric cards, charts, and an analytics framework.
 
 Example numbers are **seed examples**.
 

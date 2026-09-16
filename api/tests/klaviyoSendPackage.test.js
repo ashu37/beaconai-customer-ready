@@ -2,6 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const axios = require("axios");
 
+// Imported for its side effect: it supplies a DATABASE_URL when one is not set,
+// so this file stops depending on whatever happens to be in a developer's
+// api/.env. It reads no database — src/config simply refuses to load without
+// the variable.
+require("./helpers/db");
 const { config } = require("../src/config");
 const { authorizationFor, createCampaignSendPackage, getKlaviyoSender } = require("../src/services/klaviyoClient");
 const { startFakeKlaviyo } = require("./helpers/fakeKlaviyo");
