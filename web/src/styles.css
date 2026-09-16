@@ -831,6 +831,27 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .group-table thead th { text-align: right; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
 .group-table tbody th { text-align: left; font-weight: 500; color: var(--ink-soft); }
 .group-table td { text-align: right; }
+/* Window progress: how far in, and when it answers. Replaces a date range and
+   two sentences of prose above the first figure. */
+.window-progress { display: flex; flex-direction: column; gap: 8px; }
+.window-progress-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.window-progress-day { font-family: var(--font-display); font-size: 15px; font-weight: 600; color: var(--ink); }
+.window-progress-end { font-size: 12.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.window-progress-track { height: 7px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--rule); overflow: hidden; }
+.window-progress-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+
+/* The two rows that answer "what happened". Purchasers sits beside revenue per
+   customer because it says how much evidence that figure rests on. */
+.group-table tbody tr.group-lead th { color: var(--ink); font-weight: 600; }
+.group-table tbody tr.group-lead td { font-size: 16px; font-weight: 600; color: var(--ink-strong); font-family: var(--font-display); }
+.group-table tbody tr.group-lead + tr:not(.group-lead) th,
+.group-table tbody tr.group-lead + tr:not(.group-lead) td { padding-top: 11px; }
+
+/* Provenance, inside the methodology disclosure. */
+.provenance { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; font-size: 12.5px; }
+.provenance dt { color: var(--ink-soft); }
+.provenance dd { margin: 0; font-variant-numeric: tabular-nums; }
+
 .result-notes { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--ink-soft); line-height: 1.55; }
 .result-warn { margin: 0; font-size: 12.5px; color: #8a6015; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .disclosure-btn { background: none; border: 0; padding: 6px 0; font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); cursor: pointer; display: inline-flex; gap: 8px; align-items: center; min-height: 36px; }

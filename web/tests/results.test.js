@@ -143,6 +143,18 @@ const rowButton = (name) => [...document.querySelectorAll("button.result-row")].
 test.beforeEach(() => { payload = freshPayload(); failNext = false; originalCalls.length = 0; });
 test.afterEach(() => cleanup());
 
+
+// Send, sync and calculation provenance lives inside "How this is measured, and
+// when" — visible on request rather than above the first figure. Tests that
+// assert it open the disclosure, so "it moved" stays distinguishable from
+// "it went".
+async function openMethodology(detail) {
+  await act(async () => {
+    fireEvent.click(within(detail).getByRole("button", { name: /How this is measured/ }));
+  });
+  return detail;
+}
+
 test("rows say 'assigned to receive' and carry an explicit 30-day result; the program band has no figure", async () => {
   await openResults();
   const text = document.body.textContent;
@@ -176,7 +188,10 @@ test("the expanded detail follows the selected window; the row stays on 30 days"
   assert.match(detail.textContent, /\$6\.02/);
   assert.doesNotMatch(detail.textContent, /may have been included in other BeaconAI campaigns/, "no other exposure in the 30-day window");
   assert.match(detail.textContent, /A comparison isn't reported yet/);
-  assert.match(detail.textContent, /Sent count unavailable/);
+  assert.match(detail.textContent, /Day \d+ of 30|30-day window complete/, "the window's progress leads the detail");
+  assert.doesNotMatch(detail.textContent, /Sent count unavailable/, "provenance is not above the figures any more");
+  await openMethodology(detail);
+  assert.match(detail.textContent, /Sent count unavailable from Klaviyo/, "but it is still one click away");
 
   // Switch to 60: figures, dates, exposure all follow.
   await act(async () => { fireEvent.click(within(detail).getByLabelText(/^60 days/)); });
@@ -229,8 +244,9 @@ test("stale store data is flagged even when the calculation is fresh, with a re-
   assert.ok(screen.getByRole("button", { name: "Re-sync store" }));
   await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
   const detail = document.getElementById("result-detail-2");
+  assert.match(detail.textContent, /The store data behind these figures is over 24 hours old/, "the warning stays visible");
+  await openMethodology(detail);
   assert.match(detail.textContent, /Calculated/);
-  assert.match(detail.textContent, /The store data behind these figures is over 24 hours old/);
 });
 
 test("an unconfirmed send is listed with its delivery state and no result", async () => {
@@ -313,10 +329,11 @@ test("figures from a superseded sync say so and offer a recalculation; the expos
   await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
   const detail = document.getElementById("result-detail-2");
   assert.match(detail.textContent, /Newer store data is available\. These figures still use the sync from Sep 1, 2026/);
-  assert.match(detail.textContent, /from the store sync of Sep 1, 2026/);
   assert.ok(within(detail).getByRole("button", { name: "Recalculate" }));
   assert.match(detail.textContent, /The store data behind these figures is over 24 hours old/);
   assert.match(detail.textContent, /Other BeaconAI campaign exposure may not be fully identified\./);
+  await openMethodology(detail);
+  assert.match(detail.textContent, /from the store sync of Sep 1, 2026/);
 });
 
 test("a seeded demonstration shows a persistent sample-data banner; a real shop does not", async () => {
@@ -344,4 +361,58 @@ test("a window whose stored figures come from different calculations shows no fi
   assert.match(detail.textContent, /come from different calculations, so they aren't shown/);
   assert.equal(detail.querySelector("table"), null, "no group table");
   assert.doesNotMatch(detail.textContent, /\$6\.02/);
+});
+
+test("an open window leads with its progress, and a closed one says so", async () => {
+  await openResults();
+  // Campaign 1's 30-day window is open at day 5 (see the fixture above).
+  await act(async () => { fireEvent.click(rowButton("Bring back lapsed customers")); });
+  const detail = document.getElementById("result-detail-1");
+
+  const bar = detail.querySelector('[role="progressbar"]');
+  assert.ok(bar, "an open window has a progress bar");
+  assert.equal(bar.getAttribute("aria-valuenow"), "5");
+  assert.equal(bar.getAttribute("aria-valuemax"), "30");
+  assert.match(detail.textContent, /Day 5 of 30/);
+  assert.match(detail.textContent, /Result on/, "and when it answers");
+  // The sentence the bar replaces is gone; the qualification it carried is not.
+  assert.doesNotMatch(detail.textContent, /Still measuring\. Review the 30-day result on/);
+  assert.match(detail.textContent, /Figures so far are partial and will change/);
+
+  // Campaign 2's 30-day window is complete.
+  await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
+  const done = document.getElementById("result-detail-2");
+  assert.match(done.textContent, /30-day window complete/);
+  assert.equal(done.querySelector('[role="progressbar"]').getAttribute("aria-valuenow"), "30");
+});
+
+test("the group table leads with revenue per customer and purchasers, and keeps every other figure", async () => {
+  await openResults();
+  await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
+  const table = document.querySelector("#result-detail-2 table");
+  const rows = [...table.querySelectorAll("tbody tr")];
+
+  assert.deepEqual(
+    rows.map((tr) => tr.querySelector("th").textContent),
+    ["Revenue per customer", "Unique purchasers", "Customers", "Orders", "Revenue, net of refunds"],
+    "the two rows that answer 'what happened' come first"
+  );
+  // Purchasers is what says how much evidence the money rests on, so it is
+  // weighted with it rather than sitting mid-table in the same grey.
+  assert.deepEqual(
+    rows.filter((tr) => tr.className.includes("group-lead")).map((tr) => tr.querySelector("th").textContent),
+    ["Revenue per customer", "Unique purchasers"]
+  );
+  assert.deepEqual([...rows[3].querySelectorAll("td")].map((td) => td.textContent), ["70", "6"], "orders kept");
+});
+
+test("the two group figures are not repeated above the table that carries them", async () => {
+  await openResults();
+  await act(async () => { fireEvent.click(rowButton("Reduce discount dependency")); });
+  const detail = document.getElementById("result-detail-2");
+  const above = detail.textContent.slice(0, detail.textContent.indexOf("Assigned to receive"));
+  assert.doesNotMatch(above, /Assigned to receive \$[\d.]+ per customer/);
+  assert.doesNotMatch(detail.textContent, /Early observation/, "the row already says this; the detail need not");
+  // The figures themselves are still there, in the table.
+  assert.match(detail.textContent, /\$6\.02/);
 });

@@ -1459,7 +1459,7 @@ function Chip({ label, tone }) {
 function assessmentSentence(w, source) {
   switch (w?.assessment?.state) {
     case "measuring":
-      return `Still measuring. Review the ${w.windowDays}-day result on ${formatDay(w.end)}.`;
+      return "Figures so far are partial and will change. No comparison is made until the window closes.";
     case "insufficient_data":
       return "Too few customers or purchasers in one group to compare them.";
     case "awaiting_order_data":
@@ -1532,6 +1532,69 @@ function ThirtyDayBlock({ w }) {
       {sub ? <span className="result-30-sub">{sub}</span> : null}
       {w?.assessment?.state === "measuring" ? <span className="result-30-sub">day {w.daysElapsed} of {w.windowDays}</span> : null}
     </span>
+  );
+}
+
+// Where the window has got to, as a shape rather than a sentence.
+//
+// This replaces two lines of prose and a date range ("Sep 10 – Oct 10 · day 5
+// of 30", "Still measuring. Review the 30-day result on Oct 10, 2026.") with
+// the two things a merchant actually wants from an open window: how far in it
+// is, and when it answers.
+function WindowProgress({ w }) {
+  const elapsed = Math.min(Math.max(Number(w.daysElapsed) || 0, 0), w.windowDays);
+  const pct = w.complete ? 100 : Math.round((elapsed / w.windowDays) * 1000) / 10;
+  const label = w.complete
+    ? `${w.windowDays}-day window complete`
+    : `Day ${elapsed} of ${w.windowDays}`;
+  const end = formatDay(w.end);
+  return (
+    <div className="window-progress">
+      <div className="window-progress-row">
+        <span className="window-progress-day">{label}</span>
+        <span className="window-progress-end">
+          {w.complete ? `${formatDay(w.start)} – ${end}` : end ? `Result on ${end}` : null}
+        </span>
+      </div>
+      {/* Only while it is running. A full bar on a finished window is a meter
+          that measures nothing, and at this weight it reads as a stray rule. */}
+      <div
+        className={`window-progress-track${w.complete ? " sr-only" : ""}`}
+        role="progressbar"
+        aria-valuenow={elapsed}
+        aria-valuemin={0}
+        aria-valuemax={w.windowDays}
+        aria-label={`${label}${end ? `, ending ${end}` : ""}`}
+      >
+        <div className="window-progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+// Send, sync and calculation provenance. Every line of it was above the first
+// figure; none of it is what a merchant opens Results to read, and all of it
+// still has to be reachable. It lives inside "How this is measured" now.
+function MeasurementProvenance({ result, w }) {
+  const count = result.delivery?.providerSentCount;
+  return (
+    <dl className="provenance">
+      <dt>Sent</dt>
+      <dd>{formatDay(result.sentAt, { time: true })}, confirmed by Klaviyo</dd>
+      <dt>Sent count</dt>
+      <dd>{count == null ? "Sent count unavailable from Klaviyo" : count.toLocaleString("en-US")}</dd>
+      <dt>Window</dt>
+      <dd>{formatDay(w.start)} – {formatDay(w.end)}</dd>
+      <dt>Last sync</dt>
+      <dd>{formatDay(result.source?.lastSuccessfulSyncAt, { time: true }) || "not available"}</dd>
+      <dt>Calculated</dt>
+      <dd>
+        {formatDay(w.calculatedAt, { time: true }) || "not yet"}
+        {w.calculatedFrom?.lastSuccessfulSyncAt
+          ? ` from the store sync of ${formatDay(w.calculatedFrom.lastSuccessfulSyncAt, { time: true })}`
+          : ""}
+      </dd>
+    </dl>
   );
 }
 
@@ -1631,17 +1694,11 @@ function ResultDetail({ result, onRetry }) {
   const windows = result.windows || [];
   const w = windows.find((x) => x.windowDays === windowDays) || windows[0];
   const chip = ASSESSMENT_CHIP[w?.assessment?.state] || UNKNOWN_CHIP;
-  const count = result.delivery?.providerSentCount;
   const exposureNote = EXPOSURE_NOTE[w?.otherExposure?.status] || null;
   const detailId = `result-detail-${result.campaignId}`;
 
   return (
     <div id={detailId} className="result-detail" role="region" aria-label={`Result details, ${windowDays} days`} tabIndex={-1} ref={ref}>
-      <div className="result-meta">
-        <span>Sent {formatDay(result.sentAt, { time: true })}, confirmed by Klaviyo</span>
-        <span>{count == null ? "Sent count unavailable" : `Klaviyo sent ${count.toLocaleString("en-US")}`}</span>
-      </div>
-
       <fieldset className="window-radios">
         <legend>Window</legend>
         {RESULT_WINDOWS.map((days) => {
@@ -1663,14 +1720,7 @@ function ResultDetail({ result, onRetry }) {
 
       {w ? (
         <>
-          <div className="result-meta">
-            <span>{formatDay(w.start)} – {formatDay(w.end)} · {w.complete ? "complete" : `day ${w.daysElapsed} of ${w.windowDays}`}</span>
-            <span>
-              Last successful sync {formatDay(result.source?.lastSuccessfulSyncAt, { time: true }) || "not available"}
-              {" · "}Calculated {formatDay(w.calculatedAt, { time: true }) || "not yet"}
-              {w.calculatedFrom?.lastSuccessfulSyncAt ? ` from the store sync of ${formatDay(w.calculatedFrom.lastSuccessfulSyncAt, { time: true })}` : ""}
-            </span>
-          </div>
+          <WindowProgress w={w} />
           {w.sourceSuperseded ? (
             <p className="result-warn" role="status">
               Newer store data is available. These figures still use the sync from {formatDay(w.calculatedFrom?.lastSuccessfulSyncAt, { time: true }) || "an earlier sync"}.
@@ -1694,17 +1744,15 @@ function ResultDetail({ result, onRetry }) {
 
           <p className="result-outcome"><Chip {...chip} /> {assessmentSentence(w, result.source)}</p>
 
-          {w.assigned ? (
+          {/* Only the comparison, and only when there is one. The two group
+              figures used to be repeated here as a sentence directly above the
+              table that already carries them. */}
+          {w.comparison ? (
             <div className="result-comparison">
-              {w.assessment.state === "measuring" ? <span className="result-early">Early observation</span> : null}
-              <span>Assigned to receive <strong>{perCustomer(w.assigned.revenuePerCustomer)}</strong> per customer</span>
-              <span>Held back <strong>{perCustomer(w.heldBack?.revenuePerCustomer)}</strong> per customer</span>
-              {w.comparison ? (
-                <span>
-                  Difference <strong>{signedMoney(w.comparison.difference)}</strong> per customer
-                  {" "}(95% range {signedMoney(w.comparison.low)} to {signedMoney(w.comparison.high)})
-                </span>
-              ) : null}
+              <span>
+                Difference <strong>{signedMoney(w.comparison.difference)}</strong> per customer
+                {" "}(95% range {signedMoney(w.comparison.low)} to {signedMoney(w.comparison.high)})
+              </span>
             </div>
           ) : null}
           {w.comparison ? (
@@ -1721,12 +1769,18 @@ function ResultDetail({ result, onRetry }) {
                 <thead>
                   <tr><td /><th scope="col">Assigned to receive</th><th scope="col">Held back</th></tr>
                 </thead>
+                {/* The two rows that answer "what happened" lead, and carry the
+                    weight. Purchasers sits beside revenue per customer because
+                    it is what says how much evidence that figure rests on: a
+                    holdout with one purchaser, or none, is the whole story and
+                    used to be the fourth grey row of five. The supporting
+                    counts keep their place below; nothing was removed. */}
                 <tbody>
+                  <tr className="group-lead"><th scope="row">Revenue per customer</th><td>{perCustomer(w.assigned.revenuePerCustomer)}</td><td>{perCustomer(w.heldBack?.revenuePerCustomer)}</td></tr>
+                  <tr className="group-lead"><th scope="row">Unique purchasers</th><td>{countOrDash(w.assigned.purchasers)}</td><td>{countOrDash(w.heldBack?.purchasers)}</td></tr>
                   <tr><th scope="row">Customers</th><td>{countOrDash(w.assigned.customers)}</td><td>{countOrDash(w.heldBack?.customers)}</td></tr>
-                  <tr><th scope="row">Unique purchasers</th><td>{countOrDash(w.assigned.purchasers)}</td><td>{countOrDash(w.heldBack?.purchasers)}</td></tr>
                   <tr><th scope="row">Orders</th><td>{countOrDash(w.assigned.orders)}</td><td>{countOrDash(w.heldBack?.orders)}</td></tr>
                   <tr><th scope="row">Revenue, net of refunds</th><td>{w.assigned.revenue == null ? "—" : money(w.assigned.revenue, { cents: true })}</td><td>{w.heldBack?.revenue == null ? "—" : money(w.heldBack.revenue, { cents: true })}</td></tr>
-                  <tr><th scope="row">Revenue per customer</th><td>{perCustomer(w.assigned.revenuePerCustomer)}</td><td>{perCustomer(w.heldBack?.revenuePerCustomer)}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1738,12 +1792,13 @@ function ResultDetail({ result, onRetry }) {
             <li>{OTHER_MARKETING_NOTE}</li>
           </ul>
 
-          <Disclosure label="How this is measured">
+          <Disclosure label="How this is measured, and when">
             <p>
               We compare customers assigned to receive this campaign with customers held back from it, from{" "}
               {formatDay(w.start)} to {formatDay(w.end)}. Revenue is net of refunds; cancelled and test orders are
               excluded. It is not profit. Customers Klaviyo did not deliver to stay in the assigned group.
             </p>
+            <MeasurementProvenance result={result} w={w} />
           </Disclosure>
         </>
       ) : null}
