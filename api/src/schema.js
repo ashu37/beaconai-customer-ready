@@ -922,6 +922,7 @@ async function initSchema() {
   }
 
   await minimiseStoredCustomerData();
+  await dropCompletedDateBackup(Boolean(migrationReport));
 
   // Last, so every table created above is covered: grants to the application
   // role only, nothing to the Supabase API roles, row-level security on.
@@ -959,6 +960,27 @@ async function minimiseStoredCustomerData() {
   if (rows.length) {
     console.warn(`[schema] removed recipient details from ${rows.length} stored Klaviyo asset row(s).`);
   }
+}
+
+/**
+ * PR B, B2: drop clean.orders_date_backup once its migration is behind us.
+ *
+ * The table exists to make ONE rewrite reversible while it happens: the
+ * TIMESTAMPTZ conversion replaced each order's naive wall clock with the
+ * instant re-derived from clean.orders.raw. It has no readers, no views and no
+ * foreign keys, and it is not a disaster-recovery backup — those are the
+ * provider's, and the re-derivation's own source (orders.raw) is still stored,
+ * so the conversion remains auditable without it.
+ *
+ * `justMigrated` is the one case it is kept for: the conversion ran in THIS
+ * start, and the originals stay readable until the next one.
+ */
+async function dropCompletedDateBackup(justMigrated) {
+  if (justMigrated) return;
+  const { rows } = await query(`SELECT to_regclass('clean.orders_date_backup') IS NOT NULL AS present`);
+  if (!rows[0].present) return;
+  await query(`DROP TABLE clean.orders_date_backup`);
+  console.warn("[schema] dropped clean.orders_date_backup: its timezone migration is complete.");
 }
 
 module.exports = { initSchema };

@@ -6,6 +6,11 @@
 //   npm run seed:results            -- seed
 //   npm run seed:results -- --clean -- remove everything it created
 //
+// It runs only against a database on this machine. To remove seed rows from a
+// hosted database, name it deliberately:
+//
+//   SEED_ALLOW_REMOTE=1 npm run seed:results -- --clean
+//
 // WHY A SEPARATE SHOP DOMAIN
 // Measurement reads clean.orders, so a demo needs orders in there — and the
 // engine reads the same table. Seeding into your real store would silently
@@ -23,6 +28,7 @@
 // measureCampaign — no mocks — so a bug in any of them fails this script.
 
 const { pool, query } = require("../db");
+const { assertSeedable } = require("./seedGuard");
 const { initSchema } = require("../schema");
 const { splitAudience } = require("../services/holdoutService");
 const { upsertCampaign, recordRecipients } = require("../services/campaignService");
@@ -262,6 +268,8 @@ async function seed() {
 
 (async () => {
   try {
+    // Before initSchema, so a refused run touches nothing at all.
+    assertSeedable();
     await initSchema();
     if (process.argv.includes("--clean")) await clean();
     else await seed();

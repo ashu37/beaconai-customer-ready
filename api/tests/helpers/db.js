@@ -24,7 +24,6 @@ const TABLES = [
   "clean.sync_runs",
   "clean.refunds",
   "clean.refunds_quarantine",
-  "clean.orders_date_backup",
   "clean.order_line_items",
   "clean.orders",
   "clean.customers",

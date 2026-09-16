@@ -330,3 +330,35 @@ suite("a migration that fails partway leaves the database untouched", async () =
   assert.deepEqual(after.rows.map((r) => r.date_provenance),
     ["unverified_assumed_utc", "rederived_from_raw"]);
 });
+
+// PR B, B2: the backup exists for the conversion, not forever.
+suite("the date backup survives the start that wrote it and is dropped after", async () => {
+  await db.resetDatabase();
+  await query(`DROP TABLE IF EXISTS clean.orders_date_backup`);
+  await query(`ALTER TABLE clean.orders ALTER COLUMN processed_at TYPE TIMESTAMP USING processed_at AT TIME ZONE 'UTC'`);
+  await query(`ALTER TABLE clean.orders ALTER COLUMN created_at TYPE TIMESTAMP USING created_at AT TIME ZONE 'UTC'`);
+  await query(`ALTER TABLE clean.orders DROP COLUMN IF EXISTS date_provenance`);
+  await query(
+    `INSERT INTO clean.orders (id, shop_domain, created_at, processed_at, total_price, raw)
+     VALUES ('b1', $1, '2025-11-15 16:15:35', '2025-11-15 16:15:35', 10,
+             '{"created_at":"2025-11-15T16:15:35-08:00","processed_at":"2025-11-15T16:15:35-08:00"}'::jsonb)`,
+    [SHOP]
+  );
+
+  await initSchema();
+  const during = await query(`SELECT to_regclass('clean.orders_date_backup') IS NOT NULL AS present`);
+  assert.equal(during.rows[0].present, true, "the originals are readable after the conversion's own start");
+  const kept = await query(`SELECT processed_at_naive::text AS t FROM clean.orders_date_backup`);
+  assert.deepEqual(kept.rows.map((r) => r.t), ["2025-11-15 16:15:35"]);
+
+  await initSchema();
+  const after = await query(`SELECT to_regclass('clean.orders_date_backup') IS NOT NULL AS present`);
+  assert.equal(after.rows[0].present, false, "a completed migration does not keep its scaffolding");
+
+  // And the conversion it backed up is still auditable: the source it derived
+  // from is clean.orders.raw, which is untouched.
+  const order = await query(`SELECT processed_at, date_provenance, raw ->> 'processed_at' AS source FROM clean.orders WHERE id = 'b1'`);
+  assert.equal(order.rows[0].date_provenance, "rederived_from_raw");
+  assert.equal(order.rows[0].source, "2025-11-15T16:15:35-08:00");
+  assert.equal(order.rows[0].processed_at.toISOString(), "2025-11-16T00:15:35.000Z");
+});
