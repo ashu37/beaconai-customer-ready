@@ -2,6 +2,7 @@
 // role's to make (databaseSecurity.js).
 const { migrationPool: pool, migrationQuery: query } = require("./db");
 const { applyAccessControls } = require("./services/databaseSecurity");
+const { minimiseKlaviyoAssetPayload } = require("./services/dataMinimisation");
 const { config } = require("./config");
 
 async function initSchema() {
@@ -192,8 +193,9 @@ async function initSchema() {
       created_at TIMESTAMP,
       state TEXT,
       email_marketing_consent JSONB,
-      tags TEXT,
-      raw JSONB
+      tags TEXT
+      -- No raw column: the full Shopify customer record is not stored. A
+      -- database created before B1 has it; minimiseStoredCustomerData drops it.
     );
   `);
 
@@ -831,18 +833,33 @@ async function initSchema() {
          WHERE date_provenance IS NULL
          RETURNING date_provenance;
       `);
-      const customers = await q(`
-        UPDATE clean.customers
-           SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                                 THEN (raw->>'created_at')::timestamptz ELSE created_at END,
-               date_provenance = CASE
-                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                   THEN 'rederived_from_raw'
-                 ELSE 'unverified_assumed_utc'
-               END
-         WHERE date_provenance IS NULL
-         RETURNING date_provenance;
+      // B1 drops clean.customers.raw, so the re-derivation above is available
+      // only to a database that still has it — which is exactly the database
+      // this migration exists for. Without the column there is nothing to
+      // re-derive from and the stored digits stand, flagged as unverified.
+      const customerRaw = await q(`
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'clean' AND table_name = 'customers' AND column_name = 'raw'
       `);
+      const customers = customerRaw.rowCount
+        ? await q(`
+            UPDATE clean.customers
+               SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                                     THEN (raw->>'created_at')::timestamptz ELSE created_at END,
+                   date_provenance = CASE
+                     WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                       THEN 'rederived_from_raw'
+                     ELSE 'unverified_assumed_utc'
+                   END
+             WHERE date_provenance IS NULL
+             RETURNING date_provenance;
+          `)
+        : await q(`
+            UPDATE clean.customers
+               SET date_provenance = 'unverified_assumed_utc'
+             WHERE date_provenance IS NULL
+             RETURNING date_provenance;
+          `);
       await q(`
         UPDATE clean.refunds
            SET created_at = (raw->>'created_at')::timestamptz
@@ -904,9 +921,44 @@ async function initSchema() {
     );
   }
 
+  await minimiseStoredCustomerData();
+
   // Last, so every table created above is covered: grants to the application
   // role only, nothing to the Supabase API roles, row-level security on.
   await applyAccessControls(query, { appRole: config.appDbRole });
+}
+
+/**
+ * PR B, B1: remove the copies of customer data nothing reads.
+ *
+ * Runs AFTER the TIMESTAMPTZ block above, and must: that migration re-derives
+ * each customer's created_at from `clean.customers.raw`, so the column can only
+ * go once it has had its turn. It is guarded by `date_provenance IS NULL`, so a
+ * row whose date is already established has no further use for `raw`.
+ *
+ * Dropping rather than clearing. An always-NULL column is an invitation to
+ * start writing it again, and the data is re-fetchable from Shopify in any case.
+ */
+async function minimiseStoredCustomerData() {
+  await query(`ALTER TABLE clean.customers DROP COLUMN IF EXISTS raw;`);
+
+  // Existing asset rows carry the recipient list that new rows no longer store.
+  // Rewritten through the same function the write path uses, so there is one
+  // definition of what an asset row may hold.
+  const { rows } = await query(
+    `SELECT id, payload FROM clean.klaviyo_assets
+      WHERE jsonb_typeof(payload -> 'audience' -> 'recipients') = 'array'
+         OR payload -> 'packageResult' IS NOT NULL`
+  );
+  for (const row of rows) {
+    await query(`UPDATE clean.klaviyo_assets SET payload = $2 WHERE id = $1`, [
+      row.id,
+      JSON.stringify(minimiseKlaviyoAssetPayload(row.payload)),
+    ]);
+  }
+  if (rows.length) {
+    console.warn(`[schema] removed recipient details from ${rows.length} stored Klaviyo asset row(s).`);
+  }
 }
 
 module.exports = { initSchema };

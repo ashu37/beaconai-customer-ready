@@ -19,6 +19,7 @@ const TABLES = [
   "clean.brand_email_active",
   "clean.brand_email_templates",
   "clean.engine_audiences",
+  "clean.klaviyo_assets",
   "clean.engine_run_snapshots",
   "clean.sync_runs",
   "clean.refunds",

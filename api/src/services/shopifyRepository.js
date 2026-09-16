@@ -57,18 +57,21 @@ async function upsertShop(shopDomain, shop, client) {
 async function upsertCustomers(shopDomain, customers, client) {
   const run = executor(client);
   for (const customer of customers || []) {
+    // No raw column. The full Shopify customer record — name, addresses,
+    // phone, notes, order history — was stored and never read; the columns
+    // below are what the engine and the audience build use. See
+    // services/dataMinimisation.js.
     await run(
       `
       INSERT INTO clean.customers
-      (id, shop_domain, email, created_at, state, email_marketing_consent, tags, raw)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      (id, shop_domain, email, created_at, state, email_marketing_consent, tags)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
       ON CONFLICT (id) DO UPDATE SET
         email = EXCLUDED.email,
         created_at = EXCLUDED.created_at,
         state = EXCLUDED.state,
         email_marketing_consent = EXCLUDED.email_marketing_consent,
-        tags = EXCLUDED.tags,
-        raw = EXCLUDED.raw
+        tags = EXCLUDED.tags
       `,
       [
         String(customer.id),
@@ -78,7 +81,6 @@ async function upsertCustomers(shopDomain, customers, client) {
         customer.state || null,
         json(customer.email_marketing_consent || null),
         customer.tags || null,
-        json(customer),
       ]
     );
   }
