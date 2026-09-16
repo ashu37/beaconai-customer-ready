@@ -16,7 +16,7 @@ const { config } = require("../config");
 
 const DEFAULT_WINDOWS = [30, 60, 90];
 const DAY_MS = 86400000;
-// Founder decision (RESULTS_UI_SPEC §1): 24 hours, applied SEPARATELY to the
+// Founder decision: 24 hours, applied SEPARATELY to the
 // store data and to the calculation. Recalculating old data does not make it
 // fresh.
 const FRESHNESS_MS = 24 * 3600000;
@@ -474,7 +474,7 @@ async function summarizeCampaign(campaignId, {
 // customer's pre-exposure spending landed in the outcome, and its order count was
 // hard-coded to zero. That is not a valid program comparison (plan, Ticket F).
 // The replacement is a prospective cohort with stored enrollment and assignment
-// (docs/MEASUREMENT_PROTOCOL.md); until it exists, this reports that no program
+// (see docs/HISTORY.md, "Still open"); until it exists, this reports that no program
 // number is available and why.
 async function summarizeProgram(shopDomain, { sinceDays = 90 } = {}) {
   const since = new Date(Date.now() - sinceDays * DAY_MS).toISOString();

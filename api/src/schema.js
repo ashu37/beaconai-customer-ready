@@ -454,7 +454,7 @@ async function initSchema() {
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS destination_url TEXT;`);
 
   // Ticket D — durable provider delivery state. See
-  // docs/PROVIDER_HANDOFF_CONTRACT.md, which was written before this and is the
+  // services/deliveryStateService.js, which owns the delivery states and is the
   // authority for what each value means.
   //
   // The rule these columns exist to enforce: BeaconAI may only assert what the
@@ -498,7 +498,7 @@ async function initSchema() {
   // editing them would rewrite the record of an email that has already left.
   await query(`ALTER TABLE clean.campaigns ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ;`);
 
-  // Campaign continuity (docs/CAMPAIGN_CONTINUITY_SPEC.md, step 3). An updated
+  // Campaign continuity (PR #54). An updated
   // draft made from an older one links both ways. The old draft is marked only
   // in the same transaction that created its replacement, so a failed creation
   // never leaves a draft superseded by nothing.

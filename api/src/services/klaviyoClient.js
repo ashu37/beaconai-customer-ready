@@ -40,7 +40,7 @@ function createKlaviyoClient(privateKey) {
 //                   their own Klaviyo templates, finishes the email and sends it
 //                   in Klaviyo. BeaconAI's copy is a suggestion, not the email.
 //
-// Checked against a real account (docs/PILOT_BLOCKERS_PLAN.md, 2026-09-15): a
+// Checked live against a real Klaviyo account (2026-09-15): a
 // draft without a template is accepted, and choosing a saved template in
 // Klaviyo's editor keeps the campaign id, name, audience, subject and preview.
 const HANDOFF_MODES = Object.freeze({

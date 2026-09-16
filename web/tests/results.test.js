@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
-// Ticket G's Results screen against RESULTS_UI_SPEC.md, fed a payload shaped
+// Ticket G's Results screen (PR #42, layout revised in #64), fed a payload shaped
 // exactly like GET /results. Sample data.
 const HOUR = 3600000;
 const DAY = 24 * HOUR;

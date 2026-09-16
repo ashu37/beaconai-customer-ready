@@ -32,7 +32,8 @@ const config = {
   // logged-in merchant's cookie to this API.
   corsOrigins: (process.env.CORS_ORIGINS || "")
     .split(",").map((origin) => origin.trim()).filter(Boolean),
-  // Campaign assessment policy (RESULTS_UI_SPEC §6.2). Unset by default: the
+  // Campaign assessment policy. The states it gates are in
+  // services/measurementService.js (assessWindow). Unset by default: the
   // floors and critical value await statistical review, and until all three
   // are set campaign results report descriptive figures with no comparison.
   campaignAssessmentPolicy: (() => {
