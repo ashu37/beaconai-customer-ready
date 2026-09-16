@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
 // Campaign continuity, step 3, against the REAL app: a new analysis's briefing
 // card links to the merchant's existing campaign for that play, and an updated
-// draft is made only when they ask for one (docs/CAMPAIGN_CONTINUITY_SPEC.md).
+// draft is made only when they ask for one (campaign continuity, PRs #52-#54).
 const require = createRequire(import.meta.url);
 const { presentEngineRun } = require("../../api/src/services/engineRunPresenter.js");
 

@@ -15,7 +15,7 @@ const {
 
 // Campaign continuity, step 3: an updated draft on the latest analysis, made
 // from an older draft only when the merchant asks for it
-// (docs/CAMPAIGN_CONTINUITY_SPEC.md, rule 2).
+// (campaign continuity, PR #53).
 const SHOP = "replacement-shop.myshopify.com";
 const OTHER_SHOP = "replacement-other.myshopify.com";
 const PLAY = "winback_dormant_cohort";

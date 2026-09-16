@@ -1378,7 +1378,7 @@ function IntervalBar({ low, high, point, tone = "null" }) {
 }
 
 // ---------------------------------------------------------------------------
-// Results — Ticket G, as specified in RESULTS_UI_SPEC.md.
+// Results — Ticket G (PR #42); this layout is PR #64.
 //
 // Every figure, date and sentence in an expanded result comes from ONE window
 // entry of the API response, so the detail can never mix windows. The row always

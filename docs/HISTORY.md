@@ -152,6 +152,51 @@ all 3 stored integration tokens decrypt with the current key. Sign-in, sign-out 
 - **One `SHOPIFY_CLIENT_SECRET` per deployment**, so a compromise of it affects every install. Per-merchant
   custom apps would narrow this; not yet decided.
 
+## Contracts that used to be separate documents
+
+Four specs were deleted once the code they described could be read directly and the tests enforced them.
+They drifted: the Results spec still described the layout that [#64](../../pull/64) replaced. What was
+load-bearing is here; the rest is in the PRs.
+
+### Results assessments
+
+The state is typed by the API (`assessWindow` in `api/src/services/measurementService.js`) and rendered by
+`ASSESSMENT_CHIP` / `assessmentSentence` in `web/src/App.jsx`. Nothing infers a verdict from numbers.
+
+| State | Shown as | When |
+|---|---|---|
+| `measuring` | Measuring | the window is still open |
+| `insufficient_data` | Insufficient data | **structural** impossibility only: fewer than 2 customers, or zero purchasers, in either group |
+| `awaiting_order_data` | Comparison unavailable | the window closed but order data does not reach its end |
+| `no_holdout` | Comparison unavailable | nobody was held back |
+| `assessment_policy_pending` | Comparison unavailable | a complete window with adequate data, and no configured policy — today, every completed campaign |
+| `higher_spending` / `lower_spending` | coloured | the 95% range sits entirely above or below zero |
+| `no_clear_difference` | No clear difference | the range includes zero |
+
+No threshold is invented anywhere else: the last three need a configured policy, and `insufficient_data`
+never stands in for one.
+
+### Program comparison
+
+Adding campaigns together is not reported, and will not be until a protocol is agreed: enrollment, identity
+across campaigns, holdout enforcement, a common start rule and an estimand. `measurementService.js` returns
+the reason instead of a figure, and the Results page prints it. A per-campaign result is not evidence about
+a programme.
+
+### Provider handoff
+
+`api/src/services/deliveryStateService.js` owns the delivery states; `web/src/deliveryPresentation.js`
+decides only what to call them. Two rules survive from the contract: a state advances to `created` **only**
+on a provider-confirmed campaign id, never a template or list id; and a provider call that may have acted
+but did not answer becomes `uncertain`, never `failed`. BeaconAI never sends.
+
+### Campaign continuity
+
+A campaign belongs to the run that produced it and survives a later analysis: the workspace is keyed by
+campaign, not by play ([#53](../../pull/53)); a new draft is created only when the merchant asks for one
+([#52](../../pull/52)); and an updated draft is explicit rather than a silent replacement
+([#54](../../pull/54)). A handed-off campaign is frozen.
+
 ## Where the living documents are
 
 Planning and review documents are not kept: they are in the pull requests that used them. What remains in
@@ -159,10 +204,11 @@ Planning and review documents are not kept: they are in the pull requests that u
 
 | Document | Why it stays |
 |---|---|
-| `MEASUREMENT_PROTOCOL.md` | Cited by `measurementService.js` for what a program comparison would require |
-| `PROVIDER_HANDOFF_CONTRACT.md` | The handoff modes and their safeguards |
-| `CAMPAIGN_CONTINUITY_SPEC.md` | How a campaign survives a new analysis |
 | `SECURITY_HARDENING_PLAN.md` | The security record and the retention policy the privacy notice depends on |
-| `PRIVACY_NOTICE.md`, `INCIDENT_RESPONSE.md` | Merchant-facing, and the one you reach for at 2am |
-| `../RESULTS_UI_SPEC.md` | Cited by `App.jsx` and the Results tests |
+| `PRIVACY_NOTICE.md` | Merchant-facing |
+| `INCIDENT_RESPONSE.md` | The one you reach for at 2am |
 | `../DEPLOYMENT.md` | How to stand a deployment up, including the two database roles |
+| `../README.md`, `../api/README.md`, `../web/README.md` | How to run it |
+
+Everything else is the code and its tests. A spec that disagrees with the code is worse than no spec, and
+these did.

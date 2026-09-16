@@ -10,7 +10,7 @@ const { upsertCampaign, recordRecipients, freezeCampaignAtHandoff } = require(".
 const { transitionDelivery } = require("../src/services/deliveryStateService");
 const { measureCampaign, summarizeCampaign, assessWindow } = require("../src/services/measurementService");
 
-// Ticket G: the per-window Results response, against RESULTS_UI_SPEC §5–§8.
+// Ticket G: the per-window Results response. These assertions ARE the contract.
 // Provider states are reached through Ticket D's real transitions.
 const SHOP = "results-g.myshopify.com";
 const OTHER = "other-g.myshopify.com";

@@ -8,7 +8,7 @@ import { act, cleanup, fireEvent, render } from "@testing-library/react";
 // Campaign identity in the workspace, against the REAL app. A play id repeats
 // across analyses; a campaign id does not. Two campaigns for the same play — an
 // older draft and the current analysis's — must never share copy, saves,
-// previews, approval or handoff (docs/CAMPAIGN_CONTINUITY_SPEC.md, step 2).
+// previews, approval or handoff (campaign continuity, PR #53).
 const require = createRequire(import.meta.url);
 const { presentEngineRun } = require("../../api/src/services/engineRunPresenter.js");
 

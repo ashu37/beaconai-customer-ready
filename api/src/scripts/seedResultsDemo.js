@@ -213,7 +213,7 @@ async function seed() {
 
   for (const c of checks) {
     // SELF-CHECK ONLY. The product's campaign assessment policy is unresolved
-    // (RESULTS_UI_SPEC §6.2); this script supplies one explicitly so it can
+    // (config.campaignAssessmentPolicy); this script supplies one explicitly so it can
     // check the interval against the planted lift. It is not what merchants see.
     const summary = await measureCampaign(c.campaignId, {
       policy: { minCustomersPerArm: 2, minPurchasersPerArm: 1, criticalValue: 1.96 },
@@ -242,7 +242,7 @@ async function seed() {
 
   const program = await summarizeProgram(SEED_SHOP, { sinceDays: 90 });
   if (program.available === false) {
-    console.log(`\n  PROGRAM  not reported (${program.reason}) — see docs/MEASUREMENT_PROTOCOL.md`);
+    console.log(`\n  PROGRAM  not reported (${program.reason}) — see docs/HISTORY.md`);
   } else if (program.comparison) {
     const p = program.comparison;
     console.log(

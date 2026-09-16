@@ -802,7 +802,7 @@ button.draft-card { width: 100%; text-align: left; color: var(--ink); }
 .recommendation-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------------------
-   Ticket G — Results (RESULTS_UI_SPEC.md)
+   Ticket G — Results (PR #42; this layout is PR #64)
    --------------------------------------------------------------------------- */
 .results-head h2 { font-family: var(--font-display); font-size: var(--fs-h2); color: var(--ink-strong); margin: 0; }
 .results-head p { color: var(--muted); margin: 4px 0 0; }

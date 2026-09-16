@@ -1,6 +1,6 @@
 // Durable provider delivery state.
 //
-// Implements docs/PROVIDER_HANDOFF_CONTRACT.md, which was written first and is
+// This module owns the delivery states and is
 // the authority for what each state means. The single rule: BeaconAI may only
 // assert what the provider has confirmed.
 //

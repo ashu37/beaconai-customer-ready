@@ -1,7 +1,7 @@
 // How a durable delivery state is shown to a merchant.
 //
 // One place, testable, because these strings are claims. The contract
-// (docs/PROVIDER_HANDOFF_CONTRACT.md) decides what we know; this decides what we
+// (services/deliveryStateService.js) decides what we know; this decides what we
 // say about it, and the two must not drift.
 //
 // Two rules run through everything here:
