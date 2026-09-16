@@ -102,4 +102,5 @@ BeaconAI directly at the address below.
 
 ## Contact
 
-[founder contact address — to be filled in before the notice is published]
+atul@runbeacon.ai — for questions, to end the pilot, or to request an export or deletion of a
+store's data.

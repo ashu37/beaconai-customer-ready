@@ -261,7 +261,9 @@ window here once confirmed** (founder task 3).
 - `clean.orders.raw` still holds the full Shopify order payload for un-redacted customers, including
   names and addresses. The engine derives a customer id from it (`order.raw.customer.id`), so it cannot
   simply be dropped the way the customer payload was. Minimising it is the next minimisation step.
-- The privacy notice needs a contact address before it is published.
+- ~~The privacy notice needs a contact address before it is published.~~ Done: atul@runbeacon.ai.
+  The notice itself is still only a repo document — the pilot walkthrough promises it on request, so it
+  is sent by hand rather than linked. Publishing it at a URL is the next step if the pilot grows.
 
 ### Review fixes on PR B (2026-09-16)
 
