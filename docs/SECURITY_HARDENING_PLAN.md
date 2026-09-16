@@ -225,3 +225,40 @@ refuses that configuration and startup errors name the connection).
 Still to do from the founder list: MFA everywhere, Supabase Data API exposed-schemas check, a tested
 restore, Shopify app configuration (embedded off, App URL, callbacks), and removing production
 credentials from the local `api/.env`.
+
+## PR B as built (2026-09-16)
+
+| Item | What was done | Where |
+|---|---|---|
+| B1 | `clean.customers.raw` is no longer written and the column is dropped — the full Shopify customer record (name, phone, addresses, notes, order history) had no reader at all. Klaviyo asset rows are minimised at the single write site and existing rows redacted. | `services/dataMinimisation.js`, `schema.js`, `services/shopifyRepository.js` |
+| B2 | `clean.orders_date_backup` is kept through the start that writes it and dropped on the next. Verified against production first: `orders.processed_at` is `timestamptz`, and the conversion's source (`clean.orders.raw`) is still stored, so it stays auditable. | `schema.js` |
+| B2 | The seed refuses to run against any database that is not on this machine. `NODE_ENV` is not the check that matters: the dangerous run is a laptop whose `api/.env` points at Supabase. | `scripts/seedGuard.js` |
+| B3 | One definition of everything held for a store, checked against the database catalogue at run time — a table added later without a rule fails loudly. Deletion is one transaction and takes the engine's on-disk directories with it. Export redacts access tokens. | `services/storeDataService.js`, `scripts/storeData.js` |
+| B4 | `customers/data_request`, `customers/redact` and `shop/redact` are recorded and then carried out; identifiers are dropped on completion. Redaction is pseudonymisation: everything personal goes, including inside `clean.orders.raw`; the internal customer id stays where it holds the merchant's own history together. A redacted customer cannot be refilled by the next sync. | `services/privacyRequestService.js`, `services/shopifyWebhookService.js` |
+| B5 | Privacy notice, incident response, and a processor list whose Anthropic claim is backed by a captured request rather than by reading the prompt builder. | `docs/PRIVACY_NOTICE.md`, `docs/INCIDENT_RESPONSE.md`, `docs/ai-request-fields.json` |
+
+Founder commands:
+
+```
+npm --prefix api run store:report  -- --shop acme.myshopify.com
+npm --prefix api run store:export  -- --shop acme.myshopify.com --out ./acme-export
+npm --prefix api run store:delete  -- --shop acme.myshopify.com --confirm acme.myshopify.com
+npm --prefix api run privacy:pending
+```
+
+### Retention, as published
+
+Active stores keep their data while installed. After uninstall it is deleted within 30 days, or sooner on
+request. Deletion covers the derived records — audiences, recipient lists, exclusions, measurements — and
+the engine's files on disk. Database backups are Supabase's and expire on its schedule; **record the actual
+window here once confirmed** (founder task 3).
+
+### Open after PR B
+
+- Uninstall does not yet schedule the 30-day deletion; today it ends access and the deletion is run by
+  hand with `store:delete`. With one pilot merchant that is the honest arrangement — but the notice
+  promises 30 days, so this needs either a scheduled job or a calendar reminder the founder keeps.
+- `clean.orders.raw` still holds the full Shopify order payload for un-redacted customers, including
+  names and addresses. The engine derives a customer id from it (`order.raw.customer.id`), so it cannot
+  simply be dropped the way the customer payload was. Minimising it is the next minimisation step.
+- The privacy notice needs a contact address before it is published.
