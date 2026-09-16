@@ -24,17 +24,22 @@ For **customer records**, that list is exhaustive: the email address is the only
 contact detail kept, and the name, phone number, addresses and notes that arrive
 in Shopify's payload are dropped before the record is written.
 
-For **orders**, it is not. BeaconAI currently keeps each order's full Shopify
-payload, which includes the buyer's name, shipping and billing address, phone
-number and IP address, and a copy of the same details reaches the input snapshot
-each analysis is computed from. This is a known excess, not a need: the analysis
-uses the dates, amounts and line items. It is being removed, and until it is,
-this notice says so rather than claiming otherwise. Two things already limit it:
+For **orders**, it is not. BeaconAI keeps each order's full Shopify payload,
+which includes the buyer's name, shipping and billing address, phone number and
+IP address. The same details reach two further places: the input snapshot each
+analysis is computed from, and a log of the raw payloads every sync received.
 
-- A **redacted customer's** order payloads are scrubbed of all of the above, and
-  a later sync cannot write them back.
-- None of it is sent to Anthropic, and none of it reaches Klaviyo beyond the
-  email address of a campaign's recipients.
+This is a known excess rather than a need — the analysis uses the dates, amounts
+and line items — and it is being removed. Until it is, this notice says so
+rather than claiming otherwise. What already limits it:
+
+- **A redaction reaches all three.** When a customer is redacted, their name,
+  address, phone number and email are removed from the order payloads, from
+  every stored analysis input, and from the raw sync log. Their orders remain as
+  the merchant's business record, under an internal reference that names nobody,
+  and a later sync cannot write any of it back.
+- **None of it leaves.** No part of an order payload is sent to Anthropic, and
+  nothing reaches Klaviyo beyond the email addresses of a campaign's recipients.
 
 From **Klaviyo**, when the merchant connects it: the account's sender addresses
 and the identifiers of the lists and campaigns BeaconAI creates.
@@ -84,10 +89,12 @@ Shopify's privacy webhooks are handled directly:
 
 - **Data request** — what is stored about that customer is gathered and given to
   the merchant, who answers their own customer.
-- **Redaction** — everything personal about that customer is removed: their email
-  address wherever it is held, and every name, phone number and address inside
-  the stored order payloads. The order itself stays, as the merchant's own
-  business record, and a later sync cannot put the customer's details back.
+- **Redaction** — everything personal about that customer is removed, everywhere
+  it is held: their email address, and every name, phone number and address in
+  the stored order payloads, in each analysis input, and in the raw sync log.
+  The order itself stays, as the merchant's own business record, attributed to
+  an internal reference that names nobody. A later sync cannot put any of it
+  back.
 - **Shop redaction** — the whole store is erased.
 
 A customer should contact the merchant they bought from. A merchant can ask

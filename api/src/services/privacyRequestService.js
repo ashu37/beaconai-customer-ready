@@ -9,13 +9,25 @@
 // merchant's records, not the customer's personal data.
 //
 // A redacted customer is marked, so a later sync cannot quietly refill the
-// fields this cleared — see shopifyRepository.upsertCustomers.
+// fields this cleared — see shopifyRepository.upsertCustomers and upsertOrders.
+//
+// The same details are stored in more than one place, and all of them are
+// reached here: clean.customers, clean.orders (columns and payload),
+// clean.campaign_recipients, clean.sync_runs.input_snapshot (the rows each
+// analysis was computed from) and raw.shopify_events (the payloads every sync
+// wrote). A redaction that stops at the first two is the bug this is shaped
+// around.
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const { pool, query } = require("../db");
-const { scrubOrderPayload } = require("./dataMinimisation");
+const {
+  redactRawEventPayload,
+  redactSnapshot,
+  scrubOrderPayload,
+  subjectKeys,
+} = require("./dataMinimisation");
 
 /** Resolve the subject Shopify named to the customer rows we hold. */
 async function findCustomer(shopDomain, { customerId = null, email = null } = {}, run = query) {
@@ -137,6 +149,46 @@ async function redactCustomer(shopDomain, subject) {
       [shopDomain, ids]
     );
     changed["clean.campaign_recipients"] = recipients.rowCount;
+
+    // The order's details are not only in clean.orders. Every analysis stored
+    // the rows it was computed from, and every sync stored the payload it came
+    // from — so a redaction that stops at the orders table leaves the buyer's
+    // name and address in both.
+    const keys = subjectKeys(found);
+
+    const snapshots = await run(
+      `SELECT id, input_snapshot FROM clean.sync_runs
+        WHERE shop_domain = $1 AND input_snapshot IS NOT NULL`,
+      [shopDomain]
+    );
+    let snapshotsChanged = 0;
+    for (const row of snapshots.rows) {
+      const next = redactSnapshot(row.input_snapshot, keys);
+      if (!next) continue;
+      await run(`UPDATE clean.sync_runs SET input_snapshot = $2::jsonb WHERE id = $1`, [
+        row.id,
+        JSON.stringify(next),
+      ]);
+      snapshotsChanged += 1;
+    }
+    changed["clean.sync_runs.input_snapshot"] = snapshotsChanged;
+
+    const events = await run(
+      `SELECT id, resource_type, payload FROM raw.shopify_events
+        WHERE shop_domain = $1 AND resource_type IN ('customers', 'orders')`,
+      [shopDomain]
+    );
+    let eventsChanged = 0;
+    for (const row of events.rows) {
+      const next = redactRawEventPayload(row.resource_type, row.payload, keys);
+      if (!next) continue;
+      await run(`UPDATE raw.shopify_events SET payload = $2::jsonb WHERE id = $1`, [
+        row.id,
+        JSON.stringify(next),
+      ]);
+      eventsChanged += 1;
+    }
+    changed["raw.shopify_events"] = eventsChanged;
 
     await run("COMMIT");
     return { found: true, customerIds: ids, changed };

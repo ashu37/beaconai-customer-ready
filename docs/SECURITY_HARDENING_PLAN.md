@@ -278,3 +278,31 @@ Also fixed while verifying: `npm run test:db` did not set `DATABASE_URL` for the
 `Billing Name`, `Shipping Province` and `Shipping Country` columns have no reader in the engine at all; `Customer
 Email` is read as an identity column but `customer_id` already carries the same identity. Removing them changes
 engine input, so it needs its own change and its own verification rather than riding along with a security fix.
+
+### Redaction completeness (2026-09-16)
+
+Broad minimisation is deferred; redaction is not. A `customers/redact` request now reaches every copy of the
+customer's details, not just `clean.orders`:
+
+| Copy | What happens |
+|---|---|
+| `clean.customers` | email, tags, consent and state cleared; `redacted_at` set |
+| `clean.orders` | email column cleared, payload scrubbed of name, addresses, phone, IP |
+| `clean.campaign_recipients` | email cleared, arm kept so the measurement still holds |
+| `clean.sync_runs.input_snapshot` | the analysis rows scrubbed of name and shipping region; the email replaced with a stable pseudonym |
+| `raw.shopify_events` | the write-only log of full Shopify payloads scrubbed for that customer |
+
+The snapshot keeps a pseudonym rather than a blank because the engine groups by `Customer Email` when the
+column is present — blanking it would merge every redacted buyer into one customer and change the analysis.
+`redacted-<customer_id>` keeps exactly one distinct value per person and names nobody.
+
+The regression test is catalogue-driven: it reads **every** text, json and array column in `clean` and `raw`
+and asserts no trace of the subject survives anywhere, while the other customer is untouched. Both new paths
+were verified by disabling each in turn. This is the shape the earlier findings kept taking — a copy nobody
+thought to look in — so the test looks everywhere rather than in a list.
+
+**Still deferred:** minimising `clean.orders.raw`, `sync_runs.input_snapshot` and `raw.shopify_events` for
+customers who have NOT asked to be redacted. `raw.shopify_events` has no reader at all and is the obvious
+next one to go; the snapshot's `Billing Name`, `Shipping Province` and `Shipping Country` have no reader in
+the engine either, while `Customer Email` is load-bearing as an identity column. The privacy notice discloses
+what is kept in the meantime.

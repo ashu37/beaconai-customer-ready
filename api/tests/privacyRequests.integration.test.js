@@ -19,6 +19,7 @@ const {
   writeCustomerExport,
 } = require("../src/services/privacyRequestService");
 const { upsertAllShopifyData } = require("../src/services/shopifyRepository");
+const { buildEngineInputSnapshot } = require("../src/services/engineInputSnapshot");
 
 // PR B, B4: one customer's request, which is not the same as deleting a store.
 
@@ -34,7 +35,15 @@ test.after(async () => {
   if (db.available) await db.closeDatabase();
 });
 
+// Each buyer's details are their OWN. A fixture that gives both customers the
+// same name cannot tell "the subject was redacted" from "everyone was".
+const PERSON = {
+  "cust-1": { first: "Erin", last: "Vasquez", street: "9 Harbour Road", phone: "+353-21-000111" },
+  "cust-2": { first: "Sam", last: "Ngata", street: "4 Mill Lane", phone: "+353-21-000222" },
+};
+
 function shopifyOrder(id, customerId, email) {
+  const who = PERSON[customerId];
   return {
     id,
     email,
@@ -42,10 +51,10 @@ function shopifyOrder(id, customerId, email) {
     created_at: "2026-02-01T10:00:00Z",
     processed_at: "2026-02-01T10:00:00Z",
     currency: "USD",
-    customer: { id: customerId, email, first_name: "Erin", last_name: "Vasquez" },
-    billing_address: { address1: "9 Harbour Road", city: "Cork", phone: "+353-21-000" },
-    shipping_address: { address1: "9 Harbour Road", city: "Cork" },
-    phone: "+353-21-000",
+    customer: { id: customerId, email, first_name: who.first, last_name: who.last },
+    billing_address: { address1: who.street, city: "Cork", phone: who.phone },
+    shipping_address: { address1: who.street, city: "Cork", province: "Munster", country: "Ireland" },
+    phone: who.phone,
     line_items: [{ id: `li-${id}`, quantity: 1, price: "42.00", product_id: "p1" }],
   };
 }
@@ -136,7 +145,7 @@ suite("a redaction removes everything personal and leaves the merchant's records
   assert.equal(order.rows[0].email, null);
   assert.equal(order.rows[0].total_price, "42.00", "the money is the merchant's record");
   const raw = JSON.stringify(order.rows[0].raw);
-  for (const leaked of ["Vasquez", "Harbour Road", "+353-21-000", SUBJECT]) {
+  for (const leaked of ["Vasquez", "Harbour Road", "+353-21-000111", SUBJECT]) {
     assert.ok(!raw.includes(leaked), `${leaked} survived in clean.orders.raw`);
   }
   assert.ok(raw.includes("line_items"), "the order's contents are untouched");
@@ -266,7 +275,7 @@ suite("a later order sync does not put a redacted customer's details back", asyn
   const order = await query(`SELECT email, raw, total_price FROM clean.orders WHERE id = 'o1'`);
   assert.equal(order.rows[0].email, null, "the resync restored the order's email column");
   const raw = JSON.stringify(order.rows[0].raw);
-  for (const leaked of ["Vasquez", "Harbour Road", "+353-21-000", SUBJECT]) {
+  for (const leaked of ["Vasquez", "Harbour Road", "+353-21-000111", SUBJECT]) {
     assert.ok(!raw.includes(leaked), `the resync restored ${leaked} in clean.orders.raw`);
   }
   // The order is still the merchant's record, and still attributed.
@@ -277,7 +286,7 @@ suite("a later order sync does not put a redacted customer's details back", asyn
   // An un-redacted customer's order syncs normally.
   const other = await query(`SELECT email, raw FROM clean.orders WHERE id = 'o2'`);
   assert.equal(other.rows[0].email, OTHER);
-  assert.ok(JSON.stringify(other.rows[0].raw).includes("Harbour Road"));
+  assert.ok(JSON.stringify(other.rows[0].raw).includes("Mill Lane"));
 });
 
 suite("a data request stays outstanding until an export exists and delivery is recorded", async () => {
@@ -322,4 +331,129 @@ suite("a data request stays outstanding until an export exists and delivery is r
   } finally {
     await fs.rm(outDir, { recursive: true, force: true });
   }
+});
+
+/**
+ * Every text-ish value stored anywhere in clean/raw, with the column it came
+ * from. Deliberately catalogue-driven rather than a list: the redaction bugs
+ * found so far were all a place nobody thought to look.
+ */
+async function everyStoredValue() {
+  const { rows: columns } = await query(
+    `SELECT c.table_schema AS schema, c.table_name AS name, c.column_name AS column
+       FROM information_schema.columns c
+       JOIN pg_class pc ON pc.relname = c.table_name
+       JOIN pg_namespace pn ON pn.oid = pc.relnamespace AND pn.nspname = c.table_schema
+      WHERE c.table_schema IN ('clean', 'raw')
+        AND pc.relkind = 'r'
+        AND c.data_type IN ('text', 'character varying', 'json', 'jsonb', 'ARRAY')
+      ORDER BY 1, 2, 3`
+  );
+
+  const found = [];
+  for (const col of columns) {
+    const { rows } = await query(
+      `SELECT "${col.column}"::text AS value FROM "${col.schema}"."${col.name}" WHERE "${col.column}" IS NOT NULL`
+    );
+    for (const row of rows) {
+      if (row.value) found.push({ where: `${col.schema}.${col.name}.${col.column}`, value: row.value });
+    }
+  }
+  return found;
+}
+
+suite("after a redaction no trace of the customer is left anywhere in the database", async () => {
+  await db.resetDatabase();
+  await populate();
+
+  // The copies the orders table is not: the rows an analysis was computed from,
+  // and the payloads every sync wrote.
+  const input = {
+    shop: { shop_domain: SHOP, currency: "EUR", iana_timezone: "UTC" },
+    orders: [
+      { ...shopifyOrder("o1", "cust-1", SUBJECT), customer_id: "cust-1", raw: shopifyOrder("o1", "cust-1", SUBJECT) },
+      { ...shopifyOrder("o2", "cust-2", OTHER), customer_id: "cust-2", raw: shopifyOrder("o2", "cust-2", OTHER) },
+    ],
+    order_line_items: [],
+    customers: [],
+    products: [],
+  };
+  const snapshot = buildEngineInputSnapshot(input);
+  assert.ok(
+    JSON.stringify(snapshot).includes("Vasquez"),
+    "the fixture must actually contain the name, or this test proves nothing"
+  );
+  await query(`UPDATE clean.sync_runs SET input_snapshot = $2::jsonb WHERE shop_domain = $1`, [
+    SHOP,
+    JSON.stringify(snapshot),
+  ]);
+  await query(
+    `INSERT INTO raw.shopify_events (shop_domain, resource_type, payload) VALUES
+       ($1, 'orders', $2::jsonb),
+       ($1, 'customers', $3::jsonb)`,
+    [
+      SHOP,
+      JSON.stringify([shopifyOrder("o1", "cust-1", SUBJECT), shopifyOrder("o2", "cust-2", OTHER)]),
+      JSON.stringify([
+        { id: "cust-1", email: SUBJECT, first_name: "Erin", last_name: "Vasquez", phone: "+353-21-000111" },
+        { id: "cust-2", email: OTHER, first_name: "Sam", last_name: "Ngata" },
+      ]),
+    ]
+  );
+
+  const before = await everyStoredValue();
+  assert.ok(before.some((v) => v.value.includes(SUBJECT)), "the fixture must contain the subject's email");
+
+  await redactCustomer(SHOP, { email: SUBJECT });
+
+  const after = await everyStoredValue();
+  for (const trace of ["Vasquez", "Harbour Road", "+353-21-000111", SUBJECT]) {
+    const leaks = after.filter((v) => v.value.includes(trace));
+    assert.deepEqual(
+      leaks.map((l) => l.where),
+      [],
+      `"${trace}" is still stored after the redaction`
+    );
+  }
+
+  // The other customer is untouched, everywhere.
+  assert.ok(after.some((v) => v.value.includes(OTHER)), "the other customer was redacted too");
+  assert.ok(after.some((v) => v.value.includes("Ngata")), "the other customer's name was removed too");
+});
+
+suite("a redacted customer's analysis input keeps its shape and its identity", async () => {
+  await db.resetDatabase();
+  await populate();
+  const input = {
+    shop: { shop_domain: SHOP, currency: "EUR", iana_timezone: "UTC" },
+    orders: [
+      { ...shopifyOrder("o1", "cust-1", SUBJECT), customer_id: "cust-1", raw: shopifyOrder("o1", "cust-1", SUBJECT) },
+      { ...shopifyOrder("o3", "cust-1", SUBJECT), customer_id: "cust-1", raw: shopifyOrder("o3", "cust-1", SUBJECT) },
+      { ...shopifyOrder("o2", "cust-2", OTHER), customer_id: "cust-2", raw: shopifyOrder("o2", "cust-2", OTHER) },
+    ],
+    order_line_items: [], customers: [], products: [],
+  };
+  await query(`UPDATE clean.sync_runs SET input_snapshot = $2::jsonb WHERE shop_domain = $1`, [
+    SHOP, JSON.stringify(buildEngineInputSnapshot(input)),
+  ]);
+
+  await redactCustomer(SHOP, { email: SUBJECT });
+
+  const { rows } = await query(`SELECT input_snapshot FROM clean.sync_runs WHERE shop_domain = $1`, [SHOP]);
+  const redacted = rows[0].input_snapshot.orderRows;
+  assert.equal(redacted.length, 3, "no analysis row was dropped");
+  assert.equal(redacted.filter((r) => r.Total === "42").length, 3, "the amounts are unchanged");
+
+  // The engine groups by Customer Email when the column is present. Blanking it
+  // would merge every redacted buyer into one; a pseudonym keeps one value per
+  // person and still names nobody.
+  const mine = redacted.filter((r) => r.customer_id === "cust-1");
+  assert.equal(mine.length, 2);
+  assert.deepEqual(new Set(mine.map((r) => r["Customer Email"])), new Set(["redacted-cust-1"]));
+  assert.deepEqual(mine.map((r) => r["Billing Name"]), ["", ""]);
+  assert.deepEqual(mine.map((r) => r["Shipping Country"]), ["", ""]);
+
+  const theirs = redacted.filter((r) => r.customer_id === "cust-2");
+  assert.equal(theirs[0]["Customer Email"], OTHER);
+  assert.equal(theirs[0]["Billing Name"], "Sam Ngata", "an un-redacted buyer's row is untouched");
 });

@@ -120,4 +120,107 @@ function scrubOrderPayload(raw) {
   return out;
 }
 
-module.exports = { PERSONAL_ORDER_KEYS, minimiseKlaviyoAssetPayload, scrubOrderPayload };
+// --- Redacting one customer out of the derived copies ------------------------
+//
+// An order's details are stored in more than one place, and a redaction that
+// reaches only clean.orders is not a redaction:
+//
+//   clean.sync_runs.input_snapshot   the rows each analysis was computed from,
+//                                    carrying the buyer's email, name and
+//                                    shipping region per order line
+//   raw.shopify_events               the complete Shopify payloads, written on
+//                                    every sync and read by nothing
+//
+// Identity is preserved, detail is removed — the same policy as everywhere
+// else. In the snapshot that matters mechanically as well: the engine groups by
+// `Customer Email` when the column is present, so blanking it would merge every
+// redacted buyer into one customer. A stable pseudonym keeps one distinct value
+// per person and carries no address.
+
+function matchesSubject(customerId, email, subject) {
+  if (customerId != null && subject.customerIds.has(String(customerId))) return true;
+  if (email && subject.emails.has(String(email).toLowerCase())) return true;
+  return false;
+}
+
+/** `{ customerIds: Set, emails: Set }` from the rows a lookup found. */
+function subjectKeys(rows) {
+  return {
+    customerIds: new Set(rows.map((r) => String(r.id))),
+    emails: new Set(rows.map((r) => r.email).filter(Boolean).map((e) => String(e).toLowerCase())),
+  };
+}
+
+/** The pseudonym that replaces an email in a stored analysis input. */
+function snapshotPseudonym(customerId) {
+  return `redacted-${customerId}`;
+}
+
+/**
+ * One stored input snapshot with the subject's personal columns removed.
+ * Returns null when nothing in it matched, so the caller can skip the write.
+ */
+function redactSnapshot(snapshot, subject) {
+  const rows = snapshot?.orderRows;
+  if (!Array.isArray(rows)) return null;
+
+  let changed = false;
+  const redacted = rows.map((row) => {
+    const id = row.customer_id;
+    if (!matchesSubject(id, row["Customer Email"], subject)) return row;
+    changed = true;
+    return {
+      ...row,
+      // Identity kept as a pseudonym; the address itself goes.
+      "Customer Email": snapshotPseudonym(id),
+      "Billing Name": "",
+      "Shipping Province": "",
+      "Shipping Country": "",
+    };
+  });
+
+  return changed ? { ...snapshot, orderRows: redacted } : null;
+}
+
+/**
+ * One raw Shopify event payload with the subject removed. Returns null when
+ * nothing matched.
+ *
+ * Nothing reads this log, so a matched customer record is reduced to its id
+ * rather than carefully rewritten: keeping the shape is worth something for
+ * anyone debugging, keeping the person is not.
+ */
+function redactRawEventPayload(resourceType, payload, subject) {
+  if (!Array.isArray(payload)) return null;
+  let changed = false;
+
+  if (resourceType === "customers") {
+    const out = payload.map((customer) => {
+      if (!matchesSubject(customer?.id, customer?.email, subject)) return customer;
+      changed = true;
+      return { id: customer?.id ?? null, beaconai_redacted: true };
+    });
+    return changed ? out : null;
+  }
+
+  if (resourceType === "orders") {
+    const out = payload.map((order) => {
+      if (!matchesSubject(order?.customer?.id, order?.email || order?.customer?.email, subject)) return order;
+      changed = true;
+      return scrubOrderPayload(order);
+    });
+    return changed ? out : null;
+  }
+
+  return null;
+}
+
+module.exports = {
+  PERSONAL_ORDER_KEYS,
+  minimiseKlaviyoAssetPayload,
+  redactRawEventPayload,
+  redactSnapshot,
+  scrubOrderPayload,
+  snapshotPseudonym,
+  subjectKeys,
+};
