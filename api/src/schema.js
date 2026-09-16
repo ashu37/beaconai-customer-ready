@@ -193,11 +193,16 @@ async function initSchema() {
       created_at TIMESTAMP,
       state TEXT,
       email_marketing_consent JSONB,
-      tags TEXT
+      tags TEXT,
       -- No raw column: the full Shopify customer record is not stored. A
       -- database created before B1 has it; minimiseStoredCustomerData drops it.
+      --
+      -- Set by a customers/redact request. A later sync must not refill the
+      -- fields that request cleared; see shopifyRepository.upsertCustomers.
+      redacted_at TIMESTAMPTZ
     );
   `);
+  await query(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS redacted_at TIMESTAMPTZ;`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS clean.products (

@@ -72,6 +72,10 @@ async function upsertCustomers(shopDomain, customers, client) {
         state = EXCLUDED.state,
         email_marketing_consent = EXCLUDED.email_marketing_consent,
         tags = EXCLUDED.tags
+      -- A redacted customer stays redacted. Shopify still returns the record
+      -- for a while after a customers/redact request, and without this the next
+      -- sync would put the email straight back.
+      WHERE clean.customers.redacted_at IS NULL
       `,
       [
         String(customer.id),
