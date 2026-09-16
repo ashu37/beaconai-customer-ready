@@ -2,6 +2,7 @@
 // role's to make (databaseSecurity.js).
 const { migrationPool: pool, migrationQuery: query } = require("./db");
 const { applyAccessControls } = require("./services/databaseSecurity");
+const { minimiseKlaviyoAssetPayload } = require("./services/dataMinimisation");
 const { config } = require("./config");
 
 async function initSchema() {
@@ -93,6 +94,27 @@ async function initSchema() {
     );
   `);
   await query(`CREATE UNIQUE INDEX IF NOT EXISTS privacy_requests_webhook_idx ON clean.privacy_requests (webhook_id) WHERE webhook_id IS NOT NULL;`);
+
+  // Files a deletion still has to remove.
+  //
+  // The engine's directories are named by store_id, which only the snapshot
+  // rows know — and the deletion erases those rows. So the paths are written
+  // here inside the same transaction, BEFORE the rows go, and cleared once the
+  // directory is actually gone. A removal that fails after the commit leaves a
+  // row behind, which is what `npm run privacy:pending` reports; without it the
+  // paths would be unrecoverable and deletion would report success over files
+  // still on disk.
+  await query(`
+    CREATE TABLE IF NOT EXISTS clean.pending_file_cleanup (
+      id BIGSERIAL PRIMARY KEY,
+      shop_domain TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      removed_at TIMESTAMPTZ,
+      last_error TEXT,
+      UNIQUE (shop_domain, store_id)
+    );
+  `);
 
   // One analysis per store at a time, enforced by the database rather than by
   // process memory: the partial unique index admits a single 'running' row per
@@ -193,9 +215,15 @@ async function initSchema() {
       state TEXT,
       email_marketing_consent JSONB,
       tags TEXT,
-      raw JSONB
+      -- No raw column: the full Shopify customer record is not stored. A
+      -- database created before B1 has it; minimiseStoredCustomerData drops it.
+      --
+      -- Set by a customers/redact request. A later sync must not refill the
+      -- fields that request cleared; see shopifyRepository.upsertCustomers.
+      redacted_at TIMESTAMPTZ
     );
   `);
+  await query(`ALTER TABLE clean.customers ADD COLUMN IF NOT EXISTS redacted_at TIMESTAMPTZ;`);
 
   await query(`
     CREATE TABLE IF NOT EXISTS clean.products (
@@ -831,18 +859,33 @@ async function initSchema() {
          WHERE date_provenance IS NULL
          RETURNING date_provenance;
       `);
-      const customers = await q(`
-        UPDATE clean.customers
-           SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                                 THEN (raw->>'created_at')::timestamptz ELSE created_at END,
-               date_provenance = CASE
-                 WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
-                   THEN 'rederived_from_raw'
-                 ELSE 'unverified_assumed_utc'
-               END
-         WHERE date_provenance IS NULL
-         RETURNING date_provenance;
+      // B1 drops clean.customers.raw, so the re-derivation above is available
+      // only to a database that still has it — which is exactly the database
+      // this migration exists for. Without the column there is nothing to
+      // re-derive from and the stored digits stand, flagged as unverified.
+      const customerRaw = await q(`
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'clean' AND table_name = 'customers' AND column_name = 'raw'
       `);
+      const customers = customerRaw.rowCount
+        ? await q(`
+            UPDATE clean.customers
+               SET created_at = CASE WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                                     THEN (raw->>'created_at')::timestamptz ELSE created_at END,
+                   date_provenance = CASE
+                     WHEN raw ? 'created_at' AND raw->>'created_at' IS NOT NULL
+                       THEN 'rederived_from_raw'
+                     ELSE 'unverified_assumed_utc'
+                   END
+             WHERE date_provenance IS NULL
+             RETURNING date_provenance;
+          `)
+        : await q(`
+            UPDATE clean.customers
+               SET date_provenance = 'unverified_assumed_utc'
+             WHERE date_provenance IS NULL
+             RETURNING date_provenance;
+          `);
       await q(`
         UPDATE clean.refunds
            SET created_at = (raw->>'created_at')::timestamptz
@@ -904,9 +947,66 @@ async function initSchema() {
     );
   }
 
+  await minimiseStoredCustomerData();
+  await dropCompletedDateBackup(Boolean(migrationReport));
+
   // Last, so every table created above is covered: grants to the application
   // role only, nothing to the Supabase API roles, row-level security on.
   await applyAccessControls(query, { appRole: config.appDbRole });
+}
+
+/**
+ * PR B, B1: remove the copies of customer data nothing reads.
+ *
+ * Runs AFTER the TIMESTAMPTZ block above, and must: that migration re-derives
+ * each customer's created_at from `clean.customers.raw`, so the column can only
+ * go once it has had its turn. It is guarded by `date_provenance IS NULL`, so a
+ * row whose date is already established has no further use for `raw`.
+ *
+ * Dropping rather than clearing. An always-NULL column is an invitation to
+ * start writing it again, and the data is re-fetchable from Shopify in any case.
+ */
+async function minimiseStoredCustomerData() {
+  await query(`ALTER TABLE clean.customers DROP COLUMN IF EXISTS raw;`);
+
+  // Existing asset rows carry the recipient list that new rows no longer store.
+  // Rewritten through the same function the write path uses, so there is one
+  // definition of what an asset row may hold.
+  const { rows } = await query(
+    `SELECT id, payload FROM clean.klaviyo_assets
+      WHERE jsonb_typeof(payload -> 'audience' -> 'recipients') = 'array'
+         OR payload -> 'packageResult' IS NOT NULL`
+  );
+  for (const row of rows) {
+    await query(`UPDATE clean.klaviyo_assets SET payload = $2 WHERE id = $1`, [
+      row.id,
+      JSON.stringify(minimiseKlaviyoAssetPayload(row.payload)),
+    ]);
+  }
+  if (rows.length) {
+    console.warn(`[schema] removed recipient details from ${rows.length} stored Klaviyo asset row(s).`);
+  }
+}
+
+/**
+ * PR B, B2: drop clean.orders_date_backup once its migration is behind us.
+ *
+ * The table exists to make ONE rewrite reversible while it happens: the
+ * TIMESTAMPTZ conversion replaced each order's naive wall clock with the
+ * instant re-derived from clean.orders.raw. It has no readers, no views and no
+ * foreign keys, and it is not a disaster-recovery backup — those are the
+ * provider's, and the re-derivation's own source (orders.raw) is still stored,
+ * so the conversion remains auditable without it.
+ *
+ * `justMigrated` is the one case it is kept for: the conversion ran in THIS
+ * start, and the originals stay readable until the next one.
+ */
+async function dropCompletedDateBackup(justMigrated) {
+  if (justMigrated) return;
+  const { rows } = await query(`SELECT to_regclass('clean.orders_date_backup') IS NOT NULL AS present`);
+  if (!rows[0].present) return;
+  await query(`DROP TABLE clean.orders_date_backup`);
+  console.warn("[schema] dropped clean.orders_date_backup: its timezone migration is complete.");
 }
 
 module.exports = { initSchema };

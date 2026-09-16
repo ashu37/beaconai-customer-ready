@@ -1,6 +1,7 @@
 const axios = require("axios");
 const { config } = require("../config");
 const { query } = require("../db");
+const { minimiseKlaviyoAssetPayload } = require("./dataMinimisation");
 
 // Klaviyo takes two kinds of credential and a different scheme for each. A
 // private API key (always "pk_...") goes as `Klaviyo-API-Key`; an OAuth access
@@ -575,13 +576,16 @@ async function sendCampaign(privateKey, campaignId) {
 }
 
 async function saveKlaviyoAsset({ shopDomain, assetType, externalId, payload }) {
+  // Minimised here, at the single write, rather than at the call site: an asset
+  // row records what was handed off, and a future caller should not be able to
+  // reintroduce the recipient list by passing a richer payload.
   const result = await query(
     `
     INSERT INTO clean.klaviyo_assets (shop_domain, asset_type, external_id, payload)
     VALUES ($1, $2, $3, $4)
     RETURNING *
     `,
-    [shopDomain || null, assetType, externalId || null, JSON.stringify(payload)]
+    [shopDomain || null, assetType, externalId || null, JSON.stringify(minimiseKlaviyoAssetPayload(payload))]
   );
 
   return result.rows[0];

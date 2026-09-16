@@ -17,6 +17,7 @@ const { safeReturnTo } = require("../src/services/oauthService");
 const { createSession } = require("../src/services/sessionService");
 const { disableStore, StoreDisabledError } = require("../src/services/storeAccessService");
 const { runSync } = require("../src/services/syncService");
+const { subjectOf } = require("../src/services/shopifyWebhookService");
 
 // PR A of docs/SECURITY_HARDENING_PLAN.md: secrets, OAuth, revocation, logs.
 
@@ -434,10 +435,21 @@ suite("privacy webhooks are recorded once, with only what identifies the subject
     const res = await fetch(`${api.base}/webhooks/shopify`, { method: "POST", headers: request.headers, body: request.body });
     assert.equal(res.status, 200);
   }
-  const rows = (await query(`SELECT topic, payload FROM clean.privacy_requests WHERE shop_domain = $1`, [SHOP])).rows;
+  const rows = (await query(`SELECT topic, payload, completed_at FROM clean.privacy_requests WHERE shop_domain = $1`, [SHOP])).rows;
   assert.equal(rows.length, 1, "a redelivery is not a second request");
   assert.equal(rows[0].topic, "customers/redact");
-  assert.equal(rows[0].payload.customer_id, 77);
-  assert.deepEqual(rows[0].payload.orders, [1001]);
-  assert.ok(!JSON.stringify(rows[0].payload).includes("not stored"));
+
+  // What is recorded is the subject and nothing around it. The stored row no
+  // longer shows it once the request completes (PR B, B4), so the rule is
+  // checked where it is applied.
+  const subject = subjectOf("customers/redact", payload);
+  assert.equal(subject.customer_id, 77);
+  assert.deepEqual(subject.orders, [1001]);
+  assert.ok(!JSON.stringify(subject).includes("not stored"));
+
+  assert.ok(rows[0].completed_at instanceof Date, "the request was carried out");
+  assert.ok(
+    !JSON.stringify(rows[0].payload).includes("person@example.com"),
+    "a completed request keeps no identifiers"
+  );
 });

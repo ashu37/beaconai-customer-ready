@@ -8,7 +8,14 @@
     "test": "node --test \"tests/**/*.test.js\"",
     "test:db": "node scripts/testWithDb.cjs",
     "dev:stack": "node scripts/devStack.cjs",
-    "security:db-check": "node src/scripts/dbSecurityCheck.js"
+    "security:db-check": "node src/scripts/dbSecurityCheck.js",
+    "store:report": "node src/scripts/storeData.js report",
+    "store:export": "node src/scripts/storeData.js export",
+    "store:delete": "node src/scripts/storeData.js delete",
+    "privacy:pending": "node src/scripts/storeData.js pending",
+    "store:cleanup-files": "node src/scripts/storeData.js cleanup-files",
+    "privacy:export": "node src/scripts/storeData.js privacy-export",
+    "privacy:deliver": "node src/scripts/storeData.js privacy-deliver"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

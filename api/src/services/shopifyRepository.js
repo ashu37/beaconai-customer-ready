@@ -1,4 +1,5 @@
 const { query } = require("../db");
+const { scrubOrderPayload } = require("./dataMinimisation");
 
 function json(value) {
   return value == null ? null : JSON.stringify(value);
@@ -57,18 +58,25 @@ async function upsertShop(shopDomain, shop, client) {
 async function upsertCustomers(shopDomain, customers, client) {
   const run = executor(client);
   for (const customer of customers || []) {
+    // No raw column. The full Shopify customer record — name, addresses,
+    // phone, notes, order history — was stored and never read; the columns
+    // below are what the engine and the audience build use. See
+    // services/dataMinimisation.js.
     await run(
       `
       INSERT INTO clean.customers
-      (id, shop_domain, email, created_at, state, email_marketing_consent, tags, raw)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      (id, shop_domain, email, created_at, state, email_marketing_consent, tags)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
       ON CONFLICT (id) DO UPDATE SET
         email = EXCLUDED.email,
         created_at = EXCLUDED.created_at,
         state = EXCLUDED.state,
         email_marketing_consent = EXCLUDED.email_marketing_consent,
-        tags = EXCLUDED.tags,
-        raw = EXCLUDED.raw
+        tags = EXCLUDED.tags
+      -- A redacted customer stays redacted. Shopify still returns the record
+      -- for a while after a customers/redact request, and without this the next
+      -- sync would put the email straight back.
+      WHERE clean.customers.redacted_at IS NULL
       `,
       [
         String(customer.id),
@@ -78,7 +86,6 @@ async function upsertCustomers(shopDomain, customers, client) {
         customer.state || null,
         json(customer.email_marketing_consent || null),
         customer.tags || null,
-        json(customer),
       ]
     );
   }
@@ -138,9 +145,41 @@ async function upsertProducts(shopDomain, products, client) {
   }
 }
 
+/**
+ * Which of this batch's customers have been redacted.
+ *
+ * Asked of the database rather than carried in memory: a redaction can land
+ * between two syncs, or during one, and the row is the only authority on it.
+ */
+async function redactedCustomerIds(shopDomain, orders, run) {
+  const ids = Array.from(
+    new Set((orders || []).map((o) => (o.customer?.id ? String(o.customer.id) : null)).filter(Boolean))
+  );
+  if (!ids.length) return new Set();
+  const { rows } = await run(
+    `SELECT id FROM clean.customers WHERE shop_domain = $1 AND id = ANY($2) AND redacted_at IS NOT NULL`,
+    [shopDomain, ids]
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
 async function upsertOrders(shopDomain, orders, client) {
   const run = executor(client);
+
+  // A redaction clears a customer's email and scrubs their order payloads. The
+  // next sync fetches those orders again, so without this it writes both
+  // straight back — the customer row stays redacted and the orders quietly
+  // un-redact. Resolved once per batch rather than per order.
+  const redacted = await redactedCustomerIds(shopDomain, orders, run);
+
   for (const order of orders || []) {
+    const customerId = order.customer?.id ? String(order.customer.id) : null;
+    const isRedacted = customerId !== null && redacted.has(customerId);
+    // Same policy as redactCustomer, applied at the point of writing rather
+    // than after the fact.
+    const email = isRedacted ? null : order.email || null;
+    const payload = isRedacted ? scrubOrderPayload(order) : order;
+
     await run(
       `
       INSERT INTO clean.orders
@@ -175,8 +214,8 @@ async function upsertOrders(shopDomain, orders, client) {
         order.name || null,
         order.created_at || null,
         order.processed_at || null,
-        order.customer?.id ? String(order.customer.id) : null,
-        order.email || null,
+        customerId,
+        email,
         order.currency || null,
         order.subtotal_price || null,
         order.total_discounts || null,
@@ -187,7 +226,7 @@ async function upsertOrders(shopDomain, orders, client) {
         order.cancelled_at || null,
         Boolean(order.test),
         order.tags || null,
-        json(order),
+        json(payload),
       ]
     );
 
