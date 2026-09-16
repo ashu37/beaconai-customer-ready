@@ -72,8 +72,64 @@ Dates are merge dates.
 |---|---|
 | [#61](../../pull/61) | **PR A** — least-privilege database role, row-level security on every table, split secrets with no production fallback, OAuth browser binding, precise revocation, log redaction |
 | [#62](../../pull/62) | Production refuses to start without the owner connection; startup errors name which connection failed |
-| [#63](../../pull/63) | **PR B** — data minimisation, per-store export and deletion, customer privacy requests, privacy notice and incident response |
+| [#63](../../pull/63) | **PR B** — data minimisation, per-store export and deletion, customer privacy requests, privacy notice and incident response. A redaction reaches every copy: the customer row, the order columns and payload, campaign recipients, each stored analysis input, and the raw sync log |
 | [#65](../../pull/65) | The privacy notice's contact address |
+
+### The database boundary, in more detail
+
+Most of this lives in [#61](../../pull/61) and [#63](../../pull/63), but a fair part of it was done by hand
+in the Supabase and Render consoles and appears in no pull request at all. That part is recorded here
+because it is the part that cannot be recovered by reading the diff.
+
+**Two roles, two connections.** Before this, the application connected to Supabase as the table owner — a
+superuser, for whom row-level security does not apply and every grant is moot. Now:
+
+| | Role | Used for |
+|---|---|---|
+| `DATABASE_URL` | `beaconai_app` — `LOGIN NOSUPERUSER NOBYPASSRLS`, owns nothing | every request the app serves |
+| `MIGRATION_DATABASE_URL` | the owner (`postgres`) | schema changes, grants and policies, at boot only |
+
+`api/src/db.js` keeps a pool for each. Development may point both at the same URL; production refuses to
+start if they are equal or if the owner connection is missing ([#62](../../pull/62)).
+
+**What the boundary actually is.** Row-level security alone is not one: a table's owner and any role with
+`BYPASSRLS` ignore it, and a grant to Supabase's API roles would expose a table through the Data API
+whatever the backend checks. So `services/databaseSecurity.js` applies and inspects the whole set together
+— `USAGE` and DML on `clean`/`raw` to `beaconai_app` only; explicit `REVOKE ALL` from `anon`,
+`authenticated` and `PUBLIC`, including default privileges so new tables inherit nothing; row-level
+security on every table with a single policy naming only the application role.
+
+**Done by hand, once, and not in any PR:**
+
+- Created `beaconai_app` in the Supabase SQL editor, password generated there and kept in a password
+  manager — never in the repo. Through Supabase's pooler the user name is `beaconai_app.<project-ref>`.
+- Set `MIGRATION_DATABASE_URL`, `SESSION_SECRET`, `TOKEN_ENCRYPTION_SECRET` and `BEACONAI_ADMIN_TOKEN` in
+  Render *before* merging, then moved `DATABASE_URL` to the new role *after* — the grants that role needs
+  are applied by the new code at boot, so switching earlier would have left the live app unable to read
+  anything.
+
+**Two things that cost time, worth knowing before the next environment:**
+
+1. Supabase does not grant `CONNECT` on the database to a new role. Without
+   `GRANT CONNECT ON DATABASE postgres TO beaconai_app;` the app cannot connect at all.
+2. `MIGRATION_DATABASE_URL` must be the *owner* connection. Left unset, the schema step ran as the
+   application role and failed with `permission denied for database postgres`. [#62](../../pull/62) makes
+   production refuse that configuration rather than fail obscurely.
+
+**Verified on Render, 16 Sep 2026** (`GET /api/ready` with the founder token): runtime role `beaconai_app`,
+not a superuser, no `BYPASSRLS`, owns 0 application tables; row-level security and the application policy
+on all 28 tables; `anon` and `authenticated` hold no schema usage, no table grants and appear in no policy;
+all 3 stored integration tokens decrypt with the current key. Sign-in, sign-out and an unsigned webhook
+(401) all behaved. `npm --prefix api run security:db-check` prints the same evidence at any time.
+
+**Still the founder's, in the Supabase and provider consoles:**
+
+- Confirm which schemas the Data API exposes (expected: neither `clean` nor `raw`) and tighten `public`
+  default privileges.
+- A *tested* restore into a scratch project, and the actual backup retention window recorded — the privacy
+  notice refers to it.
+- MFA on Render, Supabase, Shopify Partners, Klaviyo, Anthropic and GitHub.
+- Shopify app configuration: embedded off, App URL, OAuth callbacks, compliance webhook URLs.
 
 ## Results readability (16 Sep 2026)
 
@@ -109,3 +165,4 @@ Planning and review documents are not kept: they are in the pull requests that u
 | `SECURITY_HARDENING_PLAN.md` | The security record and the retention policy the privacy notice depends on |
 | `PRIVACY_NOTICE.md`, `INCIDENT_RESPONSE.md` | Merchant-facing, and the one you reach for at 2am |
 | `../RESULTS_UI_SPEC.md` | Cited by `App.jsx` and the Results tests |
+| `../DEPLOYMENT.md` | How to stand a deployment up, including the two database roles |

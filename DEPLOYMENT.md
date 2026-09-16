@@ -24,13 +24,25 @@ Make sure the `engine/` submodule is available to the deploy provider.
 Create a Supabase project on the Free plan, then copy its Postgres connection string.
 Use the pooled connection string if Supabase offers both direct and pooled options.
 
-Render will use this value as:
+**The application does not connect as the table owner.** It uses a least-privilege role, and the owner
+connection is reserved for schema changes at boot. Create the role once, in the Supabase SQL editor:
 
-```env
-DATABASE_URL=<Supabase Postgres connection string>
+```sql
+CREATE ROLE beaconai_app WITH LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+ALTER ROLE beaconai_app WITH PASSWORD '<generate one, keep it in a password manager>';
+-- Supabase does not grant this by default, and nothing works without it:
+GRANT CONNECT ON DATABASE postgres TO beaconai_app;
 ```
 
+Build its connection string from the owner's: same host, port and database, but through the pooler the
+user name is `beaconai_app.<project-ref>`. Everything else — grants, row-level security, policies — is
+applied automatically at boot by the owner connection.
+
 Supabase free is enough for a friendly pilot, but it has smaller compute/storage limits than paid production Postgres.
+
+See `docs/HISTORY.md` for why the boundary is shaped this way, and `docs/SECURITY_HARDENING_PLAN.md` for the
+ordered runbook when changing these on a live deployment (the order matters: `DATABASE_URL` moves to the
+application role *last*).
 
 ## 3. Deploy On Render
 
@@ -49,11 +61,27 @@ Health check path: /api/health
 Set these API environment variables:
 
 ```env
-DATABASE_URL=<Supabase Postgres connection string>
+# The application role, NOT the owner.
+DATABASE_URL=<beaconai_app connection string>
+# The owner connection. Required in production, and must differ from DATABASE_URL:
+# the app refuses to start otherwise, because a missing one silently runs schema
+# changes as the application role.
+MIGRATION_DATABASE_URL=<owner connection string>
+APP_DB_ROLE=beaconai_app
+
 PORT=4000
 API_BASE_URL=https://YOUR-RENDER-APP.onrender.com/api
 WEB_BASE_URL=https://YOUR-RENDER-APP.onrender.com
-TOKEN_ENCRYPTION_SECRET=<long random generated secret>
+
+# Two different secrets, each at least 32 characters. SESSION_SECRET signs
+# sessions; TOKEN_ENCRYPTION_SECRET encrypts stored integration tokens. There is
+# no fallback from one to the other in production — if you change
+# TOKEN_ENCRYPTION_SECRET, put the old value in TOKEN_ENCRYPTION_SECRET_PREVIOUS
+# or every connected store's tokens become unreadable.
+SESSION_SECRET=<long random generated secret>
+TOKEN_ENCRYPTION_SECRET=<a different long random generated secret>
+# Founder operator token, at least 32 characters. Reads /api/ready.
+BEACONAI_ADMIN_TOKEN=<long random generated secret>
 
 SHOPIFY_CLIENT_ID=<BeaconAI Shopify app client id>
 SHOPIFY_CLIENT_SECRET=<BeaconAI Shopify app client secret>
